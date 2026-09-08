@@ -1,0 +1,16 @@
+# Секреты — НИКОГДА не коммитить
+arseniy-sheets-key.json
+arseniy-sheets-key.json.json
+.env
+.streamlit/secrets.toml
+
+# Виртуальное окружение / кэш Python
+.venv/
+__pycache__/
+*.pyc
+
+# Локальные артефакты парсера — не нужны в репозитории дашборда
+history_backup_*.csv
+raw_*.json
+last_run_date.txt
+telegram_update_offset.txt
