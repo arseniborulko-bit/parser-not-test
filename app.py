@@ -179,6 +179,62 @@ def _present_table(data: pd.DataFrame) -> tuple[pd.DataFrame, dict[str, object]]
     return result, link_columns
 
 
+@st.dialog("Настройка прогона")
+def _show_run_dialog() -> None:
+    """UI-only run selector. It deliberately cannot start the parser yet."""
+    scope = st.radio("Что проверить", ["Все ASIN", "Parent ASIN", "Child ASIN", "Один ASIN"])
+    if scope == "Один ASIN":
+        st.text_input("ASIN", placeholder="Например: B0XXXXXXXX")
+    st.info("Сейчас это только выбор режима. Парсер и ScrapingDog не запускаются.")
+    st.button("Запустить прогон", disabled=True, help="Функция будет подключена после настройки защиты от повторных запусков.")
+
+
+def _row_status(row: pd.Series) -> str:
+    values = " ".join(str(value).strip().casefold() for value in row.values)
+    if "@" in values:
+        return "🟡 Ошибка / битый ASIN"
+    if "not found" in values:
+        return "⚪ Нет данных"
+    return "🟢 Найдено"
+
+
+def _render_cards(data: pd.DataFrame) -> None:
+    """Product-card fallback until image URLs are saved by the parser."""
+    our_asin = _find_column(list(data.columns), ("our", "asin"))
+    title = _find_column(list(data.columns), ("our", "product"))
+    marketplace = _find_column(list(data.columns), ("market",))
+    if not our_asin:
+        st.info("В этом листе нет ASIN для карточек.")
+        return
+    for _, row in data.head(30).iterrows():
+        asin = str(row[our_asin])
+        domain = row[marketplace] if marketplace else "US"
+        product_name = str(row[title]) if title else asin
+        product_url = _amazon_product_url(asin, domain)
+        with st.container(border=True):
+            left, right = st.columns([4, 1])
+            left.write(product_name)
+            if product_url:
+                left.link_button(f"Открыть {asin} на Amazon", product_url)
+            else:
+                left.caption("Ссылка Amazon недоступна: ASIN не найден.")
+            right.write(_row_status(row))
+    st.caption("Фото и увеличенная карточка появятся, когда парсер начнёт сохранять URL изображений.")
+
+
+def _render_user_guide() -> None:
+    st.subheader("Как пользоваться дашбордом")
+    st.markdown(
+        """
+        - **Фильтры** показывают только нужные ASIN, страны и период.
+        - **ASIN** в таблице — ссылка на карточку товара Amazon.
+        - **🟢 Найдено** — данные успешно получены; **🟡 Ошибка** — ASIN требует проверки; **⚪ Нет данных** — Amazon не вернул данные.
+        - **Прогон** сейчас открывает выбор режима и не запускает ScrapingDog.
+        - **История** позволяет выбрать дату и посмотреть сохранённый результат сбора.
+        """
+    )
+
+
 def _filter_data(data: pd.DataFrame) -> pd.DataFrame:
     """Top-level read-only filters, using whichever matching columns exist."""
     columns = list(data.columns)
@@ -256,6 +312,7 @@ def main() -> None:
         st.markdown('<p class="brand-subtitle">Мониторинг Amazon-конкурентов и аналитика портфеля</p>', unsafe_allow_html=True)
     with right:
         st.markdown('<div class="status-box"><strong>Режим просмотра</strong><br>Google Sheets читается безопасно. Парсер и ScrapingDog не запускаются.</div>', unsafe_allow_html=True)
+        st.link_button("✈ Telegram-бот", "https://t.me/BSR_Competitors_Trackerbot")
     try:
         account_json, spreadsheet_name = _secret_values()
         sheet_names = _worksheet_names(account_json, spreadsheet_name)
@@ -270,11 +327,21 @@ def main() -> None:
         return
 
     preferred = [name for name in ("Current", "History", "Competitors", "Матрица") if name in sheet_names]
-    selected_sheet = st.selectbox("Источник данных", sheet_names, index=sheet_names.index(preferred[0]) if preferred else 0)
-    if st.button("↻ Обновить данные"):
+    source_col, refresh_col, run_col = st.columns([5, 1, 1])
+    with source_col:
+        selected_sheet = st.selectbox("Источник данных", sheet_names, index=sheet_names.index(preferred[0]) if preferred else 0)
+    with refresh_col:
+        st.write("")
+        refresh = st.button("↻ Обновить")
+    with run_col:
+        st.write("")
+        run = st.button("▶ Прогон", type="primary")
+    if refresh:
         _load_sheet.clear()
         _worksheet_names.clear()
         st.rerun()
+    if run:
+        _show_run_dialog()
 
     try:
         data = _load_sheet(account_json, spreadsheet_name, selected_sheet)
@@ -292,14 +359,43 @@ def main() -> None:
     st.markdown('<p class="section-note">Фильтруйте сохранённые данные по ASIN, стране и периоду. Никаких запросов к Amazon не выполняется.</p>', unsafe_allow_html=True)
     shown = _filter_data(data)
     presented, table_config = _present_table(shown)
-    overview_tab, chart_tab, table_tab = st.tabs(["📋 Обзор", "📈 Динамика", "🧾 Данные"])
-    with overview_tab:
+    child_tab, parent_tab, competitors_tab, history_tab, child_trend_tab, parent_trend_tab, analytics_tab, guide_tab = st.tabs([
+        "📋 Портфель (Child)", "📋 Портфель (Parent)", "🥊 Конкуренты", "📅 История",
+        "📈 Динамика (Child)", "📈 Динамика (Parent)", "📊 Аналитика", "ℹ Как это работает",
+    ])
+    with child_tab:
+        view_mode = st.radio("Вид", ["Таблица", "Карточки"], horizontal=True, label_visibility="collapsed")
         st.caption(f"Показано строк: {len(shown)} из {len(data)}")
-        st.dataframe(
-            presented, use_container_width=True, hide_index=True, height=450,
-            column_config=table_config,
-        )
-    with chart_tab:
+        if view_mode == "Таблица":
+            presented.insert(0, "Статус", shown.apply(_row_status, axis=1))
+            st.dataframe(
+                presented, use_container_width=True, hide_index=True, height=450,
+                column_config=table_config,
+            )
+        else:
+            _render_cards(shown)
+    with parent_tab:
+        st.info("Parent/Child будут подключены после определения точных колонок в листе Competitors.")
+    with competitors_tab:
+        if "Competitors" not in sheet_names:
+            st.info("Лист Competitors не найден.")
+        else:
+            competitors_data = _load_sheet(account_json, spreadsheet_name, "Competitors")
+            competitors_presented, competitors_config = _present_table(competitors_data)
+            st.dataframe(competitors_presented, use_container_width=True, hide_index=True, column_config=competitors_config)
+    with history_tab:
+        if "History" not in sheet_names:
+            st.info("Лист History не найден.")
+        else:
+            history_data = _load_sheet(account_json, spreadsheet_name, "History")
+            history_date = _find_column(list(history_data.columns), ("snapshot", "date")) or _find_column(list(history_data.columns), ("date",))
+            if history_date:
+                available_dates = pd.to_datetime(history_data[history_date], errors="coerce").dropna()
+                selected_date = st.date_input("Дата сбора", value=available_dates.max().date() if not available_dates.empty else datetime.now().date())
+                history_data = history_data[pd.to_datetime(history_data[history_date], errors="coerce").dt.date == selected_date]
+            history_presented, history_config = _present_table(history_data)
+            st.dataframe(history_presented, use_container_width=True, hide_index=True, column_config=history_config)
+    with child_trend_tab:
         date_column = _find_column(list(shown.columns), ("дата",)) or _find_column(list(shown.columns), ("date",))
         if date_column:
             series = pd.to_datetime(shown[date_column], errors="coerce").dropna().value_counts().sort_index()
@@ -309,9 +405,13 @@ def main() -> None:
                 st.info("Для выбранных строк нет корректных дат.")
         else:
             st.info("В этом листе нет столбца даты для построения динамики.")
-    with table_tab:
+    with parent_trend_tab:
+        st.info("Динамика Parent появится после настройки полей Parent/Child в Competitors.")
+    with analytics_tab:
+        st.info("Раздел аналитики подготовлен. Метрики добавим после согласования расчётов.")
         st.download_button("Скачать отображаемые данные CSV", shown.to_csv(index=False).encode("utf-8-sig"), file_name=f"{selected_sheet}.csv", mime="text/csv")
-        st.dataframe(presented, use_container_width=True, hide_index=True, column_config=table_config)
+    with guide_tab:
+        _render_user_guide()
 
 
 if __name__ == "__main__":
