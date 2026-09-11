@@ -45,6 +45,9 @@ def _apply_design() -> None:
         .brand-subtitle { color: #64748b; font-size: .87rem; margin: .25rem 0 1.5rem; }
         .status-box { background: #dbeafe; color: #2563eb; border-radius: 10px; padding: 1rem 1.1rem; min-height: 80px; }
         .status-box strong { color: #1d4ed8; }
+        .telegram-link { display: inline-flex; align-items: center; gap: .42rem; margin-top: .45rem; padding: .52rem .8rem; background: #e0f2fe; color: #168ed0 !important; border: 1px solid #7dd3fc; border-radius: 999px; font-weight: 700; text-decoration: none !important; font-size: .86rem; }
+        .telegram-link:hover { background: #bae6fd; color: #075b9b !important; }
+        .telegram-link svg { width: 18px; height: 18px; fill: currentColor; }
         .metric-card { background: #ffffff; border: 1px solid #e5e7eb; border-radius: 15px; padding: 1rem 1.15rem; min-height: 120px; box-shadow: 0 1px 2px rgba(15,23,42,.025); }
         .metric-label { color: #64748b; font-size: .72rem; letter-spacing: .065em; text-transform: uppercase; }
         .metric-value { color: #111827; font-size: 1.85rem; font-weight: 800; line-height: 1.25; margin: .25rem 0; }
@@ -79,6 +82,8 @@ def _apply_dark_theme() -> None:
         .metric-card { background: #171b25; border-color: #303746; box-shadow: none; }
         .metric-value, .section-title { color: #f8fafc !important; }
         .status-box { background: #172f50; color: #bfdbfe; }
+        .telegram-link { background: #12365a; border-color: #2379b9; color: #7dd3fc !important; }
+        .telegram-link:hover { background: #164a78; color: #bae6fd !important; }
         div[data-testid="stTabs"] button,
         div[data-testid="stTabs"] [data-baseweb="tab"] { background: #168ed0 !important; color: #fff !important; }
         div[data-testid="stTabs"] button *,
@@ -260,6 +265,27 @@ def _competitor_status_map(current_data: pd.DataFrame) -> dict[tuple[str, str], 
     return status_map
 
 
+def _collection_status_html(data: pd.DataFrame) -> str:
+    """Summary of the latest saved parser result; never starts a collection."""
+    columns = list(data.columns)
+    timestamp_column = _find_column(columns, ("updated",)) or _find_column(columns, ("snapshot", "date")) or _find_column(columns, ("date",))
+    latest = "нет сохранённых запусков"
+    if timestamp_column:
+        dates = pd.to_datetime(data[timestamp_column], errors="coerce")
+        if dates.notna().any():
+            date_format = "%d.%m.%Y %H:%M" if dates.dt.hour.ne(0).any() or dates.dt.minute.ne(0).any() else "%d.%m.%Y"
+            latest = dates.max().strftime(date_format)
+    valid = sum(
+        _entity_status(row, "our_") == "🟢 Найдено" or _entity_status(row, "comp_") == "🟢 Найдено"
+        for _, row in data.iterrows()
+    )
+    return (
+        '<div class="status-box"><strong>Последний сбор: '
+        f'{escape(latest)}</strong><br>Завершён · строк с данными {valid} из {len(data)}. '
+        'Просмотр не запускает парсер.</div>'
+    )
+
+
 def _render_cards(data: pd.DataFrame) -> None:
     """Product-card fallback until image URLs are saved by the parser."""
     our_asin = _find_column(list(data.columns), ("our", "asin"))
@@ -373,8 +399,14 @@ def main() -> None:
     with left:
         st.markdown('<p class="brand-subtitle">Мониторинг Amazon-конкурентов и аналитика портфеля</p>', unsafe_allow_html=True)
     with right:
-        st.markdown('<div class="status-box"><strong>Режим просмотра</strong><br>Google Sheets читается безопасно. Парсер и ScrapingDog не запускаются.</div>', unsafe_allow_html=True)
-        st.link_button("🛩️ BSR_Competitors_Trackerbot", "https://t.me/BSR_Competitors_Trackerbot")
+        status_slot = st.empty()
+        status_slot.markdown('<div class="status-box"><strong>Последний сбор</strong><br>Загружаю сохранённые данные…</div>', unsafe_allow_html=True)
+        st.markdown(
+            '''<a class="telegram-link" href="https://t.me/BSR_Competitors_Trackerbot" target="_blank" rel="noopener noreferrer" aria-label="Открыть Telegram-бота">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21.6 3.4 2.8 10.6c-1.3.5-1.3 1.2-.2 1.5l4.8 1.5 1.8 5.5c.2.6.1.8.7.8.4 0 .6-.2.8-.4l2.3-2.2 4.8 3.5c.9.5 1.5.3 1.7-.8l3.2-15.2c.3-1.3-.5-1.9-1.2-1.4Zm-13.6 9.7 10.8-6.8c.5-.3 1-.1.6.3L10.2 15l-.4 3.1-1.8-5Z"/></svg>
+            <span>BSR_Competitors_Trackerbot</span></a>''',
+            unsafe_allow_html=True,
+        )
         dark_mode = st.toggle("🌙 Тёмная тема", key="dark_mode")
         if dark_mode:
             _apply_dark_theme()
@@ -418,6 +450,9 @@ def main() -> None:
     if data.empty:
         st.info(f"Лист «{selected_sheet}» пуст или содержит только заголовки.")
         return
+
+    status_data = data if selected_sheet == "Current" or "Current" not in sheet_names else _load_sheet(account_json, spreadsheet_name, "Current")
+    status_slot.markdown(_collection_status_html(status_data), unsafe_allow_html=True)
 
     _render_overview(data)
     st.markdown('<p class="section-title">Мониторинг конкурентов</p>', unsafe_allow_html=True)
