@@ -55,14 +55,14 @@ def _apply_design() -> None:
         div[data-testid="stSelectbox"] div[data-baseweb="select"] > div { background: #252832; color: #fff; border-radius: 8px; border: 0; }
         div[data-testid="stTabs"] [data-baseweb="tab-list"] { gap: 3px; border-bottom: 1px solid #dfe3ea; }
         div[data-testid="stTabs"] button,
-        div[data-testid="stTabs"] [data-baseweb="tab"] { background: #171923 !important; color: #fff !important; border-radius: 7px 7px 0 0; padding: .6rem 1rem; margin-right: 2px; opacity: 1 !important; }
+        div[data-testid="stTabs"] [data-baseweb="tab"] { background: #168ed0 !important; color: #fff !important; border-radius: 7px 7px 0 0; padding: .6rem 1rem; margin-right: 2px; opacity: 1 !important; }
         div[data-testid="stTabs"] button *,
         div[data-testid="stTabs"] [data-baseweb="tab"] * { color: #fff !important; opacity: 1 !important; }
         div[data-testid="stTabs"] button[aria-selected="true"],
-        div[data-testid="stTabs"] [aria-selected="true"] { background: #ff5b61 !important; color: #fff !important; }
-        div[data-testid="stTabs"] [data-baseweb="tab-highlight"] { background: #ff5b61; }
-        .stButton > button { background: #161925; color: #fff; border: 0; border-radius: 8px; font-weight: 650; }
-        .stButton > button:hover { background: #2b3040; color: #fff; }
+        div[data-testid="stTabs"] [aria-selected="true"] { background: #075b9b !important; color: #fff !important; }
+        div[data-testid="stTabs"] [data-baseweb="tab-highlight"] { background: #075b9b; }
+        .stButton > button { background: #168ed0; color: #fff; border: 0; border-radius: 8px; font-weight: 650; }
+        .stButton > button:hover { background: #075b9b; color: #fff; }
         </style>
         """,
         unsafe_allow_html=True,
@@ -80,11 +80,11 @@ def _apply_dark_theme() -> None:
         .metric-value, .section-title { color: #f8fafc !important; }
         .status-box { background: #172f50; color: #bfdbfe; }
         div[data-testid="stTabs"] button,
-        div[data-testid="stTabs"] [data-baseweb="tab"] { background: #e5e7eb !important; color: #111827 !important; }
+        div[data-testid="stTabs"] [data-baseweb="tab"] { background: #168ed0 !important; color: #fff !important; }
         div[data-testid="stTabs"] button *,
-        div[data-testid="stTabs"] [data-baseweb="tab"] * { color: #111827 !important; }
+        div[data-testid="stTabs"] [data-baseweb="tab"] * { color: #fff !important; }
         div[data-testid="stTabs"] button[aria-selected="true"],
-        div[data-testid="stTabs"] [aria-selected="true"] { background: #ff5b61 !important; }
+        div[data-testid="stTabs"] [aria-selected="true"] { background: #075b9b !important; }
         div[data-testid="stTabs"] button[aria-selected="true"] *,
         div[data-testid="stTabs"] [aria-selected="true"] * { color: #fff !important; }
         </style>
@@ -189,6 +189,7 @@ def _present_table(data: pd.DataFrame) -> tuple[pd.DataFrame, dict[str, object]]
         "price_diff_pct": "Разница цен, %", "comp_stock": "Наличие",
     }
     result = data.rename(columns={key: value for key, value in labels.items() if key in data.columns}).copy()
+    result = result.map(_display_value)
     source_marketplace = data["marketplace"] if "marketplace" in data.columns else pd.Series("US", index=data.index)
     link_columns: dict[str, object] = {}
     for source, label in (("our_asin", "Наш ASIN"), ("comp_asin", "ASIN конкурента")):
@@ -218,12 +219,45 @@ def _show_run_dialog() -> None:
 
 
 def _row_status(row: pd.Series) -> str:
-    values = " ".join(str(value).strip().casefold() for value in row.values)
-    if "@" in values:
+    return _status_from_values(row.values)
+
+
+def _status_from_values(values: object) -> str:
+    normalized = [str(value).strip().casefold() for value in values]
+    if any(value == "@" or "битый asin" in value for value in normalized):
         return "🟡 Ошибка / битый ASIN"
-    if "not found" in values:
+    useful = [value for value in normalized if value]
+    if not useful or all(value in {"not found", "none", "—", "-"} for value in useful):
         return "⚪ Нет данных"
     return "🟢 Найдено"
+
+
+def _entity_status(row: pd.Series, prefix: str) -> str:
+    """Status of one product side, based on its scraped metrics only."""
+    metric_words = ("bsr", "price", "rating", "review", "stock", "цена", "рейтинг", "отзыв", "налич")
+    fields = [
+        value for column, value in row.items()
+        if column.casefold().startswith(prefix) and any(word in column.casefold() for word in metric_words)
+    ]
+    return _status_from_values(fields)
+
+
+def _display_value(value: object) -> object:
+    """Keep source data unchanged while making parser error markers understandable."""
+    if str(value).strip() == "@":
+        return "Битый ASIN"
+    return value
+
+
+def _competitor_status_map(current_data: pd.DataFrame) -> dict[tuple[str, str], str]:
+    if not {"marketplace", "comp_asin"}.issubset(current_data.columns):
+        return {}
+    status_map: dict[tuple[str, str], str] = {}
+    for _, row in current_data.iterrows():
+        match = ASIN_RE.search(str(row["comp_asin"]))
+        if match:
+            status_map[(str(row["marketplace"]).strip().upper(), match.group(1).upper())] = _entity_status(row, "comp_")
+    return status_map
 
 
 def _render_cards(data: pd.DataFrame) -> None:
@@ -340,7 +374,7 @@ def main() -> None:
         st.markdown('<p class="brand-subtitle">Мониторинг Amazon-конкурентов и аналитика портфеля</p>', unsafe_allow_html=True)
     with right:
         st.markdown('<div class="status-box"><strong>Режим просмотра</strong><br>Google Sheets читается безопасно. Парсер и ScrapingDog не запускаются.</div>', unsafe_allow_html=True)
-        st.link_button("✈ Telegram-бот", "https://t.me/BSR_Competitors_Trackerbot")
+        st.link_button("🛩️ BSR_Competitors_Trackerbot", "https://t.me/BSR_Competitors_Trackerbot")
         dark_mode = st.toggle("🌙 Тёмная тема", key="dark_mode")
         if dark_mode:
             _apply_dark_theme()
@@ -398,7 +432,11 @@ def main() -> None:
         view_mode = st.radio("Вид", ["Таблица", "Карточки"], horizontal=True, label_visibility="collapsed")
         st.caption(f"Показано строк: {len(shown)} из {len(data)}")
         if view_mode == "Таблица":
-            presented.insert(0, "Статус", shown.apply(_row_status, axis=1))
+            if any(column.casefold().startswith("our_") for column in shown.columns):
+                presented.insert(0, "Статус конкурента", shown.apply(lambda row: _entity_status(row, "comp_"), axis=1))
+                presented.insert(0, "Статус нашего товара", shown.apply(lambda row: _entity_status(row, "our_"), axis=1))
+            else:
+                presented.insert(0, "Статус", shown.apply(_row_status, axis=1))
             st.dataframe(
                 presented, use_container_width=True, hide_index=True, height=450,
                 column_config=table_config,
@@ -413,6 +451,24 @@ def main() -> None:
         else:
             competitors_data = _load_sheet(account_json, spreadsheet_name, "Competitors")
             competitors_presented, competitors_config = _present_table(competitors_data)
+            if "Current" in sheet_names:
+                current_data = _load_sheet(account_json, spreadsheet_name, "Current")
+                statuses = _competitor_status_map(current_data)
+                if {"marketplace", "comp_asin"}.issubset(competitors_data.columns):
+                    competitors_presented.insert(
+                        0,
+                        "Статус данных",
+                        [
+                            statuses.get(
+                                (
+                                    str(marketplace).strip().upper(),
+                                    (ASIN_RE.search(str(asin)).group(1).upper() if ASIN_RE.search(str(asin)) else ""),
+                                ),
+                                "⚪ Нет данных",
+                            )
+                            for marketplace, asin in zip(competitors_data["marketplace"], competitors_data["comp_asin"])
+                        ],
+                    )
             st.dataframe(competitors_presented, use_container_width=True, hide_index=True, column_config=competitors_config)
     with history_tab:
         if "History" not in sheet_names:
