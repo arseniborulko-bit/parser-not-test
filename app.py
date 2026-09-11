@@ -58,12 +58,12 @@ def _apply_design() -> None:
         div[data-testid="stSelectbox"] div[data-baseweb="select"] > div { background: #252832; color: #fff; border-radius: 8px; border: 0; }
         div[data-testid="stTabs"] [data-baseweb="tab-list"] { gap: 3px; border-bottom: 1px solid #dfe3ea; }
         div[data-testid="stTabs"] button,
-        div[data-testid="stTabs"] [data-baseweb="tab"] { background: #168ed0 !important; color: #fff !important; border-radius: 7px 7px 0 0; padding: .6rem 1rem; margin-right: 2px; opacity: 1 !important; }
+        div[data-testid="stTabs"] [data-baseweb="tab"] { background: #121826 !important; color: #fff !important; border-radius: 7px 7px 0 0; padding: .6rem 1rem; margin-right: 2px; opacity: 1 !important; }
         div[data-testid="stTabs"] button *,
         div[data-testid="stTabs"] [data-baseweb="tab"] * { color: #fff !important; opacity: 1 !important; }
         div[data-testid="stTabs"] button[aria-selected="true"],
-        div[data-testid="stTabs"] [aria-selected="true"] { background: #075b9b !important; color: #fff !important; }
-        div[data-testid="stTabs"] [data-baseweb="tab-highlight"] { background: #075b9b; }
+        div[data-testid="stTabs"] [aria-selected="true"] { background: #168ed0 !important; color: #fff !important; }
+        div[data-testid="stTabs"] [data-baseweb="tab-highlight"] { background: #168ed0; }
         .stButton > button { background: #168ed0; color: #fff; border: 0; border-radius: 8px; font-weight: 650; }
         .stButton > button:hover { background: #075b9b; color: #fff; }
         </style>
