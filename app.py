@@ -8,6 +8,7 @@ requests or change any spreadsheet cell.
 from __future__ import annotations
 
 import json
+import re
 from datetime import datetime
 from html import escape
 
@@ -22,6 +23,11 @@ READONLY_SCOPES = (
     "https://www.googleapis.com/auth/spreadsheets.readonly",
     "https://www.googleapis.com/auth/drive.readonly",
 )
+AMAZON_DOMAINS = {
+    "US": "com", "CA": "ca", "UK": "co.uk", "DE": "de", "FR": "fr",
+    "ES": "es", "IT": "it", "MX": "com.mx", "JP": "co.jp", "AU": "com.au",
+}
+ASIN_RE = re.compile(r"\b(B0[A-Z0-9]{8})\b", re.IGNORECASE)
 
 
 st.set_page_config(page_title="Amazon Parser Dashboard", page_icon="📦", layout="wide")
@@ -71,10 +77,27 @@ def _unique_headers(row: list[str]) -> list[str]:
 
 
 def _values_to_frame(values: list[list[str]]) -> pd.DataFrame:
+    """Convert sheet values, skipping a title row above the real headers when present."""
     if not values:
         return pd.DataFrame()
-    headers = _unique_headers(values[0])
-    rows = [row + [""] * (len(headers) - len(row)) for row in values[1:]]
+    header_words = (
+        "snapshot_date", "date", "дата", "marketplace", "маркетплейс",
+        "our_asin", "наш asin", "competitor", "конкурент", "bsr", "price", "цена",
+    )
+    header_index = 0
+    best_score = 0
+    for index, row in enumerate(values[:5]):
+        score = sum(
+            any(word in str(cell).strip().casefold() for word in header_words)
+            for cell in row
+        )
+        if score > best_score:
+            header_index, best_score = index, score
+
+    # A row such as only "Current" is a title; real headers normally contain
+    # several known field names. Do not skip row zero for ordinary sheets.
+    headers = _unique_headers(values[header_index] if best_score >= 2 else values[0])
+    rows = [row + [""] * (len(headers) - len(row)) for row in values[header_index + 1 if best_score >= 2 else 1:]]
     return pd.DataFrame([row[: len(headers)] for row in rows], columns=headers).dropna(how="all")
 
 
@@ -116,6 +139,44 @@ def _metric_card(label: str, value: str | int, detail: str, color: str = "#11182
         f'<div class="metric-value" style="color:{color}">{escape(str(value))}</div>'
         f'<div class="metric-detail">{escape(detail)}</div></div>'
     )
+
+
+def _amazon_product_url(value: object, marketplace: object) -> str:
+    """Create a display-only product link; invalid/missing ASINs remain blank."""
+    match = ASIN_RE.search(str(value))
+    if not match:
+        return ""
+    domain = AMAZON_DOMAINS.get(str(marketplace).strip().upper(), "com")
+    return f"https://www.amazon.{domain}/dp/{match.group(1).upper()}"
+
+
+def _present_table(data: pd.DataFrame) -> tuple[pd.DataFrame, dict[str, object]]:
+    """Turn parser fields into readable dashboard columns and safe Amazon links."""
+    labels = {
+        "snapshot_date": "Дата сбора", "updated_at": "Обновлено", "marketplace": "Страна",
+        "currency": "Валюта", "our_product": "Наш товар", "our_asin": "Наш ASIN",
+        "our_bsr": "BSR наш", "our_price": "Цена наша", "our_bsr_delta_24h": "Δ BSR наш",
+        "competitor": "Конкурент", "comp_asin": "ASIN конкурента", "comp_bsr": "BSR конкурента",
+        "comp_price": "Цена конкурента", "comp_bsr_delta_24h": "Δ BSR конкурента",
+        "price_diff_pct": "Разница цен, %", "comp_stock": "Наличие",
+    }
+    result = data.rename(columns={key: value for key, value in labels.items() if key in data.columns}).copy()
+    source_marketplace = data["marketplace"] if "marketplace" in data.columns else pd.Series("US", index=data.index)
+    link_columns: dict[str, object] = {}
+    for source, label in (("our_asin", "Наш ASIN"), ("comp_asin", "ASIN конкурента")):
+        if source not in data.columns:
+            continue
+        result[label] = [
+            _amazon_product_url(asin, marketplace)
+            for asin, marketplace in zip(data[source], source_marketplace)
+        ]
+        link_columns[label] = st.column_config.LinkColumn(
+            label,
+            help="Открыть карточку товара на Amazon",
+            display_text=r"https://www\.amazon\.[^/]+/dp/(B0[A-Z0-9]{8})",
+            width="small",
+        )
+    return result, link_columns
 
 
 def _filter_data(data: pd.DataFrame) -> pd.DataFrame:
@@ -192,7 +253,6 @@ def main() -> None:
     _apply_design()
     left, right = st.columns([3, 2])
     with left:
-        st.markdown('<p class="brand">📡 Rating Radar</p>', unsafe_allow_html=True)
         st.markdown('<p class="brand-subtitle">Мониторинг Amazon-конкурентов и аналитика портфеля</p>', unsafe_allow_html=True)
     with right:
         st.markdown('<div class="status-box"><strong>Режим просмотра</strong><br>Google Sheets читается безопасно. Парсер и ScrapingDog не запускаются.</div>', unsafe_allow_html=True)
@@ -231,10 +291,14 @@ def main() -> None:
     st.markdown('<p class="section-title">Мониторинг конкурентов</p>', unsafe_allow_html=True)
     st.markdown('<p class="section-note">Фильтруйте сохранённые данные по ASIN, стране и периоду. Никаких запросов к Amazon не выполняется.</p>', unsafe_allow_html=True)
     shown = _filter_data(data)
+    presented, table_config = _present_table(shown)
     overview_tab, chart_tab, table_tab = st.tabs(["📋 Обзор", "📈 Динамика", "🧾 Данные"])
     with overview_tab:
         st.caption(f"Показано строк: {len(shown)} из {len(data)}")
-        st.dataframe(shown, use_container_width=True, hide_index=True, height=450)
+        st.dataframe(
+            presented, use_container_width=True, hide_index=True, height=450,
+            column_config=table_config,
+        )
     with chart_tab:
         date_column = _find_column(list(shown.columns), ("дата",)) or _find_column(list(shown.columns), ("date",))
         if date_column:
@@ -247,7 +311,7 @@ def main() -> None:
             st.info("В этом листе нет столбца даты для построения динамики.")
     with table_tab:
         st.download_button("Скачать отображаемые данные CSV", shown.to_csv(index=False).encode("utf-8-sig"), file_name=f"{selected_sheet}.csv", mime="text/csv")
-        st.dataframe(shown, use_container_width=True, hide_index=True)
+        st.dataframe(presented, use_container_width=True, hide_index=True, column_config=table_config)
 
 
 if __name__ == "__main__":
