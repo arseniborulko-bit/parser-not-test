@@ -53,12 +53,40 @@ def _apply_design() -> None:
         .section-note { color: #64748b; font-size: .86rem; margin-bottom: .6rem; }
         div[data-testid="stSelectbox"] label, div[data-testid="stTextInput"] label { color: #64748b; font-size: .78rem; }
         div[data-testid="stSelectbox"] div[data-baseweb="select"] > div { background: #252832; color: #fff; border-radius: 8px; border: 0; }
-        div[data-testid="stTabs"] [data-baseweb="tab-list"] { gap: 0; border-bottom: 1px solid #dfe3ea; }
-        div[data-testid="stTabs"] button { background: #171923; color: #fff; border-radius: 7px 7px 0 0; padding: .6rem 1rem; margin-right: 2px; }
-        div[data-testid="stTabs"] button[aria-selected="true"] { background: #ff5b61; color: #fff; }
+        div[data-testid="stTabs"] [data-baseweb="tab-list"] { gap: 3px; border-bottom: 1px solid #dfe3ea; }
+        div[data-testid="stTabs"] button,
+        div[data-testid="stTabs"] [data-baseweb="tab"] { background: #171923 !important; color: #fff !important; border-radius: 7px 7px 0 0; padding: .6rem 1rem; margin-right: 2px; opacity: 1 !important; }
+        div[data-testid="stTabs"] button *,
+        div[data-testid="stTabs"] [data-baseweb="tab"] * { color: #fff !important; opacity: 1 !important; }
+        div[data-testid="stTabs"] button[aria-selected="true"],
+        div[data-testid="stTabs"] [aria-selected="true"] { background: #ff5b61 !important; color: #fff !important; }
         div[data-testid="stTabs"] [data-baseweb="tab-highlight"] { background: #ff5b61; }
         .stButton > button { background: #161925; color: #fff; border: 0; border-radius: 8px; font-weight: 650; }
         .stButton > button:hover { background: #2b3040; color: #fff; }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def _apply_dark_theme() -> None:
+    """Invert the interface contrast for users who choose the dark theme."""
+    st.markdown(
+        """
+        <style>
+        .stApp { background: #0e1117; color: #f8fafc; }
+        .brand-subtitle, .section-note, .metric-detail, .metric-label { color: #aab5c7 !important; }
+        .metric-card { background: #171b25; border-color: #303746; box-shadow: none; }
+        .metric-value, .section-title { color: #f8fafc !important; }
+        .status-box { background: #172f50; color: #bfdbfe; }
+        div[data-testid="stTabs"] button,
+        div[data-testid="stTabs"] [data-baseweb="tab"] { background: #e5e7eb !important; color: #111827 !important; }
+        div[data-testid="stTabs"] button *,
+        div[data-testid="stTabs"] [data-baseweb="tab"] * { color: #111827 !important; }
+        div[data-testid="stTabs"] button[aria-selected="true"],
+        div[data-testid="stTabs"] [aria-selected="true"] { background: #ff5b61 !important; }
+        div[data-testid="stTabs"] button[aria-selected="true"] *,
+        div[data-testid="stTabs"] [aria-selected="true"] * { color: #fff !important; }
         </style>
         """,
         unsafe_allow_html=True,
@@ -313,6 +341,9 @@ def main() -> None:
     with right:
         st.markdown('<div class="status-box"><strong>Режим просмотра</strong><br>Google Sheets читается безопасно. Парсер и ScrapingDog не запускаются.</div>', unsafe_allow_html=True)
         st.link_button("✈ Telegram-бот", "https://t.me/BSR_Competitors_Trackerbot")
+        dark_mode = st.toggle("🌙 Тёмная тема", key="dark_mode")
+        if dark_mode:
+            _apply_dark_theme()
     try:
         account_json, spreadsheet_name = _secret_values()
         sheet_names = _worksheet_names(account_json, spreadsheet_name)
