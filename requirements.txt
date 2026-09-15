@@ -4,3 +4,4 @@ google-auth>=2.30
 pandas>=2.2
 plotly>=5.22
 python-dotenv>=1.0
+psycopg2-binary>=2.9

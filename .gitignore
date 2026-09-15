@@ -14,3 +14,5 @@ history_backup_*.csv
 raw_*.json
 last_run_date.txt
 telegram_update_offset.txt
+run_status.json
+last_run.log
