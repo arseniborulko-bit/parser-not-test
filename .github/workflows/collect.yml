@@ -1,0 +1,43 @@
+name: Сбор данных (вручную)
+
+# Запускается только вручную — из вкладки Actions на GitHub, либо позже
+# кнопкой на дашборде через GitHub API. Никакого автоматического расписания
+# здесь пока нет (добавим отдельным шагом).
+on:
+  workflow_dispatch:
+
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Установить Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Установить зависимости
+        run: pip install -r requirements.txt
+
+      - name: Записать ключ Google service account
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+        run: echo "$GOOGLE_SERVICE_ACCOUNT_JSON" > arseniy-sheets-key.json.json
+
+      - name: Запустить парсер и синхронизацию с базой
+        env:
+          SCRAPINGDOG_TOKEN: ${{ secrets.SCRAPINGDOG_TOKEN }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python run_parser_and_sync.py
+
+      - name: Сохранить лог прогона
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: last_run.log
+          path: last_run.log
+          if-no-files-found: ignore

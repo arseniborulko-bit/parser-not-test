@@ -73,27 +73,26 @@ def sync_task(hour: int, minute: int, python_exe: str, script_path: str) -> tupl
         logger.error(msg)
         return False, msg
 
-    current_time = get_task_current_time(TASK_NAME)
-    if current_time == time_str:
-        msg = f"Задача '{TASK_NAME}' уже настроена на {time_str}."
-        logger.info(msg)
-        return True, msg
-
+    # Всегда переприменяем и время, и команду запуска (schtasks /change идемпотентен) —
+    # так дрейф команды (например, если раньше задача указывала на другой скрипт)
+    # чинится сам, а не только несовпадение времени.
     result = subprocess.run(
-        ["schtasks", "/change", "/tn", TASK_NAME, "/st", time_str],
+        ["schtasks", "/change", "/tn", TASK_NAME, "/st", time_str, "/tr", task_command],
         capture_output=True, text=True,
     )
     if result.returncode == 0:
-        msg = f"Задача '{TASK_NAME}' обновлена: теперь запускается в {time_str}."
+        msg = f"Задача '{TASK_NAME}' обновлена: запуск в {time_str}, команда '{task_command}'."
         logger.info(msg)
         return True, msg
-    msg = f"Не удалось обновить время задачи '{TASK_NAME}': {result.stderr.strip()}"
+    msg = f"Не удалось обновить задачу '{TASK_NAME}': {result.stderr.strip()}"
     logger.error(msg)
     return False, msg
 
 
 def default_python_and_script() -> tuple[str, str]:
+    """Парсер + синк в базу одним запуском — чтобы дашборд (читает из Postgres)
+    всегда видел свежие данные и после автоматического, и после ручного запуска."""
     base_dir = Path(__file__).resolve().parent
     python_exe = base_dir / ".venv" / "Scripts" / "python.exe"
-    script_path = base_dir / "parser_not_test.py"
+    script_path = base_dir / "run_parser_and_sync.py"
     return str(python_exe), str(script_path)
