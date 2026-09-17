@@ -1,10 +1,21 @@
-name: Сбор данных (вручную)
+name: Сбор данных
 
-# Запускается только вручную — из вкладки Actions на GitHub, либо позже
-# кнопкой на дашборде через GitHub API. Никакого автоматического расписания
-# здесь пока нет (добавим отдельным шагом).
+# Два способа запуска:
+# 1. workflow_dispatch — вручную из вкладки Actions, всегда собирает сразу.
+# 2. schedule (cron) — срабатывает каждые 30 минут, но реальный сбор
+#    (расход ScrapingDog) происходит только когда should_collect_now.py
+#    решит, что пора: время наступило (parser_not_test.schedule в базе) и
+#    сегодня ещё не собирали (parser_not_test.collection_runs в базе).
 on:
   workflow_dispatch:
+  schedule:
+    - cron: "*/30 * * * *"
+
+# Если новый триггер придёт, пока предыдущий прогон ещё выполняется — GitHub
+# поставит его в очередь вместо параллельного запуска.
+concurrency:
+  group: parser-not-test-collect
+  cancel-in-progress: false
 
 jobs:
   collect:
@@ -21,12 +32,21 @@ jobs:
       - name: Установить зависимости
         run: pip install -r requirements.txt
 
+      - name: Проверить, пора ли собирать (только для cron)
+        id: gate
+        if: github.event_name == 'schedule'
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: python should_collect_now.py
+
       - name: Записать ключ Google service account
+        if: github.event_name != 'schedule' || steps.gate.outputs.should_run == 'true'
         env:
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
         run: echo "$GOOGLE_SERVICE_ACCOUNT_JSON" > arseniy-sheets-key.json.json
 
       - name: Запустить парсер и синхронизацию с базой
+        if: github.event_name != 'schedule' || steps.gate.outputs.should_run == 'true'
         env:
           SCRAPINGDOG_TOKEN: ${{ secrets.SCRAPINGDOG_TOKEN }}
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
