@@ -25,6 +25,23 @@ import scheduler
 
 load_dotenv()
 
+
+def _database_url() -> str:
+    """Локально приходит из .env (os.environ). На Streamlit Cloud секреты
+    доступны через st.secrets и не всегда автоматически попадают в
+    os.environ — проверяем оба места, чтобы деплой не падал молча."""
+    value = os.environ.get("DATABASE_URL")
+    if value:
+        return value
+    try:
+        value = st.secrets.get("DATABASE_URL")
+    except Exception:
+        value = None
+    if not value:
+        raise RuntimeError("DATABASE_URL не найден ни в переменных окружения, ни в st.secrets.")
+    return value
+
+
 PROJECT_DIR = Path(__file__).resolve().parent
 STATUS_FILE = PROJECT_DIR / "run_status.json"
 RUNNER_SCRIPT = PROJECT_DIR / "run_parser_and_sync.py"
@@ -72,7 +89,7 @@ def _apply_design() -> None:
 
 @st.cache_data(ttl=60, show_spinner=False)
 def load_snapshots() -> pd.DataFrame:
-    conn = psycopg2.connect(os.environ["DATABASE_URL"])
+    conn = psycopg2.connect(_database_url())
     try:
         return pd.read_sql(
             """
@@ -91,7 +108,7 @@ def load_snapshots() -> pd.DataFrame:
 @st.cache_data(ttl=60, show_spinner=False)
 def load_current() -> pd.DataFrame:
     """Последний снепшот на каждую пару (our_asin, comp_asin)."""
-    conn = psycopg2.connect(os.environ["DATABASE_URL"])
+    conn = psycopg2.connect(_database_url())
     try:
         return pd.read_sql(
             """
@@ -110,7 +127,7 @@ def load_current() -> pd.DataFrame:
 
 @st.cache_data(ttl=60, show_spinner=False)
 def load_competitor_pairs() -> pd.DataFrame:
-    conn = psycopg2.connect(os.environ["DATABASE_URL"])
+    conn = psycopg2.connect(_database_url())
     try:
         return pd.read_sql(
             """
@@ -277,7 +294,7 @@ def _render_run_control() -> None:
 
 
 def _load_schedule() -> tuple[int, int] | None:
-    conn = psycopg2.connect(os.environ["DATABASE_URL"])
+    conn = psycopg2.connect(_database_url())
     try:
         with conn.cursor() as cur:
             cur.execute("SELECT hour, minute FROM parser_not_test.schedule WHERE id = 1;")
@@ -288,7 +305,7 @@ def _load_schedule() -> tuple[int, int] | None:
 
 
 def _save_schedule(hour: int, minute: int) -> None:
-    conn = psycopg2.connect(os.environ["DATABASE_URL"])
+    conn = psycopg2.connect(_database_url())
     try:
         with conn.cursor() as cur:
             cur.execute(
