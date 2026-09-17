@@ -191,18 +191,18 @@ def _render_overview(data: pd.DataFrame) -> None:
             st.bar_chart(chart_data.groupby("snapshot_date").size())
 
 
-def _filter_data(data: pd.DataFrame) -> pd.DataFrame:
+def _filter_data(data: pd.DataFrame, key_prefix: str) -> pd.DataFrame:
     filter_columns = st.columns(4)
     with filter_columns[0]:
         asins = ["Все"] + sorted(data["our_asin"].dropna().unique()) if "our_asin" in data else ["Все"]
-        asin = st.selectbox("ASIN", asins)
+        asin = st.selectbox("ASIN", asins, key=f"{key_prefix}_asin")
     with filter_columns[1]:
-        search = st.text_input("Поиск", placeholder="ASIN, товар, бренд…")
+        search = st.text_input("Поиск", placeholder="ASIN, товар, бренд…", key=f"{key_prefix}_search")
     with filter_columns[2]:
-        period = st.selectbox("Период", ["Всё время", "7 дней", "30 дней", "90 дней"])
+        period = st.selectbox("Период", ["Всё время", "7 дней", "30 дней", "90 дней"], key=f"{key_prefix}_period")
     with filter_columns[3]:
         markets = ["Все"] + sorted(data["marketplace"].dropna().unique()) if "marketplace" in data else ["Все"]
-        market = st.selectbox("Маркетплейс", markets)
+        market = st.selectbox("Маркетплейс", markets, key=f"{key_prefix}_market")
 
     result = data.copy()
     if asin != "Все":
@@ -394,12 +394,12 @@ def main() -> None:
     current_tab, history_tab, pairs_tab = st.tabs(["📋 Текущее состояние", "📅 История", "🥊 Пары конкурентов"])
 
     with current_tab:
-        shown = _filter_data(current)
+        shown = _filter_data(current, key_prefix="current")
         presented, table_config = _present_table(shown)
         st.dataframe(presented, use_container_width=True, hide_index=True, height=450, column_config=table_config)
 
     with history_tab:
-        shown_history = _filter_data(history)
+        shown_history = _filter_data(history, key_prefix="history")
         presented_h, config_h = _present_table(shown_history)
         st.dataframe(presented_h, use_container_width=True, hide_index=True, height=450, column_config=config_h)
 
