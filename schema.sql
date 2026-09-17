@@ -45,3 +45,28 @@ CREATE TABLE IF NOT EXISTS parser_not_test.schedule (
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     CONSTRAINT schedule_single_row CHECK (id = 1)
 );
+
+-- История запусков (ручных и автоматических, локальных и из GitHub Actions).
+-- Нужна дашборду и любому облачному раннеру, чтобы видеть статус — локальный
+-- run_status.json из облака не виден.
+CREATE TABLE IF NOT EXISTS parser_not_test.collection_runs (
+    id BIGSERIAL PRIMARY KEY,
+    source TEXT NOT NULL,              -- 'local' | 'github_actions' и т.п.
+    step TEXT NOT NULL,                -- 'parser' | 'sync'
+    status TEXT NOT NULL,              -- 'running' | 'done' | 'error'
+    started_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    finished_at TIMESTAMPTZ,
+    error TEXT
+);
+
+CREATE INDEX IF NOT EXISTS collection_runs_started_at_idx
+    ON parser_not_test.collection_runs (started_at DESC);
+
+-- Зеркало листа "Подписчики" — кто написал Telegram-боту, чтобы получать отчёты.
+CREATE TABLE IF NOT EXISTS parser_not_test.telegram_subscribers (
+    telegram_id TEXT PRIMARY KEY,
+    username TEXT,
+    first_name TEXT,
+    subscribed_at TIMESTAMPTZ,
+    active BOOLEAN NOT NULL DEFAULT TRUE
+);

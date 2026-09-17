@@ -90,8 +90,11 @@ def sync_competitor_pairs(spreadsheet: gspread.Spreadsheet, conn) -> int:
         if not our_asin or not comp_asin:
             continue
         marketplace = _cell(raw, headers.get("marketplace")).upper() or "US"
+        # Та же семантика, что sheets.load_active_competitor_pairs() (её реально
+        # использует парсер через load_asins_from_config): пустая ячейка Active
+        # считается НЕактивной, а не активной по умолчанию.
         active_raw = _cell(raw, headers.get("active")).upper()
-        active = active_raw in {"Y", "YES", "1", "TRUE", ""}
+        active = active_raw in {"Y", "YES", "1", "TRUE"}
         # Более поздняя строка с тем же ключом (marketplace, our_asin, comp_asin)
         # перезаписывает более раннюю — так же ведёт себя ON CONFLICT DO UPDATE.
         deduped[(marketplace, our_asin, comp_asin)] = (
@@ -123,6 +126,33 @@ def sync_competitor_pairs(spreadsheet: gspread.Spreadsheet, conn) -> int:
             page_size=1000,
         )
     conn.commit()
+
+    # Строку, которую целиком удалили из Sheets (не Active=N, а просто убрали),
+    # upsert выше не видит и не трогает — база тихо расходится с таблицей.
+    # Помечаем такие пары неактивными явно.
+    seen_keys = set(deduped.keys())
+    with conn.cursor() as cur:
+        cur.execute("SELECT marketplace, our_asin, comp_asin FROM parser_not_test.competitor_pairs WHERE active = TRUE;")
+        stale_keys = {tuple(row) for row in cur.fetchall()} - seen_keys
+
+    if stale_keys:
+        with conn.cursor() as cur:
+            execute_values(
+                cur,
+                """
+                UPDATE parser_not_test.competitor_pairs AS t
+                SET active = FALSE
+                FROM (VALUES %s) AS s(marketplace, our_asin, comp_asin)
+                WHERE t.marketplace = s.marketplace
+                  AND t.our_asin = s.our_asin
+                  AND t.comp_asin = s.comp_asin
+                """,
+                list(stale_keys),
+                page_size=1000,
+            )
+        conn.commit()
+        logger.info(f"Деактивировано пар, пропавших из Sheets: {len(stale_keys)}")
+
     return len(rows)
 
 
@@ -214,6 +244,61 @@ def _to_int(value: str) -> Optional[int]:
     return int(number) if number is not None else None
 
 
+def sync_subscribers(spreadsheet: gspread.Spreadsheet, conn) -> int:
+    """Зеркалит лист 'Подписчики' в parser_not_test.telegram_subscribers.
+    Новые подписчики по-прежнему пишутся ботом только в Sheets - здесь только чтение."""
+    try:
+        ws = spreadsheet.worksheet("Подписчики")
+    except gspread.WorksheetNotFound:
+        logger.warning("Лист 'Подписчики' не найден — пропускаю.")
+        return 0
+
+    values = ws.get_all_values()
+    if len(values) < 2:
+        return 0
+
+    headers = _header_index(values[0])
+    id_col = headers.get("telegram_id", 0)
+
+    deduped: Dict[str, Tuple] = {}
+    for raw in values[1:]:
+        telegram_id = _cell(raw, id_col)
+        if not telegram_id:
+            continue
+        active_cell = _cell(raw, headers.get("active")).upper()
+        active = active_cell != "FALSE"
+        deduped[telegram_id] = (
+            telegram_id,
+            _cell(raw, headers.get("username")) or None,
+            _cell(raw, headers.get("first_name")) or None,
+            _cell(raw, headers.get("subscribed_at")) or None,
+            active,
+        )
+
+    rows = list(deduped.values())
+    if not rows:
+        return 0
+
+    with conn.cursor() as cur:
+        execute_values(
+            cur,
+            """
+            INSERT INTO parser_not_test.telegram_subscribers
+                (telegram_id, username, first_name, subscribed_at, active)
+            VALUES %s
+            ON CONFLICT (telegram_id) DO UPDATE SET
+                username = EXCLUDED.username,
+                first_name = EXCLUDED.first_name,
+                subscribed_at = EXCLUDED.subscribed_at,
+                active = EXCLUDED.active
+            """,
+            rows,
+            page_size=1000,
+        )
+    conn.commit()
+    return len(rows)
+
+
 def main() -> None:
     spreadsheet = connect_spreadsheet()
     conn = connect_db()
@@ -226,6 +311,9 @@ def main() -> None:
 
         current_count = sync_snapshots(spreadsheet, conn, "Current")
         print(f"snapshots (Current): обработано строк {current_count}")
+
+        subscribers_count = sync_subscribers(spreadsheet, conn)
+        print(f"telegram_subscribers: обработано строк {subscribers_count}")
     finally:
         conn.close()
 

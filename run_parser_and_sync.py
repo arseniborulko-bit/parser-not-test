@@ -19,6 +19,12 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
+from dotenv import load_dotenv
+
+import db_runs
+
+load_dotenv()
+
 PROJECT_DIR = Path(__file__).resolve().parent
 STATUS_FILE = PROJECT_DIR / "run_status.json"
 LOG_FILE = PROJECT_DIR / "last_run.log"
@@ -55,24 +61,24 @@ def main() -> None:
         error=None,
     )
 
+    parser_run_id = db_runs.log_start("parser")
     parser_code = _run_step("parser", [python, str(PROJECT_DIR / "parser_not_test.py")])
     if parser_code != 0:
-        _write_status(
-            state="error", step="parser",
-            finished_at=datetime.now().isoformat(),
-            error=f"parser_not_test.py завершился с кодом {parser_code} — см. last_run.log",
-        )
+        error = f"parser_not_test.py завершился с кодом {parser_code} — см. last_run.log"
+        _write_status(state="error", step="parser", finished_at=datetime.now().isoformat(), error=error)
+        db_runs.log_finish(parser_run_id, "error", error)
         return
+    db_runs.log_finish(parser_run_id, "done")
 
     _write_status(state="running", step="sync")
+    sync_run_id = db_runs.log_start("sync")
     sync_code = _run_step("sync", [python, str(PROJECT_DIR / "sync_sheets_to_db.py")])
     if sync_code != 0:
-        _write_status(
-            state="error", step="sync",
-            finished_at=datetime.now().isoformat(),
-            error=f"sync_sheets_to_db.py завершился с кодом {sync_code} — см. last_run.log",
-        )
+        error = f"sync_sheets_to_db.py завершился с кодом {sync_code} — см. last_run.log"
+        _write_status(state="error", step="sync", finished_at=datetime.now().isoformat(), error=error)
+        db_runs.log_finish(sync_run_id, "error", error)
         return
+    db_runs.log_finish(sync_run_id, "done")
 
     _write_status(state="done", step="sync", finished_at=datetime.now().isoformat(), error=None)
 

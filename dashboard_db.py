@@ -335,8 +335,10 @@ def main() -> None:
     with right:
         st.markdown('<div class="source-badge">🗄 Источник: база данных (parser_not_test), не Google Sheets</div>', unsafe_allow_html=True)
 
-    _render_run_control()
-    _render_schedule_panel()
+    st.info(
+        "Режим просмотра: дашборд показывает данные из PostgreSQL и не запускает "
+        "парсер, не изменяет Google Sheets и не меняет расписание."
+    )
 
     try:
         current = load_current()

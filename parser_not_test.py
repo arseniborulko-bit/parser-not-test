@@ -16,6 +16,8 @@ from config import (
     resolve_asins_from_environment,
 )
 from scraping import fetch_products_concurrent
+from db_pairs import asins_from_pairs, build_asin_domain_map_from_db, load_active_competitor_pairs_from_db
+from db_subscribers import get_active_subscriber_ids_from_db
 from sheets import _amazon_domain, build_asin_domain_map, connect_sheet, load_asins_from_config, refresh_current_matrix
 from subscribers import get_active_subscriber_ids
 from telegram import broadcast_telegram_message, broadcast_telegram_report
@@ -228,20 +230,35 @@ def run_parser(progress_callback: Optional[Callable[[float, str], None]] = None)
     asin_domains: Dict[str, str] = {}
     logs: List[str] = []
 
+    # PAIR_SOURCE=database — читать пары "наш ASIN / конкурент" из Postgres вместо
+    # листа Competitors (шаг перехода на базу; по умолчанию поведение не меняется).
+    # Запись результатов при этом всё равно идёт в Google Sheets, как раньше.
+    pair_source = os.environ.get("PAIR_SOURCE", "sheets").strip().lower()
+
     if key_file:
         try:
             sheet = connect_sheet(key_file)
-            asins = resolve_asins_from_environment(load_asins_from_config(sheet.spreadsheet, FALLBACK_ASINS))
-            logger.info(f"Google Sheets подключен. Получено ASIN для проверки: {len(asins)}")
-            # Карта ASIN -> домен amazon (com/ca/co.uk/...) по маркетплейсу из Competitors.
-            # Нужна, чтобы каждый ASIN запрашивался у ScrapingDog на СВОЁМ маркетплейсе,
-            # а не всегда на amazon.com (иначе ASIN с amazon.ca/co.uk будет ошибочно
-            # помечаться как "не найден", хотя реально существует на своём домене).
-            try:
-                asin_domains = build_asin_domain_map(sheet.spreadsheet)
-                logger.info(f"Построена карта ASIN->маркетплейс для {len(asin_domains)} ASIN.")
-            except Exception as exc:
-                logger.warning(f"Не удалось построить карту ASIN->маркетплейс, использую домен по умолчанию: {exc}")
+            if pair_source == "database":
+                pairs = load_active_competitor_pairs_from_db()
+                asins = resolve_asins_from_environment(asins_from_pairs(pairs))
+                logger.info(f"PAIR_SOURCE=database. Получено ASIN для проверки: {len(asins)}")
+                try:
+                    asin_domains = build_asin_domain_map_from_db()
+                    logger.info(f"Построена карта ASIN->маркетплейс (база) для {len(asin_domains)} ASIN.")
+                except Exception as exc:
+                    logger.warning(f"Не удалось построить карту ASIN->маркетплейс из базы, использую домен по умолчанию: {exc}")
+            else:
+                asins = resolve_asins_from_environment(load_asins_from_config(sheet.spreadsheet, FALLBACK_ASINS))
+                logger.info(f"Google Sheets подключен. Получено ASIN для проверки: {len(asins)}")
+                # Карта ASIN -> домен amazon (com/ca/co.uk/...) по маркетплейсу из Competitors.
+                # Нужна, чтобы каждый ASIN запрашивался у ScrapingDog на СВОЁМ маркетплейсе,
+                # а не всегда на amazon.com (иначе ASIN с amazon.ca/co.uk будет ошибочно
+                # помечаться как "не найден", хотя реально существует на своём домене).
+                try:
+                    asin_domains = build_asin_domain_map(sheet.spreadsheet)
+                    logger.info(f"Построена карта ASIN->маркетплейс для {len(asin_domains)} ASIN.")
+                except Exception as exc:
+                    logger.warning(f"Не удалось построить карту ASIN->маркетплейс, использую домен по умолчанию: {exc}")
         except Exception as exc:
             message = f"Warning: Google Sheets недоступен. Запись в таблицу отключена: {exc}"
             logs.append(message)
@@ -271,9 +288,13 @@ def run_parser(progress_callback: Optional[Callable[[float, str], None]] = None)
     # обратной совместимости с текущей настройкой, даже если через бота ещё
     # никто не подписывался.
     telegram_recipients: List[str] = []
-    if TELEGRAM_BOT_TOKEN and sheet:
+    subscriber_source = os.environ.get("SUBSCRIBER_SOURCE", "sheets").strip().lower()
+    if TELEGRAM_BOT_TOKEN and (sheet or subscriber_source == "database"):
         try:
-            telegram_recipients = get_active_subscriber_ids(sheet.spreadsheet)
+            if subscriber_source == "database":
+                telegram_recipients = get_active_subscriber_ids_from_db()
+            else:
+                telegram_recipients = get_active_subscriber_ids(sheet.spreadsheet)
         except Exception as exc:
             message = f"Не удалось получить список подписчиков Telegram: {exc}"
             logs.append(message)
