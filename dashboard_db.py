@@ -33,20 +33,12 @@ def _database_url() -> str:
     value = os.environ.get("DATABASE_URL")
     if value:
         return value
-    secrets_error = None
     try:
         value = st.secrets.get("DATABASE_URL")
-        visible_keys = list(st.secrets.keys())
-    except Exception as exc:
+    except Exception:
         value = None
-        visible_keys = None
-        secrets_error = exc
     if not value:
-        raise RuntimeError(
-            "DATABASE_URL не найден ни в переменных окружения, ни в st.secrets. "
-            f"[диагностика: видимые ключи в st.secrets = {visible_keys!r}, "
-            f"ошибка доступа к st.secrets = {secrets_error!r}]"
-        )
+        raise RuntimeError("DATABASE_URL не найден ни в переменных окружения, ни в st.secrets.")
     return value
 
 
