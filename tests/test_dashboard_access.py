@@ -45,6 +45,7 @@ def dash(monkeypatch):
     monkeypatch.setattr(psycopg2, "connect", no_real_database)
     for name in ("DATABASE_URL", "ADMIN_EMAILS"):
         monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("TEAM_PASSWORD", TEAM_PASSWORD)
 
     import streamlit as st
 
@@ -271,18 +272,93 @@ def test_schedule_tab_is_visible_to_everyone_but_has_no_controls(monkeypatch, da
     assert "Ошибка" not in runs_table(at).columns
 
 
-def test_without_team_password_secret_management_cannot_be_opened(dash):
+def record_saves(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        schedule_store, "save_schedule",
+        lambda connect, hour, minute, enabled, *, actor_role, actor: calls.append((enabled, actor_role, actor)),
+    )
+    return calls
+
+
+def save(at):
+    [b for b in at.button if b.label == "Сохранить"][0].click()
+    return at.run(timeout=30)
+
+
+def test_without_a_team_password_management_is_open_with_a_visible_warning(monkeypatch, dash):
+    monkeypatch.delenv("TEAM_PASSWORD")
+    calls = record_saves(monkeypatch)
     at = run()
     assert not at.exception
-    assert any("Управление выключено" in c.value for c in at.caption)
+    assert any("Управление открыто: любой, у кого есть ссылка" in c.value for c in at.caption)
     assert not [t for t in at.text_input if t.key == "unlock_password"]
+    assert len(time_inputs(at)) == 1
+    assert any("можно менять прямо здесь" in i.value for i in at.info)
+    assert not any("Чтобы менять время" in c.value for c in at.caption)
+    save(at)
+    assert calls == [(True, access.ROLE_EDITOR, "Команда")]
 
 
-def test_too_short_team_password_counts_as_not_configured(monkeypatch, dash):
+def test_open_management_writes_the_typed_name_to_the_journal(monkeypatch, dash):
+    monkeypatch.delenv("TEAM_PASSWORD")
+    calls = record_saves(monkeypatch)
+    at = run()
+    at.text_input(key="actor_name").input("  Аня  Иванова ")
+    at.run(timeout=30)
+    save(at)
+    assert calls == [(True, access.ROLE_EDITOR, "Аня Иванова")]
+
+
+@pytest.mark.parametrize("name", ["", "   ", "А", "x" * 41])
+def test_open_management_falls_back_to_the_team_label_for_an_unusable_name(monkeypatch, dash, name):
+    monkeypatch.delenv("TEAM_PASSWORD")
+    calls = record_saves(monkeypatch)
+    at = run()
+    at.text_input(key="actor_name").input(name)
+    at.run(timeout=30)
+    save(at)
+    assert calls == [(True, access.ROLE_EDITOR, "Команда")]
+
+
+def test_a_short_team_password_keeps_management_closed_instead_of_opening_it(monkeypatch, dash):
     monkeypatch.setenv("TEAM_PASSWORD", "short")
     at = run()
-    assert any("Управление выключено" in c.value for c in at.caption)
-    assert not [t for t in at.text_input if t.key == "unlock_password"]
+    assert any("короче 8 символов" in c.value for c in at.caption)
+    assert not time_inputs(at)
+    assert not [t for t in at.text_input if t.key in ("unlock_password", "actor_name")]
+    assert not any("Управление открыто: любой" in c.value for c in at.caption)
+
+
+def test_a_password_that_ended_up_inside_a_secrets_section_keeps_management_closed(monkeypatch, dash):
+    monkeypatch.delenv("TEAM_PASSWORD")
+    at = AppTest.from_string(SCRIPT)
+    at.secrets["gcp_service_account"] = {"TEAM_PASSWORD": "long-enough-password"}
+    at = at.run(timeout=30)
+    assert not at.exception
+    assert any("внутри секции" in c.value for c in at.caption)
+    assert not time_inputs(at)
+    assert not [t for t in at.text_input if t.key == "actor_name"]
+
+
+def test_the_state_of_the_team_password_secret(monkeypatch, dash):
+    import streamlit as st
+
+    monkeypatch.delenv("TEAM_PASSWORD")
+    monkeypatch.setattr(st, "secrets", {})
+    assert dash._team_password_state() == ("open", "")
+    monkeypatch.setattr(st, "secrets", {"TEAM_PASSWORD": "long-enough-password"})
+    assert dash._team_password_state() == ("password", "long-enough-password")
+    monkeypatch.setattr(st, "secrets", {"TEAM_PASSWORD": "short"})
+    assert dash._team_password_state()[0] == "locked"
+    monkeypatch.setattr(st, "secrets", {"TEAM_PASSWORD": "   "})
+    assert dash._team_password_state()[0] == "locked"
+    monkeypatch.setattr(st, "secrets", {"DATABASE_URL": "x", "gcp": {"TEAM_PASSWORD": "long-enough-password"}})
+    assert dash._team_password_state()[0] == "locked"
+    monkeypatch.setattr(st, "secrets", {"DATABASE_URL": "x", "gcp": {"client_email": "a@b"}})
+    assert dash._team_password_state() == ("open", "")
+    monkeypatch.setenv("TEAM_PASSWORD", "environment-password")
+    assert dash._team_password_state() == ("password", "environment-password")
 
 
 def test_wrong_password_keeps_management_closed(monkeypatch, dash):

@@ -35,7 +35,7 @@ _TOKEN_STRIP = "()[]<>\"'«»"
 
 MAX_BATCH = 200
 MAX_TOGGLE = 500
-DEFAULT_MAX_ACTIVE = 1500
+DEFAULT_MAX_ACTIVE = 1000
 _WHAT = "Операция с парами"
 
 

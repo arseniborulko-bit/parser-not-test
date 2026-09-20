@@ -373,10 +373,41 @@ def _login_limiter() -> access.AttemptLimiter:
     return access.AttemptLimiter()
 
 
+def _secret_is_nested(name: str) -> bool:
+    """Ключ секрета, оказавшийся внутри секции [..] (TOML вкладывает всё, что стоит ниже заголовка секции)."""
+    try:
+        for key in st.secrets:
+            section = st.secrets[key]
+            if hasattr(section, "keys") and name in section:
+                return True
+    except Exception:
+        pass
+    return False
+
+
+def _team_password_state() -> tuple[str, str]:
+    """('open', '') — секрета нет, управление открыто всем, у кого есть ссылка; ('password', пароль);
+    ('locked', причина) — секрет задан неправильно, управление закрыто (не открываем по ошибке)."""
+    password = _secret("TEAM_PASSWORD")
+    if password:
+        if len(password) < access.MIN_PASSWORD_LENGTH:
+            return "locked", f"Управление закрыто: пароль команды (секрет TEAM_PASSWORD) короче {access.MIN_PASSWORD_LENGTH} символов."
+        return "password", password
+    if _secret_is_nested("TEAM_PASSWORD"):
+        return "locked", "Управление закрыто: строка TEAM_PASSWORD стоит внутри секции секретов. Поднимите её выше первой секции в квадратных скобках."
+    return "open", ""
+
+
+def _management_open() -> bool:
+    return _team_password_state()[0] == "open"
+
+
 def _manager(email: str | None, google_role: str | None) -> tuple[str | None, str | None]:
-    """(кто, роль) для действий по управлению: роль из Google-входа или управление, открытое паролем команды."""
+    """(кто, роль) для действий по управлению: роль из Google-входа, открытое всем управление или вход по паролю команды."""
     if google_role is not None:
         return email, google_role
+    if _management_open():
+        return (access.clean_actor_name(st.session_state.get("actor_name")) or "Команда"), access.ROLE_EDITOR
     name = st.session_state.get("manager_name")
     return (name, access.ROLE_EDITOR) if name else (None, None)
 
@@ -392,6 +423,13 @@ def _show_flash(name: str) -> None:
 
 
 def _render_unlock_box() -> None:
+    state, detail = _team_password_state()
+    if state == "open":
+        st.caption("⚠️ Управление открыто: любой, у кого есть ссылка на сайт, может менять пары и время сбора.")
+        with st.expander("⚙️ Ваше имя для журнала", expanded=False):
+            st.text_input("Имя (необязательно)", key="actor_name", placeholder="Команда")
+            st.caption("Чтобы закрыть управление паролем, задайте секрет TEAM_PASSWORD в настройках Streamlit.")
+        return
     with st.expander("🔒 Управление", expanded=False):
         name = st.session_state.get("manager_name")
         if name:
@@ -400,10 +438,10 @@ def _render_unlock_box() -> None:
                 st.session_state.pop("manager_name", None)
                 st.rerun()
             return
-        password = _secret("TEAM_PASSWORD")
-        if len(password) < access.MIN_PASSWORD_LENGTH:
-            st.caption(f"Управление выключено: не задан пароль команды (секрет TEAM_PASSWORD, от {access.MIN_PASSWORD_LENGTH} символов).")
+        if state == "locked":
+            st.caption(detail)
             return
+        password = detail
         with st.form("unlock_form"):
             who = st.text_input("Ваше имя", key="unlock_name")
             typed = st.text_input("Пароль команды", type="password", key="unlock_password")
@@ -573,10 +611,16 @@ def main() -> None:
             _render_unlock_box()
     actor, manage_role = _manager(email, role)
 
-    st.info(
-        "Режим просмотра: дашборд показывает данные из PostgreSQL, не запускает парсер и не "
-        "меняет Google Sheets. Время автосбора и список пар меняются после входа в «🔒 Управление»."
-    )
+    if _management_open() or manage_role is not None:
+        st.info(
+            "Дашборд показывает данные из PostgreSQL. Время автосбора и список пар можно менять прямо здесь; "
+            "парсер и Google Sheets он не запускает и не меняет."
+        )
+    else:
+        st.info(
+            "Режим просмотра: дашборд показывает данные из PostgreSQL, не запускает парсер и не "
+            "меняет Google Sheets. Время автосбора и список пар меняются после входа в «🔒 Управление»."
+        )
 
     try:
         current = load_current()

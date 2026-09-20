@@ -218,6 +218,29 @@ def test_change_log_is_shown_in_kyiv_time(monkeypatch, pairs_env):
     assert list(log["Когда (Киев)"]) == ["21.09 09:30"] and list(log["Кто"]) == ["Борис"] and list(log["Что"]) == ["отключена"]
 
 
+def test_open_management_shows_the_pairs_manager_to_everyone_and_writes_as_the_team(monkeypatch, pairs_env):
+    monkeypatch.delenv("TEAM_PASSWORD")
+    at = run()
+    assert not at.exception
+    assert [t for t in at.text_input if t.key == "pairs_our"]
+    assert not any("Чтобы добавлять и убирать пары" in c.value for c in at.caption)
+    at.text_input(key="actor_name").input("Борис")
+    at.run(timeout=30)
+    at.text_input(key="pairs_our").input(OUR)
+    at.text_area(key="pairs_comps").input("B0NEWPAIR1 B0NEWPAIR2")
+    at.run(timeout=30)
+    [b for b in at.button if b.key == "pairs_add"][0].click()
+    at.run(timeout=30)
+    (applied, role, actor), = pairs_env["apply"]
+    assert role == access.ROLE_EDITOR and actor == "Борис"
+
+
+def test_the_pairs_manager_stays_hidden_while_a_password_is_required(pairs_env):
+    at = run()
+    assert not [t for t in at.text_input if t.key == "pairs_our"]
+    assert any("Чтобы добавлять и убирать пары" in c.value for c in at.caption)
+
+
 def test_management_is_available_to_a_google_editor_without_the_team_password(monkeypatch, dash, pairs_env):  # noqa: F811
     monkeypatch.delenv("TEAM_PASSWORD", raising=False)
     monkeypatch.setenv("ADMIN_EMAILS", "boss@x.com")
