@@ -1,15 +1,23 @@
 name: Сбор данных
 
-# Два способа запуска:
-# 1. workflow_dispatch — вручную из вкладки Actions, всегда собирает сразу.
-# 2. schedule (cron) — срабатывает каждые 30 минут, но реальный сбор
-#    (расход ScrapingDog) происходит только когда should_collect_now.py
-#    решит, что пора: время наступило (parser_not_test.schedule в базе) и
-#    сегодня ещё не собирали (parser_not_test.collection_runs в базе).
+# Два способа запуска, и оба проходят один и тот же обязательный gate:
+# 1. workflow_dispatch — вручную из вкладки Actions и внешним «будильником»
+#    (сервис по расписанию вызывает GitHub API каждые несколько минут).
+# 2. schedule (cron) — запасной вариант: GitHub запускает его нерегулярно,
+#    иногда раз в несколько часов, поэтому на точное время он не рассчитан.
+# Реальный сбор (расход ScrapingDog) происходит только когда should_collect_now.py
+# решит, что пора: время наступило (parser_not_test.schedule в базе), сегодня ещё
+# не собирали и нет незавершённой попытки (parser_not_test.collection_runs в базе).
 on:
   workflow_dispatch:
+    inputs:
+      force:
+        description: "Снять только дневной лимит попыток (остальные проверки обязательны)"
+        type: boolean
+        required: false
+        default: false
   schedule:
-    - cron: "*/30 * * * *"
+    - cron: "11,41 * * * *"
 
 # Если новый триггер придёт, пока предыдущий прогон ещё выполняется — GitHub
 # поставит его в очередь вместо параллельного запуска.
@@ -20,6 +28,8 @@ concurrency:
 jobs:
   collect:
     runs-on: ubuntu-latest
+    env:
+      FORCE_COLLECTION: ${{ github.event_name == 'workflow_dispatch' && inputs.force || false }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -28,26 +38,31 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+          cache: pip
 
-      - name: Установить зависимости
-        run: pip install -r requirements.txt
+      - name: Установить зависимости для проверки
+        run: pip install "psycopg2-binary>=2.9" "python-dotenv>=1.0"
 
-      - name: Проверить, пора ли собирать (только для cron)
+      - name: Проверить допуск и зарегистрировать попытку
         id: gate
-        if: github.event_name == 'schedule'
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
         run: python should_collect_now.py
 
+      - name: Установить зависимости для сбора
+        if: steps.gate.outputs.should_run == 'true'
+        run: pip install -r requirements.txt
+
       - name: Записать ключ Google service account
-        if: github.event_name != 'schedule' || steps.gate.outputs.should_run == 'true'
+        if: steps.gate.outputs.should_run == 'true'
         env:
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
         run: echo "$GOOGLE_SERVICE_ACCOUNT_JSON" > arseniy-sheets-key.json.json
 
       - name: Запустить парсер и синхронизацию с базой
-        if: github.event_name != 'schedule' || steps.gate.outputs.should_run == 'true'
+        if: steps.gate.outputs.should_run == 'true'
         env:
+          COLLECTION_RUN_ID: ${{ steps.gate.outputs.run_id }}
           SCRAPINGDOG_TOKEN: ${{ secrets.SCRAPINGDOG_TOKEN }}
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}

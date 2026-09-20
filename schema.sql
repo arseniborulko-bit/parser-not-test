@@ -56,8 +56,13 @@ CREATE TABLE IF NOT EXISTS parser_not_test.collection_runs (
     status TEXT NOT NULL,              -- 'running' | 'done' | 'error'
     started_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     finished_at TIMESTAMPTZ,
-    error TEXT
+    error TEXT,
+    owner_key TEXT,                    -- владелец разрешения (workflow + attempt / local UUID)
+    claimed_at TIMESTAMPTZ             -- однократное использование разрешения
 );
+
+-- Для существующей таблицы нужен отдельный migrations/001_collection_admission.sql.
+-- CREATE TABLE IF NOT EXISTS выше не добавляет колонки в существующие таблицы.
 
 CREATE INDEX IF NOT EXISTS collection_runs_started_at_idx
     ON parser_not_test.collection_runs (started_at DESC);
