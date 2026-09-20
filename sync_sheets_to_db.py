@@ -10,6 +10,10 @@ upsert (ON CONFLICT DO UPDATE), так что повторный запуск б
 Google Таблица остаётся источником истины и продолжает наполняться парсером
 как раньше — этот скрипт её не заменяет, а копирует данные в базу для
 будущего SaaS-дашборда.
+
+Исключение — пары: при PAIR_SOURCE=database их ведёт дашборд, база — источник
+истины, и лист Competitors в базу больше не копируется (иначе он затирал бы
+правки из дашборда).
 """
 
 from __future__ import annotations
@@ -303,8 +307,11 @@ def main() -> None:
     spreadsheet = connect_spreadsheet()
     conn = connect_db()
     try:
-        pairs_count = sync_competitor_pairs(spreadsheet, conn)
-        print(f"competitor_pairs: обработано строк {pairs_count}")
+        if os.environ.get("PAIR_SOURCE", "sheets").strip().lower() == "database":
+            print("competitor_pairs: пропущено — PAIR_SOURCE=database, пары ведутся в базе (дашборд), лист Competitors не читается")
+        else:
+            pairs_count = sync_competitor_pairs(spreadsheet, conn)
+            print(f"competitor_pairs: обработано строк {pairs_count}")
 
         history_count = sync_snapshots(spreadsheet, conn, "History")
         print(f"snapshots (History): обработано строк {history_count}")

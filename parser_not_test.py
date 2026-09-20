@@ -228,10 +228,12 @@ def run_parser(progress_callback: Optional[Callable[[float, str], None]] = None)
     sheet = None
     asins = resolve_asins_from_environment(FALLBACK_ASINS)
     asin_domains: Dict[str, str] = {}
+    layout_pairs: Optional[List[Dict[str, str]]] = None
     logs: List[str] = []
 
-    # PAIR_SOURCE=database — читать пары "наш ASIN / конкурент" из Postgres вместо
-    # листа Competitors (шаг перехода на базу; по умолчанию поведение не меняется).
+    # PAIR_SOURCE=database — пары "наш ASIN / конкурент" ведутся в Postgres (дашборд) и
+    # читаются оттуда и для списка ASIN, и для раскладки листа Current; лист Competitors
+    # не читается. По умолчанию (sheets) поведение прежнее.
     # Запись результатов при этом всё равно идёт в Google Sheets, как раньше.
     pair_source = os.environ.get("PAIR_SOURCE", "sheets").strip().lower()
 
@@ -240,6 +242,7 @@ def run_parser(progress_callback: Optional[Callable[[float, str], None]] = None)
             sheet = connect_sheet(key_file)
             if pair_source == "database":
                 pairs = load_active_competitor_pairs_from_db()
+                layout_pairs = pairs
                 asins = resolve_asins_from_environment(asins_from_pairs(pairs))
                 logger.info(f"PAIR_SOURCE=database. Получено ASIN для проверки: {len(asins)}")
                 try:
@@ -380,6 +383,7 @@ def run_parser(progress_callback: Optional[Callable[[float, str], None]] = None)
                     datetime.now().strftime("%Y-%m-%d"),
                     all_failed_asins,
                     history_asins=set(chunk),
+                    pairs=layout_pairs,
                 )
                 logger.info(
                     f"📊 Промежуточное сохранение в Google Sheets после пакета {chunk_idx}/{len(asin_chunks)} "
@@ -419,6 +423,7 @@ def run_parser(progress_callback: Optional[Callable[[float, str], None]] = None)
                 datetime.now().strftime("%Y-%m-%d"),
                 all_failed_asins,
                 history_asins=set(),
+                pairs=layout_pairs,
             )
             records_count = len(refresh_result.get("records", []))
             logger.info(f"📊 Google Sheets успешно обновлён. Всего записано/обновлено {records_count} строк.")

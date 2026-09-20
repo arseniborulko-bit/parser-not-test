@@ -426,10 +426,14 @@ def _refresh_current_sheet_from_matrix(
     snapshot_date: str,
     failed_asins: Optional[List[str]] = None,
     history_asins: Optional[Iterable[str]] = None,
+    pairs: Optional[List[Dict[str, str]]] = None,
 ) -> Dict:
     """
     Копирует структуру из блока Current листа "Матрица", наполняет её свежими данными
     и записывает результат в отдельный лист "Current". Также добавляет проверенные пары в "History".
+
+    pairs — пары из базы (PAIR_SOURCE=database). Если переданы (даже пустой список), лист Competitors
+    не читается: раскладка Current строится ровно из них.
 
     products_by_asin / failed_asins — НАКОПЛЕННЫЕ данные с начала всего прогона (используются
     для заполнения строк листа "Current" самыми свежими значениями по каждой паре).
@@ -471,9 +475,10 @@ def _refresh_current_sheet_from_matrix(
     # запуска скрипта, а не текущего.
     previous_bsr_by_pair = _get_previous_bsr_snapshot(matrix_sheet.spreadsheet)
 
-    # Определяем источник данных: лист 'Competitors' имеет приоритет
-    source_pairs = load_active_competitor_pairs(matrix_sheet.spreadsheet)
-    if source_pairs:
+    # Источник пар: переданные из базы > лист 'Competitors' > блок Current на листе 'Матрица'
+    pairs_from_database = pairs is not None
+    source_pairs = pairs if pairs_from_database else load_active_competitor_pairs(matrix_sheet.spreadsheet)
+    if source_pairs or pairs_from_database:
         source_rows = []
         for pair in source_pairs:
             values = {
@@ -831,17 +836,19 @@ def _get_previous_bsr_snapshot(
     return previous_bsr_by_pair
 
 
-def refresh_current_matrix(current_sheet, products_by_asin, snapshot_date, failed_asins=None, history_asins=None):
+def refresh_current_matrix(current_sheet, products_by_asin, snapshot_date, failed_asins=None, history_asins=None, pairs=None):
     """
     Переносит старый Current в History и полностью перезаписывает Current.
 
     history_asins — опциональный набор ASIN, ограничивающий, какие пары в этом вызове
     попадут в History (например, ASIN только текущего батча). См. docstring
     _refresh_current_sheet_from_matrix для подробностей.
+
+    pairs — пары из базы; см. _refresh_current_sheet_from_matrix.
     """
     if current_sheet.title == MATRIX_SHEET_NAME:
         return _refresh_current_sheet_from_matrix(
-            current_sheet, products_by_asin, snapshot_date, failed_asins, history_asins
+            current_sheet, products_by_asin, snapshot_date, failed_asins, history_asins, pairs
         )
 
     rows = current_sheet.get_all_values()

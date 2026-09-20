@@ -98,7 +98,7 @@ def _run_admitted(parser_run_id: int) -> int:
 
     parser_code = _run_step("parser", [python, str(PROJECT_DIR / "parser_not_test.py")])
     if parser_code != 0:
-        # Синк после сбоя не запускаем: у необработанных пар в Current уже стоит сегодняшняя дата при пустых значениях, и он записал бы пустоту поверх хороших данных.
+        # Синк после сбоя не запускаем: у пар, обработанных наполовину (только наш ASIN или только конкурент), в Current уже стоит сегодняшняя дата при пустых значениях второй стороны, и он записал бы неполную строку поверх хороших данных.
         error = f"parser_not_test.py завершился с кодом {parser_code} — см. last_run.log. Синхронизация с базой пропущена."
         db_runs.log_finish(parser_run_id, "error", error)
         _write_status(state="error", step="parser", finished_at=datetime.now().isoformat(), error=error)
