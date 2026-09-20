@@ -22,8 +22,11 @@ import streamlit as st
 from dotenv import load_dotenv
 
 import access
+import collect_ui
+import github_dispatch
 import pairs_store
 import pairs_ui
+import run_control
 import schedule_store
 
 load_dotenv()
@@ -368,6 +371,12 @@ def _now() -> datetime:
     return datetime.now(schedule_store.TZ)
 
 
+@st.cache_data(ttl=20, show_spinner=False)
+def _admission_preview_cached() -> str | None:
+    """Решение проверки допуска для подписи под кнопкой запуска (кэш на 20 с; при нажатии проверяется заново)."""
+    return run_control.admission_preview(_connect, _now())
+
+
 @st.cache_resource
 def _login_limiter() -> access.AttemptLimiter:
     return access.AttemptLimiter()
@@ -649,7 +658,7 @@ def main() -> None:
     st.markdown('<p class="section-title">Мониторинг конкурентов</p>', unsafe_allow_html=True)
     st.markdown('<p class="section-note">Фильтруйте сохранённые данные по ASIN, стране и периоду.</p>', unsafe_allow_html=True)
 
-    tab_titles = ["📋 Текущее состояние", "📅 История", "🥊 Пары конкурентов", "⏰ Автосбор"]
+    tab_titles = ["📋 Текущее состояние", "📅 История", "🥊 Пары конкурентов", "⚙ Сбор и управление"]
     if role == access.ROLE_ADMIN:
         tab_titles.append("👥 Пользователи")
     tabs = st.tabs(tab_titles)
@@ -669,7 +678,18 @@ def main() -> None:
         pairs_ui.render_pairs_tab(_connect, pairs, actor, manage_role, _max_active())
 
     with schedule_tab:
-        _render_schedule_tab(actor, manage_role)
+        can_edit = access.has_role(manage_role, access.ROLE_EDITOR)
+        left, right = st.columns(2)
+        with left:
+            collect_ui.render_run_block(
+                _connect, pairs, _admission_preview_cached,
+                _secret("GITHUB_DISPATCH_TOKEN"), _secret("GITHUB_REPO") or github_dispatch.DEFAULT_REPO, can_edit,
+            )
+            st.markdown('<p class="section-title">Автосбор</p>', unsafe_allow_html=True)
+            _render_schedule_tab(actor, manage_role)
+        with right:
+            collect_ui.render_spot_check(_secret("SCRAPINGDOG_TOKEN"), can_edit)
+        collect_ui.render_refresh_button()
 
     if role == access.ROLE_ADMIN:
         with tabs[4]:

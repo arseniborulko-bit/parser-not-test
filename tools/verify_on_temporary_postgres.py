@@ -294,6 +294,44 @@ def section_pairs() -> None:
           and q("SELECT to_regclass('parser_not_test.pair_changes') IS NOT NULL;")[0][0])
 
 
+def section_run_control() -> None:
+    print("\n== предпросмотр допуска (кнопка «Собрать сейчас») ==")
+    import run_control
+
+    counter = iter(range(9000, 9999))
+
+    def agree(label: str) -> None:
+        before = count()
+        preview = run_control.admission_preview(connect, datetime.now(schedule_store.TZ))
+        check(f"предпросмотр ничего не записывает: {label}", count() == before)
+        decision = db_runs.admit_parser_run(gh(next(counter)))
+        check(f"предпросмотр совпадает с настоящей проверкой: {label}", (preview is None) == decision.should_run,
+              f"предпросмотр={preview!r}; проверка={decision.reason!r}")
+
+    def hours_ago(hours: int):
+        return q(f"SELECT now() - interval '{hours} hours';")[0][0]
+
+    reset()
+    agree("свободно (расписание 00:00)")
+    agree("после этого идёт сбор (running)")
+    reset()
+    insert_run("parser", "done", hours_ago(0), hours_ago(0), owner_key="github:owner/repo:1:1")
+    agree("сегодня уже был успешный сбор")
+    reset()
+    for _ in range(3):
+        insert_run("parser", "error", hours_ago(0), hours_ago(0), owner_key="github:owner/repo:1:1")
+    agree("исчерпан лимит попыток")
+    reset(schedule=None)
+    agree("расписания нет (автосбор выключен)")
+    kyiv_now = q("SELECT now() AT TIME ZONE 'Europe/Kyiv';")[0][0]
+    if (kyiv_now.hour, kyiv_now.minute) < (23, 58):
+        reset(schedule=(23, 59))
+        agree("время сбора не наступило")
+    reset()
+    insert_run("sync", "running", hours_ago(72), owner_key="github:owner/repo:1:1")
+    agree("старая зависшая запись")
+
+
 def section_admission() -> None:
     print("\n== защита от повторных платных запусков ==")
     start = q("SELECT (((now() AT TIME ZONE 'Europe/Kyiv')::date)::timestamp AT TIME ZONE 'Europe/Kyiv');")[0][0]
@@ -440,6 +478,7 @@ def section_admission() -> None:
 try:
     section_schedule_and_users()
     section_pairs()
+    section_run_control()
     section_admission()
 finally:
     failed = [name for name, ok in checks if not ok]

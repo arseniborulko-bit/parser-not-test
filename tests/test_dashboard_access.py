@@ -12,7 +12,7 @@ import access
 import schedule_store
 
 SCRIPT = "import dashboard_db\ndashboard_db.main()"
-PUBLIC_TABS = ["📋 Текущее состояние", "📅 История", "🥊 Пары конкурентов", "⏰ Автосбор"]
+PUBLIC_TABS = ["📋 Текущее состояние", "📅 История", "🥊 Пары конкурентов", "⚙ Сбор и управление"]
 ADMIN_TABS = PUBLIC_TABS + ["👥 Пользователи"]
 TEAM_PASSWORD = "correct-horse-battery"
 NOW = datetime(2026, 9, 21, 8, 0, tzinfo=schedule_store.TZ)
@@ -46,6 +46,15 @@ def dash(monkeypatch):
     for name in ("DATABASE_URL", "ADMIN_EMAILS"):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("TEAM_PASSWORD", TEAM_PASSWORD)
+    for name in ("GITHUB_DISPATCH_TOKEN", "GITHUB_REPO", "SCRAPINGDOG_TOKEN"):
+        monkeypatch.delenv(name, raising=False)
+
+    import spot_check
+
+    def no_real_scraping():
+        raise AssertionError("тест обратился к настоящему ScrapingDog")
+
+    monkeypatch.setattr(spot_check, "_load_scraping", no_real_scraping)
 
     import streamlit as st
 
@@ -55,6 +64,7 @@ def dash(monkeypatch):
     monkeypatch.setattr(module, "load_snapshots", lambda: pd.DataFrame([SNAPSHOT_ROW]))
     monkeypatch.setattr(module, "load_competitor_pairs", lambda: pd.DataFrame([PAIR_ROW]))
     monkeypatch.setattr(module, "_now", lambda: NOW)
+    monkeypatch.setattr(module, "_admission_preview_cached", lambda: None)
     monkeypatch.setattr(schedule_store, "load_overview", lambda connect, now: overview())
     yield module
     st.cache_resource.clear()
@@ -264,7 +274,7 @@ def test_schedule_tab_is_visible_to_everyone_but_has_no_controls(monkeypatch, da
     monkeypatch.setenv("TEAM_PASSWORD", TEAM_PASSWORD)
     at = run()
     assert not at.exception
-    assert "⏰ Автосбор" in [t.label for t in at.tabs]
+    assert "⚙ Сбор и управление" in [t.label for t in at.tabs]
     assert any("Автосбор включён: каждый день после 09:00 (Киев)" in s.value for s in at.success)
     assert any("Следующий запуск: 21.09 в 09:00" in c.value for c in at.caption)
     assert any("Чтобы менять время" in c.value for c in at.caption)
