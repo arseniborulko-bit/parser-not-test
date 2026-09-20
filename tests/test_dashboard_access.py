@@ -1,7 +1,7 @@
 """Дашборд целиком (Streamlit AppTest) с подменёнными данными и правами: без Google, без настоящей базы."""
 
 import importlib
-from datetime import date, datetime
+from datetime import date, datetime, time, timedelta
 
 import pandas as pd
 import psycopg2
@@ -9,10 +9,13 @@ import pytest
 from streamlit.testing.v1 import AppTest
 
 import access
+import schedule_store
 
 SCRIPT = "import dashboard_db\ndashboard_db.main()"
-PUBLIC_TABS = ["📋 Текущее состояние", "📅 История", "🥊 Пары конкурентов"]
+PUBLIC_TABS = ["📋 Текущее состояние", "📅 История", "🥊 Пары конкурентов", "⏰ Автосбор"]
 ADMIN_TABS = PUBLIC_TABS + ["👥 Пользователи"]
+TEAM_PASSWORD = "correct-horse-battery"
+NOW = datetime(2026, 9, 21, 8, 0, tzinfo=schedule_store.TZ)
 
 SNAPSHOT_ROW = {
     "snapshot_date": date(2026, 9, 18), "marketplace": "US", "currency": "USD", "our_asin": "B000000001",
@@ -43,11 +46,24 @@ def dash(monkeypatch):
     for name in ("DATABASE_URL", "ADMIN_EMAILS"):
         monkeypatch.delenv(name, raising=False)
 
+    import streamlit as st
+
+    st.cache_resource.clear()
     module = importlib.import_module("dashboard_db")
     monkeypatch.setattr(module, "load_current", lambda: pd.DataFrame([SNAPSHOT_ROW]))
     monkeypatch.setattr(module, "load_snapshots", lambda: pd.DataFrame([SNAPSHOT_ROW]))
     monkeypatch.setattr(module, "load_competitor_pairs", lambda: pd.DataFrame([PAIR_ROW]))
-    return module
+    monkeypatch.setattr(module, "_now", lambda: NOW)
+    monkeypatch.setattr(schedule_store, "load_overview", lambda connect, now: overview())
+    yield module
+    st.cache_resource.clear()
+
+
+def overview(schedule=schedule_store.Schedule(9, 0), collected_today=False, runs=None):
+    if runs is None:
+        started = NOW - timedelta(days=1, hours=-1)
+        runs = [{"started_at": started, "finished_at": started + timedelta(minutes=12), "status": "done", "error": None}]
+    return schedule_store.Overview(schedule, collected_today, runs)
 
 
 def sign_in(monkeypatch, dash, user):
@@ -226,3 +242,177 @@ def test_form_shows_validation_error_instead_of_crashing(monkeypatch, dash):
     at.run(timeout=30)
     assert not at.exception
     assert any("Некорректный email" in e.value for e in at.error)
+
+
+def unlock(at, name="Аня", password=TEAM_PASSWORD):
+    at.text_input(key="unlock_name").input(name)
+    at.text_input(key="unlock_password").input(password)
+    [b for b in at.button if b.label == "Открыть управление"][0].click()
+    return at.run(timeout=30)
+
+
+def time_inputs(at):
+    return [t for t in at.time_input if t.key == "schedule_time"]
+
+
+def runs_table(at):
+    return [d.value for d in at.dataframe if "Начат (Киев)" in d.value.columns][0]
+
+
+def test_schedule_tab_is_visible_to_everyone_but_has_no_controls(monkeypatch, dash):
+    monkeypatch.setenv("TEAM_PASSWORD", TEAM_PASSWORD)
+    at = run()
+    assert not at.exception
+    assert "⏰ Автосбор" in [t.label for t in at.tabs]
+    assert any("Автосбор включён: каждый день после 09:00 (Киев)" in s.value for s in at.success)
+    assert any("Следующий запуск: 21.09 в 09:00" in c.value for c in at.caption)
+    assert any("Чтобы менять время" in c.value for c in at.caption)
+    assert not time_inputs(at)
+    assert "Ошибка" not in runs_table(at).columns
+
+
+def test_without_team_password_secret_management_cannot_be_opened(dash):
+    at = run()
+    assert not at.exception
+    assert any("Управление выключено" in c.value for c in at.caption)
+    assert not [t for t in at.text_input if t.key == "unlock_password"]
+
+
+def test_too_short_team_password_counts_as_not_configured(monkeypatch, dash):
+    monkeypatch.setenv("TEAM_PASSWORD", "short")
+    at = run()
+    assert any("Управление выключено" in c.value for c in at.caption)
+    assert not [t for t in at.text_input if t.key == "unlock_password"]
+
+
+def test_wrong_password_keeps_management_closed(monkeypatch, dash):
+    monkeypatch.setenv("TEAM_PASSWORD", TEAM_PASSWORD)
+    at = unlock(run(), password="wrong-password")
+    assert not at.exception
+    assert any("Неверный пароль" in e.value for e in at.error)
+    assert not time_inputs(at)
+
+
+def test_correct_password_opens_management(monkeypatch, dash):
+    monkeypatch.setenv("TEAM_PASSWORD", TEAM_PASSWORD)
+    at = unlock(run())
+    assert not at.exception
+    assert any("Управление открыто: Аня" in c.value for c in at.caption)
+    assert len(time_inputs(at)) == 1
+    assert "Ошибка" in runs_table(at).columns
+
+
+def test_name_is_required_and_a_missing_name_is_not_counted_as_a_password_failure(monkeypatch, dash):
+    monkeypatch.setenv("TEAM_PASSWORD", TEAM_PASSWORD)
+    at = run()
+    for _ in range(8):
+        at = unlock(at, name=" ", password="whatever")
+        assert any("Укажите имя" in e.value for e in at.error)
+    at = unlock(at)
+    assert any("Управление открыто: Аня" in c.value for c in at.caption)
+
+
+def test_five_wrong_passwords_lock_out_even_the_correct_one(monkeypatch, dash):
+    monkeypatch.setenv("TEAM_PASSWORD", TEAM_PASSWORD)
+    at = run()
+    for _ in range(5):
+        at = unlock(at, password="wrong-password")
+    at = unlock(at)
+    assert not at.exception
+    assert any("Слишком много неудачных попыток" in e.value for e in at.error)
+    assert not time_inputs(at)
+
+
+def test_saving_time_passes_editor_role_and_the_name_to_the_store(monkeypatch, dash):
+    monkeypatch.setenv("TEAM_PASSWORD", TEAM_PASSWORD)
+    calls = []
+    monkeypatch.setattr(
+        schedule_store, "save_schedule",
+        lambda connect, hour, minute, enabled, *, actor_role, actor: calls.append((hour, minute, enabled, actor_role, actor)),
+    )
+    at = unlock(run())
+    at.time_input(key="schedule_time").set_value(time(10, 30))
+    [b for b in at.button if b.label == "Сохранить"][0].click()
+    at.run(timeout=30)
+    assert not at.exception
+    assert calls == [(10, 30, True, access.ROLE_EDITOR, "Аня")]
+    assert any("Сохранено: автосбор включён, 10:30 (Киев)" in s.value for s in at.success)
+
+
+def test_unchecking_the_switch_saves_autocollection_off(monkeypatch, dash):
+    monkeypatch.setenv("TEAM_PASSWORD", TEAM_PASSWORD)
+    calls = []
+    monkeypatch.setattr(
+        schedule_store, "save_schedule",
+        lambda connect, hour, minute, enabled, *, actor_role, actor: calls.append(enabled),
+    )
+    at = unlock(run())
+    at.checkbox(key="schedule_enabled").uncheck()
+    [b for b in at.button if b.label == "Сохранить"][0].click()
+    at.run(timeout=30)
+    assert calls == [False]
+    assert any("автосбор выключен" in s.value for s in at.success)
+
+
+def test_store_failure_on_save_is_shown_instead_of_crashing(monkeypatch, dash):
+    monkeypatch.setenv("TEAM_PASSWORD", TEAM_PASSWORD)
+
+    def broken(*args, **kwargs):
+        raise schedule_store.ScheduleStoreError("Операция с расписанием не подтверждена (OperationalError).")
+
+    monkeypatch.setattr(schedule_store, "save_schedule", broken)
+    at = unlock(run())
+    [b for b in at.button if b.label == "Сохранить"][0].click()
+    at.run(timeout=30)
+    assert not at.exception
+    assert any("не подтверждена" in e.value for e in at.error)
+
+
+def test_disabled_schedule_is_shown_as_off_with_unchecked_switch(monkeypatch, dash):
+    monkeypatch.setenv("TEAM_PASSWORD", TEAM_PASSWORD)
+    monkeypatch.setattr(schedule_store, "load_overview", lambda connect, now: overview(schedule=None))
+    at = unlock(run())
+    assert any("Автосбор выключен" in i.value for i in at.info)
+    assert at.checkbox(key="schedule_enabled").value is False
+    assert at.time_input(key="schedule_time").value == time(9, 0)
+
+
+def test_running_collection_is_announced(monkeypatch, dash):
+    running = [{"started_at": NOW - timedelta(minutes=3), "finished_at": None, "status": "running", "error": None}]
+    monkeypatch.setattr(schedule_store, "load_overview", lambda connect, now: overview(runs=running))
+    at = run()
+    assert not at.exception
+    assert any("Сейчас идёт сбор данных" in w.value for w in at.warning)
+
+
+def test_todays_time_already_passed_without_collection_is_explained(monkeypatch, dash):
+    monkeypatch.setattr(dash, "_now", lambda: NOW.replace(hour=11))
+    at = run()
+    assert any("ближайшей проверке" in c.value for c in at.caption)
+
+
+def test_collected_today_moves_next_run_to_tomorrow(monkeypatch, dash):
+    monkeypatch.setattr(schedule_store, "load_overview", lambda connect, now: overview(collected_today=True))
+    at = run()
+    assert any("Следующий запуск: 22.09 в 09:00" in c.value for c in at.caption)
+
+
+def test_schedule_store_outage_is_reported_and_the_rest_of_the_page_works(monkeypatch, dash):
+    def down(connect, now):
+        raise schedule_store.ScheduleStoreError("Операция с расписанием не подтверждена (OperationalError).")
+
+    monkeypatch.setattr(schedule_store, "load_overview", down)
+    at = run()
+    assert not at.exception
+    assert any("Операция с расписанием не подтверждена" in e.value for e in at.error)
+    assert [t.label for t in at.tabs] == PUBLIC_TABS
+
+
+def test_google_admin_manages_schedule_without_the_team_password(monkeypatch, dash):
+    monkeypatch.setenv("ADMIN_EMAILS", "boss@x.com")
+    monkeypatch.setattr(access, "list_users", lambda connect: [])
+    sign_in(monkeypatch, dash, logged_in("boss@x.com"))
+    at = run()
+    assert not at.exception
+    assert len(time_inputs(at)) == 1
+    assert not [t for t in at.text_input if t.key == "unlock_password"]

@@ -22,7 +22,7 @@ import streamlit as st
 from dotenv import load_dotenv
 
 import access
-import scheduler
+import schedule_store
 
 load_dotenv()
 
@@ -346,55 +346,133 @@ def _render_run_control() -> None:
             st.caption("Ручных запусков с дашборда ещё не было. Парсер также запускается автоматически по расписанию.")
 
 
-def _load_schedule() -> tuple[int, int] | None:
-    conn = psycopg2.connect(_database_url())
-    try:
-        with conn.cursor() as cur:
-            cur.execute("SELECT hour, minute FROM parser_not_test.schedule WHERE id = 1;")
-            row = cur.fetchone()
-            return (row[0], row[1]) if row else None
-    finally:
-        conn.close()
+def _now() -> datetime:
+    return datetime.now(schedule_store.TZ)
 
 
-def _save_schedule(hour: int, minute: int) -> None:
-    conn = psycopg2.connect(_database_url())
-    try:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                INSERT INTO parser_not_test.schedule (id, hour, minute, updated_at)
-                VALUES (1, %s, %s, now())
-                ON CONFLICT (id) DO UPDATE SET hour = EXCLUDED.hour, minute = EXCLUDED.minute, updated_at = now();
-                """,
-                (hour, minute),
-            )
-        conn.commit()
-    finally:
-        conn.close()
+@st.cache_resource
+def _login_limiter() -> access.AttemptLimiter:
+    return access.AttemptLimiter()
 
 
-def _render_schedule_panel() -> None:
-    with st.expander("⏰ Расписание автозапуска парсера", expanded=False):
-        saved = _load_schedule()
-        default_time = datetime.strptime(f"{saved[0]:02d}:{saved[1]:02d}", "%H:%M").time() if saved else datetime.strptime("09:00", "%H:%M").time()
+def _manager(email: str | None, google_role: str | None) -> tuple[str | None, str | None]:
+    """(кто, роль) для действий по управлению: роль из Google-входа или управление, открытое паролем команды."""
+    if google_role is not None:
+        return email, google_role
+    name = st.session_state.get("manager_name")
+    return (name, access.ROLE_EDITOR) if name else (None, None)
 
-        task_time = scheduler.get_task_current_time() if scheduler.task_exists() else ""
-        if task_time:
-            st.caption(f"Сейчас в Планировщике Windows: ежедневно в {task_time}.")
+
+def _set_flash(name: str, kind: str, message: str) -> None:
+    st.session_state[name] = (kind, message)
+
+
+def _show_flash(name: str) -> None:
+    flash = st.session_state.pop(name, None)
+    if flash:
+        getattr(st, flash[0])(flash[1])
+
+
+def _render_unlock_box() -> None:
+    with st.expander("🔒 Управление", expanded=False):
+        name = st.session_state.get("manager_name")
+        if name:
+            st.caption(f"Управление открыто: {name}")
+            if st.button("Закрыть управление", key="lock_btn"):
+                st.session_state.pop("manager_name", None)
+                st.rerun()
+            return
+        password = _secret("TEAM_PASSWORD")
+        if len(password) < access.MIN_PASSWORD_LENGTH:
+            st.caption(f"Управление выключено: не задан пароль команды (секрет TEAM_PASSWORD, от {access.MIN_PASSWORD_LENGTH} символов).")
+            return
+        with st.form("unlock_form"):
+            who = st.text_input("Ваше имя", key="unlock_name")
+            typed = st.text_input("Пароль команды", type="password", key="unlock_password")
+            submitted = st.form_submit_button("Открыть управление")
+        if not submitted:
+            return
+        limiter = _login_limiter()
+        if not limiter.allowed():
+            st.error(f"Слишком много неудачных попыток. Повторите через {limiter.retry_after() // 60 + 1} мин.")
+            return
+        clean = access.clean_actor_name(who)
+        if clean is None:
+            st.error("Укажите имя (2–40 символов): оно попадёт в журнал изменений.")
+        elif access.password_matches(typed, password):
+            limiter.record_success()
+            st.session_state["manager_name"] = clean
+            st.rerun()
         else:
-            st.caption("Задача в Планировщике Windows ещё не создана — появится после первого сохранения.")
+            limiter.record_failure()
+            st.error("Неверный пароль.")
 
-        chosen = st.time_input("Время ежедневного запуска (по системным часам этого ПК)", value=default_time, step=60)
-        if st.button("Сохранить расписание"):
-            _save_schedule(chosen.hour, chosen.minute)
-            python_exe, script_path = scheduler.default_python_and_script()
-            ok, msg = scheduler.sync_task(chosen.hour, chosen.minute, python_exe, script_path)
-            st.cache_data.clear()
-            if ok:
-                st.success(f"Сохранено. {msg}")
-            else:
-                st.error(f"Время сохранено в базе, но Планировщик обновить не удалось: {msg}")
+
+_RUN_STATUS_LABELS = {"done": "успешно", "running": "идёт", "error": "ошибка"}
+
+
+def _runs_table(runs: list[dict], show_errors: bool) -> pd.DataFrame:
+    rows = []
+    for run in runs:
+        started = run["started_at"].astimezone(schedule_store.TZ)
+        finished = run["finished_at"]
+        row = {
+            "Начат (Киев)": started.strftime("%d.%m %H:%M"),
+            "Статус": _RUN_STATUS_LABELS.get(run["status"], run["status"]),
+            "Длительность, мин": round((finished - run["started_at"]).total_seconds() / 60) if finished else None,
+        }
+        if show_errors:
+            row["Ошибка"] = (run["error"] or "")[:120]
+        rows.append(row)
+    return pd.DataFrame(rows)
+
+
+def _render_schedule_tab(actor: str | None, role: str | None) -> None:
+    _show_flash("schedule_flash")
+    now = _now()
+    try:
+        overview = schedule_store.load_overview(_connect, now)
+    except schedule_store.ScheduleStoreError as exc:
+        st.error(str(exc))
+        return
+
+    schedule = overview.schedule
+    if schedule is None:
+        st.info("Автосбор выключен: по расписанию данные не собираются.")
+    else:
+        st.success(f"Автосбор включён: каждый день после {schedule.hour:02d}:{schedule.minute:02d} (Киев).")
+        upcoming = schedule_store.next_run(now, schedule, overview.collected_today)
+        if upcoming.due_now:
+            st.caption("Время уже наступило, а успешного сбора сегодня нет — он начнётся при ближайшей проверке. GitHub запускает проверку нерегулярно (бывает раз в несколько часов), поэтому старт может сильно задержаться.")
+        else:
+            st.caption(f"Следующий запуск: {upcoming.when:%d.%m в %H:%M} (Киев) или позже: GitHub запускает проверку нерегулярно, задержка бывает до нескольких часов.")
+    if any(run["status"] == "running" for run in overview.runs):
+        st.warning("Сейчас идёт сбор данных.")
+
+    can_edit = access.has_role(role, access.ROLE_EDITOR)
+    if overview.runs:
+        st.markdown('<p class="section-note">Последние запуски</p>', unsafe_allow_html=True)
+        st.dataframe(_runs_table(overview.runs, show_errors=can_edit), use_container_width=True, hide_index=True)
+
+    if not can_edit:
+        st.caption("Чтобы менять время, откройте «🔒 Управление» вверху страницы.")
+        return
+
+    hour, minute = schedule_store.to_slot(schedule.hour, schedule.minute) if schedule else (9, 0)
+    with st.form("schedule_form"):
+        chosen = st.time_input("Время сбора (по Киеву)", value=datetime(2000, 1, 1, hour, minute).time(), step=schedule_store.SLOT_MINUTES * 60, key="schedule_time")
+        enabled = st.checkbox("Автосбор включён", value=schedule is not None, key="schedule_enabled")
+        submitted = st.form_submit_button("Сохранить")
+    st.caption("Сбор идёт раз в день: если сегодня он уже прошёл успешно, новое время сработает завтра.")
+    if submitted:
+        try:
+            schedule_store.save_schedule(_connect, chosen.hour, chosen.minute, enabled, actor_role=role, actor=actor or "?")
+        except (ValueError, access.AccessDenied, schedule_store.ScheduleStoreError) as exc:
+            st.error(str(exc))
+        else:
+            text = f"Сохранено: автосбор включён, {chosen:%H:%M} (Киев)." if enabled else "Сохранено: автосбор выключен."
+            _set_flash("schedule_flash", "success", text)
+            st.rerun()
 
 
 def _render_auth_bar(user: dict, email: str | None, role: str | None) -> None:
@@ -412,14 +490,8 @@ def _render_auth_bar(user: dict, email: str | None, role: str | None) -> None:
     st.button("Выйти", on_click=st.logout, key="logout_btn")
 
 
-def _flash(kind: str, message: str) -> None:
-    st.session_state["users_flash"] = (kind, message)
-
-
 def _render_users_panel(actor_email: str, actor_role: str) -> None:
-    flash = st.session_state.pop("users_flash", None)
-    if flash:
-        getattr(st, flash[0])(flash[1])
+    _show_flash("users_flash")
     st.markdown(
         '<p class="section-note">Просмотр открыт всем. Управлять могут только люди из этого списка '
         "(вход через Google) и админы из секрета ADMIN_EMAILS.</p>",
@@ -452,7 +524,7 @@ def _render_users_panel(actor_email: str, actor_role: str) -> None:
             except (ValueError, access.AccessDenied, access.AccessStoreError) as exc:
                 st.error(str(exc))
             else:
-                _flash("success", f"Сохранено: {saved}")
+                _set_flash("users_flash", "success", f"Сохранено: {saved}")
                 st.rerun()
 
     if users:
@@ -466,7 +538,7 @@ def _render_users_panel(actor_email: str, actor_role: str) -> None:
                 except (ValueError, access.AccessDenied, access.AccessStoreError) as exc:
                     st.error(str(exc))
                 else:
-                    _flash("success", f"{target}: {'включён' if enable else 'отключён'}")
+                    _set_flash("users_flash", "success", f"{target}: {'включён' if enable else 'отключён'}")
                     st.rerun()
 
 
@@ -479,10 +551,13 @@ def main() -> None:
     with right:
         st.markdown('<div class="source-badge">🗄 Источник: база данных (parser_not_test), не Google Sheets</div>', unsafe_allow_html=True)
         _render_auth_bar(user, email, role)
+        if role is None:
+            _render_unlock_box()
+    actor, manage_role = _manager(email, role)
 
     st.info(
-        "Режим просмотра: дашборд показывает данные из PostgreSQL и не запускает "
-        "парсер, не изменяет Google Sheets и не меняет расписание."
+        "Режим просмотра: дашборд показывает данные из PostgreSQL, не запускает парсер и не "
+        "меняет Google Sheets. Время автосбора меняется на вкладке «Автосбор» после входа в «🔒 Управление»."
     )
 
     try:
@@ -511,11 +586,11 @@ def main() -> None:
     st.markdown('<p class="section-title">Мониторинг конкурентов</p>', unsafe_allow_html=True)
     st.markdown('<p class="section-note">Фильтруйте сохранённые данные по ASIN, стране и периоду.</p>', unsafe_allow_html=True)
 
-    tab_titles = ["📋 Текущее состояние", "📅 История", "🥊 Пары конкурентов"]
+    tab_titles = ["📋 Текущее состояние", "📅 История", "🥊 Пары конкурентов", "⏰ Автосбор"]
     if role == access.ROLE_ADMIN:
         tab_titles.append("👥 Пользователи")
     tabs = st.tabs(tab_titles)
-    current_tab, history_tab, pairs_tab = tabs[:3]
+    current_tab, history_tab, pairs_tab, schedule_tab = tabs[:4]
 
     with current_tab:
         shown = _filter_data(current, key_prefix="current")
@@ -530,8 +605,11 @@ def main() -> None:
     with pairs_tab:
         st.dataframe(pairs, use_container_width=True, hide_index=True, height=450)
 
+    with schedule_tab:
+        _render_schedule_tab(actor, manage_role)
+
     if role == access.ROLE_ADMIN:
-        with tabs[3]:
+        with tabs[4]:
             _render_users_panel(email, role)
 
     st.download_button(

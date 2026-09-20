@@ -256,3 +256,105 @@ def test_set_user_active_unknown_user_is_an_error():
     db = FakeDb(rowcount=0)
     with pytest.raises(ValueError, match="не найден"):
         access.set_user_active(db.connect, "ghost@x.com", True, actor_role=access.ROLE_ADMIN, actor_email="boss@x.com")
+
+
+def test_password_matches_only_the_exact_password():
+    assert access.password_matches("correct-horse-battery", "correct-horse-battery")
+    assert access.password_matches("пароль-команды-2026", "пароль-команды-2026")
+    assert not access.password_matches("correct-horse-batter", "correct-horse-battery")
+    assert not access.password_matches("Correct-Horse-Battery", "correct-horse-battery")
+    assert not access.password_matches("", "correct-horse-battery")
+
+
+@pytest.mark.parametrize("expected", ["", "short", "1234567", None, 12345678])
+def test_missing_or_short_team_password_never_matches_anything(expected):
+    assert not access.password_matches(expected, expected)
+    assert not access.password_matches("", expected)
+
+
+@pytest.mark.parametrize("candidate", [None, 123, b"correct-horse-battery", ["correct-horse-battery"]])
+def test_password_candidate_must_be_text(candidate):
+    assert not access.password_matches(candidate, "correct-horse-battery")
+
+
+@pytest.mark.parametrize("raw, expected", [
+    ("  Аня  ", "Аня"),
+    ("Аня   Иванова", "Аня Иванова"),
+    ("Аня\nИ", "Аня И"),
+    ("Al", "Al"),
+    ("А", None),
+    ("", None),
+    ("   ", None),
+    ("x" * 40, "x" * 40),
+    ("x" * 41, None),
+    ("Аня\x00", None),
+    (None, None),
+    (7, None),
+])
+def test_clean_actor_name(raw, expected):
+    assert access.clean_actor_name(raw) == expected
+
+
+class FakeClock:
+    def __init__(self):
+        self.now = 1000.0
+
+    def __call__(self):
+        return self.now
+
+
+def test_limiter_allows_four_failures_and_locks_on_the_fifth():
+    clock = FakeClock()
+    limiter = access.AttemptLimiter(max_failures=5, window=600, clock=clock)
+    for _ in range(4):
+        assert limiter.allowed()
+        limiter.record_failure()
+    assert limiter.allowed()
+    limiter.record_failure()
+    assert not limiter.allowed()
+    assert limiter.retry_after() > 0
+
+
+def test_limiter_unlocks_when_failures_leave_the_window():
+    clock = FakeClock()
+    limiter = access.AttemptLimiter(max_failures=5, window=600, clock=clock)
+    for _ in range(5):
+        limiter.record_failure()
+    clock.now += 599
+    assert not limiter.allowed()
+    clock.now += 2
+    assert limiter.allowed()
+    assert limiter.retry_after() == 0
+
+
+def test_limiter_is_a_sliding_window_not_a_reset():
+    clock = FakeClock()
+    limiter = access.AttemptLimiter(max_failures=5, window=600, clock=clock)
+    for _ in range(5):
+        limiter.record_failure()
+        clock.now += 100
+    assert not limiter.allowed()
+    clock.now = 1000 + 601
+    assert limiter.allowed()
+    limiter.record_failure()
+    assert not limiter.allowed()
+
+
+def test_limiter_retry_after_counts_down():
+    clock = FakeClock()
+    limiter = access.AttemptLimiter(max_failures=5, window=600, clock=clock)
+    for _ in range(5):
+        limiter.record_failure()
+    assert 599 <= limiter.retry_after() <= 601
+    clock.now += 300
+    assert 299 <= limiter.retry_after() <= 301
+
+
+def test_successful_login_clears_earlier_failures():
+    limiter = access.AttemptLimiter(max_failures=5, window=600, clock=FakeClock())
+    for _ in range(4):
+        limiter.record_failure()
+    limiter.record_success()
+    for _ in range(4):
+        limiter.record_failure()
+    assert limiter.allowed()

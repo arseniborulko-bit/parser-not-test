@@ -7,8 +7,15 @@
 
 from __future__ import annotations
 
+import hmac
 import re
+import threading
+import time
+from collections import deque
 from typing import Callable, Iterable, List, Mapping, Optional
+
+import dbutil
+from dbutil import Connect
 
 ROLE_ADMIN = "admin"
 ROLE_EDITOR = "editor"
@@ -16,8 +23,7 @@ _RANK = {ROLE_EDITOR: 1, ROLE_ADMIN: 2}
 
 _EMAIL_RE = re.compile(r"^[^@\s,;]+@[^@\s,;]+\.[^@\s,;]+$")
 _MAX_EMAIL_LENGTH = 254
-
-Connect = Callable[[], object]
+MIN_PASSWORD_LENGTH = 8
 
 
 class AccessDenied(PermissionError):
@@ -72,20 +78,62 @@ def require_role(role: Optional[str], required: str) -> None:
         raise AccessDenied(f"Нужна роль «{required}».")
 
 
+def password_matches(candidate: object, expected: object) -> bool:
+    """Общий пароль команды. Пустой или короткий эталон никогда не совпадает — иначе «нет пароля» открывало бы вход."""
+    if not isinstance(candidate, str) or not isinstance(expected, str) or len(expected) < MIN_PASSWORD_LENGTH:
+        return False
+    return hmac.compare_digest(candidate.encode("utf-8"), expected.encode("utf-8"))
+
+
+def clean_actor_name(value: object) -> Optional[str]:
+    if not isinstance(value, str):
+        return None
+    name = " ".join(value.split())
+    if not 2 <= len(name) <= 40 or not name.isprintable():
+        return None
+    return name
+
+
+class AttemptLimiter:
+    """Не даёт перебирать пароль: не больше max_failures неудач за окно window секунд, потом вход закрыт."""
+
+    def __init__(self, max_failures: int = 5, window: float = 600.0, clock: Callable[[], float] = time.monotonic):
+        self._max_failures = max_failures
+        self._window = window
+        self._clock = clock
+        self._failures: deque = deque()
+        self._lock = threading.Lock()
+
+    def _prune(self) -> None:
+        cutoff = self._clock() - self._window
+        while self._failures and self._failures[0] <= cutoff:
+            self._failures.popleft()
+
+    def allowed(self) -> bool:
+        with self._lock:
+            self._prune()
+            return len(self._failures) < self._max_failures
+
+    def retry_after(self) -> int:
+        with self._lock:
+            self._prune()
+            if len(self._failures) < self._max_failures:
+                return 0
+            return max(1, int(self._failures[0] + self._window - self._clock()) + 1)
+
+    def record_failure(self) -> None:
+        with self._lock:
+            self._failures.append(self._clock())
+
+    def record_success(self) -> None:
+        with self._lock:
+            self._failures.clear()
+
+
 def _run(connect: Connect, sql: str, params: tuple = (), *, fetch: bool = False):
-    try:
-        conn = connect()
-        try:
-            with conn.cursor() as cur:
-                cur.execute(sql, params)
-                rows = cur.fetchall() if fetch else None
-                count = cur.rowcount
-            conn.commit()
-        finally:
-            conn.close()
-    except Exception as exc:
-        raise AccessStoreError(f"Операция со списком пользователей не подтверждена ({type(exc).__name__}).") from None
-    return rows if fetch else count
+    return dbutil.run_sql(
+        connect, sql, params, fetch=fetch, error=AccessStoreError, what="Операция со списком пользователей",
+    )
 
 
 def active_user_roles(connect: Connect) -> dict:
