@@ -135,13 +135,14 @@ def _apply_design() -> None:
         .metric-detail { color: #64748b; font-size: .78rem; }
         .section-title { font-size: 1.55rem; font-weight: 750; margin: 1.75rem 0 .2rem; }
         .section-note { color: #64748b; font-size: .86rem; margin-bottom: .6rem; }
-        div[data-testid="stTabs"] [data-baseweb="tab-list"] { gap: 3px; border-bottom: 1px solid #dfe3ea; }
-        div[data-testid="stTabs"] button,
-        div[data-testid="stTabs"] [data-baseweb="tab"] { background: #121826 !important; color: #fff !important; border-radius: 7px 7px 0 0; padding: .6rem 1rem; margin-right: 2px; opacity: 1 !important; }
-        div[data-testid="stTabs"] button *,
-        div[data-testid="stTabs"] [data-baseweb="tab"] * { color: #fff !important; opacity: 1 !important; }
-        div[data-testid="stTabs"] button[aria-selected="true"],
-        div[data-testid="stTabs"] [aria-selected="true"] { background: #168ed0 !important; color: #fff !important; }
+        /* Вкладки выбираются по role: в новых версиях Streamlit это уже не <button> и не baseweb. */
+        div[data-testid="stTabs"] [role="tablist"] { gap: 3px; border-bottom: 1px solid #dfe3ea; }
+        div[data-testid="stTabs"] [role="tab"],
+        div[data-testid="stTabs"] button { background: #121826 !important; color: #fff !important; border-radius: 7px 7px 0 0; padding: .6rem 1rem; margin-right: 2px; opacity: 1 !important; }
+        div[data-testid="stTabs"] [role="tab"] *,
+        div[data-testid="stTabs"] button * { color: #fff !important; opacity: 1 !important; }
+        div[data-testid="stTabs"] [role="tab"][aria-selected="true"] { background: #168ed0 !important; color: #fff !important; }
+        div[data-testid="stTabs"] button:disabled { opacity: .45 !important; cursor: not-allowed; }
         .stButton > button { background: #168ed0; color: #fff; border: 0; border-radius: 8px; font-weight: 650; }
         .stButton > button:hover { background: #075b9b; color: #fff; }
         </style>
