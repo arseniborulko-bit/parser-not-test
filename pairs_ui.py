@@ -184,6 +184,9 @@ def _render_restore(connect, pairs: pd.DataFrame, actor: str, role: str) -> None
 
 def _render_log(connect) -> None:
     try:
+        if not pairs_store.journal_exists(connect):
+            st.caption("Журнал изменений ещё не подключён: изменения применяются, но пока не записываются в журнал.")
+            return
         changes = pairs_store.recent_changes(connect, 30)
     except pairs_store.PairsStoreError as exc:
         st.error(str(exc))

@@ -278,14 +278,43 @@ def test_apply_refuses_a_plan_with_errors():
     assert db.connects == 0
 
 
+def test_journal_exists_reads_the_catalog():
+    assert pairs_store.journal_exists(FakeDb(results=[[(True,)]]).connect) is True
+    assert pairs_store.journal_exists(FakeDb(results=[[(False,)]]).connect) is False
+
+
 def test_apply_sends_bound_arrays_in_one_transaction_and_counts_actions():
-    db = FakeDb(results=[[("add",), ("add",), ("enable",)]])
+    db = FakeDb(results=[[(True,)], [("add",), ("add",), ("enable",)]])
     result = pairs_store.apply_plan(db.connect, ready_plan(), actor_role=access.ROLE_EDITOR, actor="Аня")
     assert result == {"add": 2, "enable": 1}
-    sql, params = db.executed[0]
+    sql, params = db.executed[1]
     assert params == (["US"] * 3, [A] * 3, ["Our"] * 3, [B, C, D], "Аня")
     assert A not in sql and "Аня" not in sql
-    assert "pair_changes" in sql and (db.connects, db.commits, db.closed) == (1, 1, 1)
+    assert "pair_changes" in sql and (db.connects, db.commits, db.closed) == (2, 2, 2)
+
+
+def test_without_a_journal_table_pairs_are_still_added_and_a_warning_is_logged(caplog):
+    db = FakeDb(results=[[(False,)], [("add",), ("enable",)]])
+    with caplog.at_level(logging.WARNING, logger="pairs_store"):
+        result = pairs_store.apply_plan(db.connect, ready_plan(to_add=[B], to_enable=[C]), actor_role=access.ROLE_EDITOR, actor="Аня")
+    assert result == {"add": 1, "enable": 1}
+    sql, params = db.executed[1]
+    assert "pair_changes" not in sql and params == (["US"] * 2, [A] * 2, ["Our"] * 2, [B, C])
+    assert "не подключён" in caplog.text and "Аня" in caplog.text
+
+
+def test_without_a_journal_table_toggling_still_works():
+    db = FakeDb(results=[[(False,)], [(1,)]])
+    assert pairs_store.set_pairs_active(db.connect, [KEY1], False, actor_role=access.ROLE_EDITOR, actor="Аня") == 1
+    sql, params = db.executed[1]
+    assert "pair_changes" not in sql and params == (["US"], [A], [B], False, False)
+
+
+def test_apply_errors_are_wrapped_without_leaking_driver_text():
+    db = FakeDb(fail_execute="password=hunter2")
+    with pytest.raises(pairs_store.PairsStoreError) as info:
+        pairs_store.apply_plan(db.connect, ready_plan(), actor_role=access.ROLE_EDITOR, actor="Аня")
+    assert "hunter2" not in str(info.value)
 
 
 def test_apply_with_nothing_to_do_makes_no_database_call():
@@ -296,7 +325,7 @@ def test_apply_with_nothing_to_do_makes_no_database_call():
 
 
 def test_apply_logs_who_changed_what(caplog):
-    db = FakeDb(results=[[("add",)]])
+    db = FakeDb(results=[[(True,)], [("add",)]])
     with caplog.at_level(logging.INFO, logger="pairs_store"):
         pairs_store.apply_plan(db.connect, pairs_store.Plan(market="CA", our_asin=A, to_add=[B]), actor_role=access.ROLE_EDITOR, actor="Борис")
     assert "Борис" in caplog.text and A in caplog.text and "CA" in caplog.text
@@ -308,10 +337,10 @@ KEY2 = ("US", A, C)
 
 @pytest.mark.parametrize("active, action", [(False, "disable"), (True, "enable")])
 def test_toggle_passes_keys_as_arrays_and_names_the_action(active, action):
-    db = FakeDb(results=[[(1,), (1,)]])
+    db = FakeDb(results=[[(True,)], [(1,), (1,)]])
     changed = pairs_store.set_pairs_active(db.connect, [KEY1, KEY2, KEY1], active, actor_role=access.ROLE_EDITOR, actor="Аня")
     assert changed == 2
-    sql, params = db.executed[0]
+    sql, params = db.executed[1]
     assert params == (["US", "US"], [A, A], [B, C], active, active, "Аня", action)
     assert "pair_changes" in sql and "IS DISTINCT FROM" in sql
 

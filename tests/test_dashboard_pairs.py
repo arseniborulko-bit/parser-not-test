@@ -50,6 +50,7 @@ def pairs_env(monkeypatch, dash):  # noqa: F811
     monkeypatch.setattr(pairs_store, "apply_plan", fake_apply)
     monkeypatch.setattr(pairs_store, "set_pairs_active", fake_toggle)
     monkeypatch.setattr(pairs_store, "recent_changes", lambda connect, limit=30: [])
+    monkeypatch.setattr(pairs_store, "journal_exists", lambda connect: True)
     calls["default_plan"] = plan
     return calls
 
@@ -205,6 +206,18 @@ def test_disabling_many_pairs_needs_a_typed_confirmation(monkeypatch, dash, pair
     button.click()
     at.run(timeout=30)
     assert len(pairs_env["toggle"][0][0]) == 30
+
+
+def test_a_missing_journal_table_is_explained_and_does_not_break_the_page(monkeypatch, pairs_env):
+    monkeypatch.setattr(pairs_store, "journal_exists", lambda connect: False)
+
+    def must_not_be_read(connect, limit=30):
+        raise AssertionError("журнал читать нельзя, пока таблицы нет")
+
+    monkeypatch.setattr(pairs_store, "recent_changes", must_not_be_read)
+    at = open_management(run())
+    assert not at.exception and not at.error
+    assert any("Журнал изменений ещё не подключён" in c.value for c in at.caption)
 
 
 def test_change_log_is_shown_in_kyiv_time(monkeypatch, pairs_env):

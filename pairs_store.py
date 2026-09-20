@@ -205,6 +205,37 @@ def make_plan(connect: Connect, our_text: object, market_choice: Optional[str], 
     return plan
 
 
+def journal_exists(connect: Connect) -> bool:
+    """Журнал (pair_changes) необязателен: пока таблицы нет, изменения применяются без записи в журнал."""
+    return bool(_run(connect, "SELECT to_regclass('parser_not_test.pair_changes') IS NOT NULL;", fetch=True)[0][0])
+
+
+_ADD_NO_JOURNAL_SQL = """
+WITH input AS (
+    SELECT * FROM unnest(%s::text[], %s::text[], %s::text[], %s::text[]) AS t(marketplace, our_asin, our_product, comp_asin)
+), changed AS (
+    INSERT INTO parser_not_test.competitor_pairs AS p (marketplace, our_asin, our_product, comp_asin, active)
+    SELECT marketplace, our_asin, our_product, comp_asin, TRUE FROM input
+    ON CONFLICT (marketplace, our_asin, comp_asin) DO UPDATE SET active = TRUE
+    WHERE NOT p.active
+    RETURNING (xmax = 0) AS inserted
+)
+SELECT CASE WHEN inserted THEN 'add' ELSE 'enable' END FROM changed;
+"""
+
+_SET_ACTIVE_NO_JOURNAL_SQL = """
+WITH input AS (
+    SELECT * FROM unnest(%s::text[], %s::text[], %s::text[]) AS t(marketplace, our_asin, comp_asin)
+), changed AS (
+    UPDATE parser_not_test.competitor_pairs AS p SET active = %s
+    FROM input i
+    WHERE p.marketplace = i.marketplace AND p.our_asin = i.our_asin AND p.comp_asin = i.comp_asin
+      AND p.active IS DISTINCT FROM %s
+    RETURNING 1
+)
+SELECT 1 FROM changed;
+"""
+
 _ADD_SQL = """
 WITH input AS (
     SELECT * FROM unnest(%s::text[], %s::text[], %s::text[], %s::text[]) AS t(marketplace, our_asin, our_product, comp_asin)
@@ -244,11 +275,12 @@ def apply_plan(connect: Connect, plan: Plan, *, actor_role: Optional[str], actor
     if not comps:
         return {"add": 0, "enable": 0}
     n = len(comps)
-    rows = _run(
-        connect, _ADD_SQL,
-        ([plan.market] * n, [plan.our_asin] * n, [plan.our_product] * n, comps, actor),
-        fetch=True,
-    )
+    arrays = ([plan.market] * n, [plan.our_asin] * n, [plan.our_product] * n, comps)
+    if journal_exists(connect):
+        rows = _run(connect, _ADD_SQL, (*arrays, actor), fetch=True)
+    else:
+        log.warning("Журнал пар не подключён (нет таблицы pair_changes): изменение (%s) применено без записи в журнал", actor)
+        rows = _run(connect, _ADD_NO_JOURNAL_SQL, arrays, fetch=True)
     result = {"add": sum(1 for (action,) in rows if action == "add"), "enable": sum(1 for (action,) in rows if action == "enable")}
     log.info("Пары (%s): добавлено %d, возвращено %d; наш ASIN %s, %s", actor, result["add"], result["enable"], plan.our_asin, plan.market)
     return result
@@ -266,12 +298,12 @@ def set_pairs_active(connect: Connect, keys: Sequence[Tuple[str, str, str]], act
     for market, our, comp in unique:
         if market not in DOMAIN_BY_MARKET or not _ASIN_RE.fullmatch(our) or not _ASIN_RE.fullmatch(comp):
             raise ValueError("Некорректный ключ пары.")
-    rows = _run(
-        connect, _SET_ACTIVE_SQL,
-        ([k[0] for k in unique], [k[1] for k in unique], [k[2] for k in unique],
-         bool(active), bool(active), actor, "enable" if active else "disable"),
-        fetch=True,
-    )
+    arrays = ([k[0] for k in unique], [k[1] for k in unique], [k[2] for k in unique])
+    if journal_exists(connect):
+        rows = _run(connect, _SET_ACTIVE_SQL, (*arrays, bool(active), bool(active), actor, "enable" if active else "disable"), fetch=True)
+    else:
+        log.warning("Журнал пар не подключён (нет таблицы pair_changes): изменение (%s) применено без записи в журнал", actor)
+        rows = _run(connect, _SET_ACTIVE_NO_JOURNAL_SQL, (*arrays, bool(active), bool(active)), fetch=True)
     log.info("Пары (%s): %s %d", actor, "возвращено" if active else "отключено", len(rows))
     return len(rows)
 

@@ -202,11 +202,28 @@ def dashboard_sql(function_name: str) -> str:
 def section_pairs() -> None:
     print("\n== пары ASIN ==")
     ours, mine = "B0OURASIN1", dict(actor_role=access.ROLE_EDITOR, actor="Аня")
+
+    def seed():
+        q("INSERT INTO parser_not_test.competitor_pairs (marketplace, our_asin, our_product, comp_asin, competitor_name, active) VALUES "
+          "('US', %s, 'Our product', 'B0COMPAAA1', 'Comp A1', TRUE),"
+          "('US', %s, 'Our product', 'B0COMPAAA2', '', FALSE),"
+          "('CA', 'B0OTHERAA1', 'Other', 'B0COMPBBB1', 'Comp B1', TRUE);", (ours, ours))
+
+    # Сначала как сейчас на боевой: таблицы журнала ещё нет — изменения всё равно обязаны применяться.
+    reset(migrations=False)
+    q(MIGRATIONS["001_collection_admission.sql"])
+    q(MIGRATIONS["002_dashboard_users.sql"])
+    seed()
+    check("без таблицы журнала journal_exists = ложь", pairs_store.journal_exists(connect) is False)
+    early = pairs_store.apply_plan(connect, pairs_store.make_plan(connect, ours, None, "B0COMPAAA2 B0COMPAAA3"), **mine)
+    check("без журнала пары добавляются и возвращаются", early == {"add": 1, "enable": 1}, str(early))
+    check("без журнала пары отключаются", pairs_store.set_pairs_active(connect, [("US", ours, "B0COMPAAA3")], False, **mine) == 1
+          and q("SELECT count(*) FROM parser_not_test.competitor_pairs WHERE active;")[0][0] == 3)
+    q(MIGRATIONS["003_pair_changes.sql"])
+    check("после миграции журнал подключается сам", pairs_store.journal_exists(connect) is True)
+
     reset()
-    q("INSERT INTO parser_not_test.competitor_pairs (marketplace, our_asin, our_product, comp_asin, competitor_name, active) VALUES "
-      "('US', %s, 'Our product', 'B0COMPAAA1', 'Comp A1', TRUE),"
-      "('US', %s, 'Our product', 'B0COMPAAA2', '', FALSE),"
-      "('CA', 'B0OTHERAA1', 'Other', 'B0COMPBBB1', 'Comp B1', TRUE);", (ours, ours))
+    seed()
 
     plan = pairs_store.make_plan(connect, ours, None, "B0COMPAAA1 B0COMPAAA2 B0COMPAAA3 https://www.amazon.com/dp/B0COMPAAA4 junk")
     check("план на настоящей базе: новые, возвращаемые и уже активные определены верно",
