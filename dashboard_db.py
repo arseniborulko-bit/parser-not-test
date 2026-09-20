@@ -22,6 +22,8 @@ import streamlit as st
 from dotenv import load_dotenv
 
 import access
+import pairs_store
+import pairs_ui
 import schedule_store
 
 load_dotenv()
@@ -55,6 +57,11 @@ def _secret(name: str) -> str:
         return str(st.secrets.get(name) or "")
     except Exception:
         return ""
+
+
+def _max_active() -> int:
+    raw = _secret("MAX_ACTIVE_PAIRS").strip()
+    return int(raw) if raw.isdigit() and int(raw) > 0 else pairs_store.DEFAULT_MAX_ACTIVE
 
 
 _AUTH_KEYS = ("client_id", "client_secret", "cookie_secret", "redirect_uri", "server_metadata_url")
@@ -160,17 +167,19 @@ def load_snapshots() -> pd.DataFrame:
 
 @st.cache_data(ttl=60, show_spinner=False)
 def load_current() -> pd.DataFrame:
-    """Последний снепшот на каждую пару (our_asin, comp_asin)."""
+    """Последний снимок каждой АКТИВНОЙ пары (our_asin, comp_asin): убранная пара из текущего состояния исчезает."""
     conn = psycopg2.connect(_database_url())
     try:
         return pd.read_sql(
             """
-            SELECT DISTINCT ON (our_asin, comp_asin)
-                   snapshot_date, marketplace, currency, our_asin, our_product, our_price,
-                   our_bsr, our_bsr_delta_24h, comp_asin, competitor_name, comp_price,
-                   comp_bsr, comp_bsr_delta_24h, comp_stock, price_diff_pct, updated_at
-            FROM parser_not_test.snapshots
-            ORDER BY our_asin, comp_asin, snapshot_date DESC
+            SELECT DISTINCT ON (s.our_asin, s.comp_asin)
+                   s.snapshot_date, s.marketplace, s.currency, s.our_asin, s.our_product, s.our_price,
+                   s.our_bsr, s.our_bsr_delta_24h, s.comp_asin, s.competitor_name, s.comp_price,
+                   s.comp_bsr, s.comp_bsr_delta_24h, s.comp_stock, s.price_diff_pct, s.updated_at
+            FROM parser_not_test.snapshots s
+            JOIN parser_not_test.competitor_pairs p
+              ON p.our_asin = s.our_asin AND p.comp_asin = s.comp_asin AND p.active
+            ORDER BY s.our_asin, s.comp_asin, s.snapshot_date DESC
             """,
             conn,
         )
@@ -184,9 +193,18 @@ def load_competitor_pairs() -> pd.DataFrame:
     try:
         return pd.read_sql(
             """
-            SELECT marketplace, our_asin, our_product, comp_asin, competitor_name, active
-            FROM parser_not_test.competitor_pairs
-            ORDER BY marketplace, our_asin
+            SELECT p.marketplace, p.our_asin,
+                   COALESCE(NULLIF(p.our_product, ''), s.our_product, '') AS our_product,
+                   p.comp_asin,
+                   COALESCE(NULLIF(p.competitor_name, ''), s.competitor_name, '') AS competitor_name,
+                   p.active
+            FROM parser_not_test.competitor_pairs p
+            LEFT JOIN LATERAL (
+                SELECT our_product, competitor_name FROM parser_not_test.snapshots
+                WHERE our_asin = p.our_asin AND comp_asin = p.comp_asin
+                ORDER BY snapshot_date DESC LIMIT 1
+            ) s ON TRUE
+            ORDER BY p.marketplace, p.our_asin, p.comp_asin
             """,
             conn,
         )
@@ -557,7 +575,7 @@ def main() -> None:
 
     st.info(
         "Режим просмотра: дашборд показывает данные из PostgreSQL, не запускает парсер и не "
-        "меняет Google Sheets. Время автосбора меняется на вкладке «Автосбор» после входа в «🔒 Управление»."
+        "меняет Google Sheets. Время автосбора и список пар меняются после входа в «🔒 Управление»."
     )
 
     try:
@@ -575,9 +593,10 @@ def main() -> None:
         dates = pd.to_datetime(current["snapshot_date"], errors="coerce")
         if dates.notna().any():
             latest_label = dates.max().strftime("%d.%m.%Y")
+    active_pairs = int(pairs["active"].sum()) if not pairs.empty else 0
     st.markdown(
         f'<div class="status-box"><strong>Последний сбор в базе: {escape(latest_label)}</strong><br>'
-        f'Активных пар: {len(current)}. Данные читаются напрямую из Postgres.</div>',
+        f'Пар в текущем срезе: {len(current)} из {active_pairs} активных. Данные читаются напрямую из Postgres.</div>',
         unsafe_allow_html=True,
     )
 
@@ -603,7 +622,7 @@ def main() -> None:
         st.dataframe(presented_h, use_container_width=True, hide_index=True, height=450, column_config=config_h)
 
     with pairs_tab:
-        st.dataframe(pairs, use_container_width=True, hide_index=True, height=450)
+        pairs_ui.render_pairs_tab(_connect, pairs, actor, manage_role, _max_active())
 
     with schedule_tab:
         _render_schedule_tab(actor, manage_role)

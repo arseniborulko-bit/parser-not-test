@@ -1,14 +1,14 @@
 """Проверка SQL и защиты сбора на НАСТОЯЩЕМ временном Postgres. Боевая база не используется и .env не читается.
 
-Что проверяется: схема и миграции 001/002, расписание, «собирали сегодня» по киевским суткам, пользователи
-дашборда и защита от повторных платных запусков (гонка допусков, одноразовый run_id, лимит попыток,
-миграция на «старой» таблице, сам gate-скрипт как его запускает GitHub Actions).
+Что проверяется: схема и миграции 001–003, расписание, «собирали сегодня» по киевским суткам, пользователи
+дашборда, пары ASIN (план, добавление, отключение, журнал, гонка, запросы дашборда) и защита от повторных
+платных запусков (гонка допусков, одноразовый run_id, лимит попыток, миграция на «старой» таблице, сам
+gate-скрипт как его запускает GitHub Actions).
 
 Запуск (Windows; колесо pgserver есть для Python 3.12):
     py -3.12 -m venv .venv-pg
     .venv-pg\\Scripts\\pip install pgserver psycopg2-binary python-dotenv tzdata
     .venv-pg\\Scripts\\python tools\\verify_on_temporary_postgres.py
-Нужен git (путь можно задать переменной GIT_EXE): из него берётся schema.sql до этапа 2А как «старая» таблица.
 """
 
 from __future__ import annotations
@@ -27,7 +27,6 @@ import pgserver
 import psycopg2
 
 PROJECT = Path(__file__).resolve().parent.parent
-GIT = os.environ.get("GIT_EXE", "git")
 sys.path.insert(0, str(PROJECT))
 
 WORK = Path(tempfile.mkdtemp(prefix="verify_pg_"))
@@ -51,12 +50,12 @@ os.environ["DATABASE_URL"] = URI
 
 import access  # noqa: E402
 import db_runs  # noqa: E402
+import pairs_store  # noqa: E402
 import schedule_store  # noqa: E402
 
 NEW_SCHEMA = (PROJECT / "schema.sql").read_text(encoding="utf-8")
 MIGRATIONS = {n: (PROJECT / "migrations" / n).read_text(encoding="utf-8")
-              for n in ("001_collection_admission.sql", "002_dashboard_users.sql")}
-OLD_SCHEMA = subprocess.run([GIT, "-C", str(PROJECT), "show", "HEAD:schema.sql"], capture_output=True, encoding="utf-8").stdout
+              for n in ("001_collection_admission.sql", "002_dashboard_users.sql", "003_pair_changes.sql")}
 
 
 def check(name: str, condition: object, extra: str = "") -> None:
@@ -88,6 +87,12 @@ def reset(schema_sql: str = NEW_SCHEMA, schedule: tuple | None = (0, 0), migrati
             q(sql)
     if schedule:
         q("INSERT INTO parser_not_test.schedule (id, hour, minute) VALUES (1, %s, %s);", schedule)
+
+
+def reset_old() -> None:
+    """Схема как на боевой до миграции 001: текущая схема без колонок owner_key и claimed_at."""
+    reset(migrations=False)
+    q("ALTER TABLE parser_not_test.collection_runs DROP COLUMN owner_key, DROP COLUMN claimed_at;")
 
 
 def insert_run(step, status, started, finished=None, owner_key=None, claimed=None, source="github_actions", new_columns=True):
@@ -179,6 +184,97 @@ def section_schedule_and_users() -> None:
             check(label, False)
         except psycopg2.errors.CheckViolation:
             check(label, True)
+
+
+def dashboard_sql(function_name: str) -> str:
+    """SQL из dashboard_db.py (первый аргумент pd.read_sql), чтобы проверять именно тот запрос, что в дашборде."""
+    import ast
+
+    tree = ast.parse((PROJECT / "dashboard_db.py").read_text(encoding="utf-8"))
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef) and node.name == function_name:
+            for call in ast.walk(node):
+                if isinstance(call, ast.Call) and getattr(call.func, "attr", "") == "read_sql":
+                    return call.args[0].value
+    raise LookupError(function_name)
+
+
+def section_pairs() -> None:
+    print("\n== пары ASIN ==")
+    ours, mine = "B0OURASIN1", dict(actor_role=access.ROLE_EDITOR, actor="Аня")
+    reset()
+    q("INSERT INTO parser_not_test.competitor_pairs (marketplace, our_asin, our_product, comp_asin, competitor_name, active) VALUES "
+      "('US', %s, 'Our product', 'B0COMPAAA1', 'Comp A1', TRUE),"
+      "('US', %s, 'Our product', 'B0COMPAAA2', '', FALSE),"
+      "('CA', 'B0OTHERAA1', 'Other', 'B0COMPBBB1', 'Comp B1', TRUE);", (ours, ours))
+
+    plan = pairs_store.make_plan(connect, ours, None, "B0COMPAAA1 B0COMPAAA2 B0COMPAAA3 https://www.amazon.com/dp/B0COMPAAA4 junk")
+    check("план на настоящей базе: новые, возвращаемые и уже активные определены верно",
+          plan.market == "US" and plan.our_product == "Our product" and sorted(plan.to_add) == ["B0COMPAAA3", "B0COMPAAA4"]
+          and plan.to_enable == ["B0COMPAAA2"] and plan.already == ["B0COMPAAA1"] and plan.invalid == ["junk"], str(plan.errors))
+    check("«в каждый сбор добавится ASIN»: считаются только ASIN, которых ещё нет среди активных", plan.new_asins == 3)
+    check("план ничего не записал", q("SELECT count(*) FROM parser_not_test.competitor_pairs;")[0][0] == 3
+          and q("SELECT count(*) FROM parser_not_test.pair_changes;")[0][0] == 0)
+
+    result = pairs_store.apply_plan(connect, plan, **mine)
+    check("применение: 2 добавлено, 1 возвращено", result == {"add": 2, "enable": 1}, str(result))
+    log = q("SELECT action, actor, marketplace, our_asin FROM parser_not_test.pair_changes ORDER BY id;")
+    check("журнал записан в той же транзакции: кто, что, где", sorted(a for a, *_ in log) == ["add", "add", "enable"]
+          and {row[1] for row in log} == {"Аня"} and {row[2] for row in log} == {"US"})
+    check("новые пары активны и получили название нашего товара",
+          q("SELECT count(*) FROM parser_not_test.competitor_pairs WHERE active AND our_product = 'Our product' AND our_asin = %s;", (ours,))[0][0] == 4)
+    again = pairs_store.apply_plan(connect, pairs_store.make_plan(connect, ours, None, "B0COMPAAA3 B0COMPAAA2"), **mine)
+    check("повторное добавление ничего не меняет и не пишет в журнал", again == {"add": 0, "enable": 0}
+          and q("SELECT count(*) FROM parser_not_test.pair_changes;")[0][0] == 3)
+
+    keys = [("US", ours, "B0COMPAAA3"), ("US", ours, "B0COMPAAA4")]
+    check("отключение двух пар", pairs_store.set_pairs_active(connect, keys, False, **mine) == 2)
+    check("повторное отключение ничего не меняет", pairs_store.set_pairs_active(connect, keys, False, **mine) == 0)
+    check("отключённые пары остались в таблице (история цела)", q("SELECT count(*) FROM parser_not_test.competitor_pairs WHERE NOT active;")[0][0] == 2)
+    plan2 = pairs_store.make_plan(connect, ours, None, "B0COMPAAA3")
+    check("отключённую пару можно вернуть добавлением: это «возврат», а не «новая»", plan2.to_enable == ["B0COMPAAA3"] and not plan2.to_add)
+    pairs_store.apply_plan(connect, plan2, **mine)
+    check("возврат записан в журнал как enable, не add",
+          q("SELECT action FROM parser_not_test.pair_changes ORDER BY id DESC LIMIT 1;")[0][0] == "enable")
+    check("последние изменения читаются, новые сверху", pairs_store.recent_changes(connect, 3)[0]["action"] == "enable")
+
+    fresh = "B0COMPNEW1"
+    race_plan = pairs_store.make_plan(connect, ours, None, fresh)
+    out = race(lambda _: pairs_store.apply_plan(connect, race_plan, **mine), list(range(12)))
+    total = sum(r["add"] + r["enable"] for kind, r in out if kind == "ok")
+    check("12 одновременных добавлений одной пары: в базе одна строка, в журнале одна запись",
+          not [e for kind, e in out if kind == "err"] and total == 1
+          and q("SELECT count(*) FROM parser_not_test.competitor_pairs WHERE comp_asin = %s;", (fresh,))[0][0] == 1
+          and q("SELECT count(*) FROM parser_not_test.pair_changes WHERE comp_asin = %s;", (fresh,))[0][0] == 1)
+
+    try:
+        q("INSERT INTO parser_not_test.pair_changes (actor, action, marketplace, our_asin, comp_asin) VALUES ('x', 'delete', 'US', 'a', 'b');")
+        check("CHECK: в журнале допустимы только add/enable/disable", False)
+    except psycopg2.errors.CheckViolation:
+        check("CHECK: в журнале допустимы только add/enable/disable", True)
+
+    # Запросы дашборда — ровно те, что лежат в dashboard_db.py.
+    q("INSERT INTO parser_not_test.snapshots (snapshot_date, marketplace, our_asin, our_product, comp_asin, competitor_name, our_bsr, comp_bsr) VALUES "
+      "('2026-09-20', 'US', %s, 'Our title', 'B0COMPAAA1', 'Scraped A1', 100, 200),"
+      "('2026-09-21', 'US', %s, 'Our title', 'B0COMPAAA1', 'Scraped A1', 101, 201),"
+      "('2026-09-21', 'US', %s, 'Our title', 'B0COMPAAA2', 'Scraped A2', 102, 202),"
+      "('2026-09-21', 'US', %s, 'Our title', 'B0COMPAAA4', 'Scraped A4', 103, 203);", (ours, ours, ours, ours))
+    current = q(dashboard_sql("load_current"))
+    got = sorted((row[3], row[8]) for row in current)
+    check("«Текущее состояние»: только активные пары и только последний снимок каждой",
+          got == [(ours, "B0COMPAAA1"), (ours, "B0COMPAAA2")] and {row[0].isoformat() for row in current} == {"2026-09-21"}, str(got))
+    listing = {row[3]: row for row in q(dashboard_sql("load_competitor_pairs"))}
+    check("список пар: пустое название подставляется из последнего снимка, заданное остаётся",
+          listing["B0COMPAAA2"][4] == "Scraped A2" and listing["B0COMPAAA1"][4] == "Comp A1" and listing["B0COMPAAA1"][2] == "Our product")
+    check("список пар: пара без снимков не пропадает и не даёт пустых значений NULL", listing["B0COMPNEW1"][4] == "" and listing["B0COMPNEW1"][5] is True)
+    check("список пар содержит и активные, и отключённые", {row[5] for row in listing.values()} == {True, False})
+
+    reset_old()
+    q(MIGRATIONS["003_pair_changes.sql"])
+    q(MIGRATIONS["003_pair_changes.sql"])
+    check("миграция 003 на «старой» схеме создаёт журнал и индекс и безопасна при повторе",
+          q("SELECT count(*) FROM pg_indexes WHERE schemaname = 'parser_not_test' AND indexname IN ('pair_changes_at_idx', 'snapshots_pair_date_idx');")[0][0] == 2
+          and q("SELECT to_regclass('parser_not_test.pair_changes') IS NOT NULL;")[0][0])
 
 
 def section_admission() -> None:
@@ -278,7 +374,7 @@ def section_admission() -> None:
         check("нельзя закрыть запись второй раз", True)
     check("полный путь: parser и sync закрыты как done", count("status = 'done'") == 2 and count("status = 'running'") == 0)
 
-    reset(OLD_SCHEMA, migrations=False)
+    reset_old()
     q(MIGRATIONS["002_dashboard_users.sql"])
     try:
         db_runs.admit_parser_run(gh(1001))
@@ -326,6 +422,7 @@ def section_admission() -> None:
 
 try:
     section_schedule_and_users()
+    section_pairs()
     section_admission()
 finally:
     failed = [name for name, ok in checks if not ok]
