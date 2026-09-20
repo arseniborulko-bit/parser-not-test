@@ -21,6 +21,7 @@ import psycopg2
 import streamlit as st
 from dotenv import load_dotenv
 
+import access
 import scheduler
 
 load_dotenv()
@@ -40,6 +41,58 @@ def _database_url() -> str:
     if not value:
         raise RuntimeError("DATABASE_URL не найден ни в переменных окружения, ни в st.secrets.")
     return value
+
+
+def _connect():
+    return psycopg2.connect(_database_url())
+
+
+def _secret(name: str) -> str:
+    value = os.environ.get(name)
+    if value:
+        return value
+    try:
+        return str(st.secrets.get(name) or "")
+    except Exception:
+        return ""
+
+
+_AUTH_KEYS = ("client_id", "client_secret", "cookie_secret", "redirect_uri", "server_metadata_url")
+_ROLE_LABELS = {access.ROLE_ADMIN: "админ", access.ROLE_EDITOR: "редактор"}
+
+
+def _auth_configured() -> bool:
+    """Без полной секции [auth] в секретах вход выключен, дашборд остаётся открытым для просмотра."""
+    try:
+        auth = st.secrets.get("auth")
+        return all(auth.get(key) for key in _AUTH_KEYS)
+    except Exception:
+        return False
+
+
+def _current_user() -> dict:
+    if not _auth_configured():
+        return {}
+    try:
+        return st.user.to_dict()
+    except Exception:
+        return {}
+
+
+def _resolve_access() -> tuple[dict, str | None, str | None]:
+    """(данные пользователя, подтверждённый email, роль); роль None — управлять нельзя."""
+    user = _current_user()
+    email = access.verified_email(user)
+    if email is None:
+        return user, None, None
+    admin_emails = access.parse_email_list(_secret("ADMIN_EMAILS"))
+    db_roles: dict = {}
+    if email not in admin_emails:
+        try:
+            db_roles = access.active_user_roles(_connect)
+        except access.AccessStoreError as exc:
+            st.warning(f"{exc} Доступ к управлению временно закрыт.")
+    return user, email, access.resolve_role(user, admin_emails, db_roles)
 
 
 PROJECT_DIR = Path(__file__).resolve().parent
@@ -344,13 +397,88 @@ def _render_schedule_panel() -> None:
                 st.error(f"Время сохранено в базе, но Планировщик обновить не удалось: {msg}")
 
 
+def _render_auth_bar(user: dict, email: str | None, role: str | None) -> None:
+    if not _auth_configured():
+        return
+    if not user.get("is_logged_in"):
+        st.button("Войти через Google", on_click=st.login, key="login_btn")
+        return
+    if email is None:
+        note = "Вход выполнен, но Google не подтвердил email — доступ к управлению закрыт."
+    else:
+        status = _ROLE_LABELS.get(role, "нет доступа к управлению — попросите админа добавить этот email")
+        note = f"{email} · {status}"
+    st.markdown(f'<div class="section-note">{escape(note)}</div>', unsafe_allow_html=True)
+    st.button("Выйти", on_click=st.logout, key="logout_btn")
+
+
+def _flash(kind: str, message: str) -> None:
+    st.session_state["users_flash"] = (kind, message)
+
+
+def _render_users_panel(actor_email: str, actor_role: str) -> None:
+    flash = st.session_state.pop("users_flash", None)
+    if flash:
+        getattr(st, flash[0])(flash[1])
+    st.markdown(
+        '<p class="section-note">Просмотр открыт всем. Управлять могут только люди из этого списка '
+        "(вход через Google) и админы из секрета ADMIN_EMAILS.</p>",
+        unsafe_allow_html=True,
+    )
+    try:
+        users = access.list_users(_connect)
+    except access.AccessStoreError as exc:
+        st.error(str(exc))
+        return
+
+    if users:
+        table = pd.DataFrame(users).rename(columns={
+            "email": "Email", "role": "Роль", "active": "Активен", "added_by": "Добавил", "created_at": "Добавлен",
+        })
+        table["Роль"] = table["Роль"].map(_ROLE_LABELS)
+        table["Активен"] = table["Активен"].map({True: "да", False: "нет"})
+        st.dataframe(table, use_container_width=True, hide_index=True)
+    else:
+        st.info("В базе пока никого нет. Админы из секрета ADMIN_EMAILS работают без записи в базе.")
+
+    with st.form("add_user_form", clear_on_submit=True):
+        new_email = st.text_input("Email (с которым человек входит через Google)", key="add_user_email")
+        new_role = st.selectbox(
+            "Роль", [access.ROLE_EDITOR, access.ROLE_ADMIN], format_func=_ROLE_LABELS.get, key="add_user_role",
+        )
+        if st.form_submit_button("Добавить или обновить"):
+            try:
+                saved = access.add_user(_connect, new_email, new_role, actor_role=actor_role, actor_email=actor_email)
+            except (ValueError, access.AccessDenied, access.AccessStoreError) as exc:
+                st.error(str(exc))
+            else:
+                _flash("success", f"Сохранено: {saved}")
+                st.rerun()
+
+    if users:
+        with st.form("toggle_user_form"):
+            target = st.selectbox("Пользователь", [u["email"] for u in users], key="toggle_user_email")
+            action = st.radio("Действие", ["Включить", "Отключить"], horizontal=True, key="toggle_user_action")
+            if st.form_submit_button("Применить"):
+                enable = action == "Включить"
+                try:
+                    access.set_user_active(_connect, target, enable, actor_role=actor_role, actor_email=actor_email)
+                except (ValueError, access.AccessDenied, access.AccessStoreError) as exc:
+                    st.error(str(exc))
+                else:
+                    _flash("success", f"{target}: {'включён' if enable else 'отключён'}")
+                    st.rerun()
+
+
 def main() -> None:
     _apply_design()
+    user, email, role = _resolve_access()
     left, right = st.columns([3, 2])
     with left:
         st.markdown('<p class="brand-subtitle">Мониторинг Amazon-конкурентов и аналитика портфеля</p>', unsafe_allow_html=True)
     with right:
         st.markdown('<div class="source-badge">🗄 Источник: база данных (parser_not_test), не Google Sheets</div>', unsafe_allow_html=True)
+        _render_auth_bar(user, email, role)
 
     st.info(
         "Режим просмотра: дашборд показывает данные из PostgreSQL и не запускает "
@@ -383,7 +511,11 @@ def main() -> None:
     st.markdown('<p class="section-title">Мониторинг конкурентов</p>', unsafe_allow_html=True)
     st.markdown('<p class="section-note">Фильтруйте сохранённые данные по ASIN, стране и периоду.</p>', unsafe_allow_html=True)
 
-    current_tab, history_tab, pairs_tab = st.tabs(["📋 Текущее состояние", "📅 История", "🥊 Пары конкурентов"])
+    tab_titles = ["📋 Текущее состояние", "📅 История", "🥊 Пары конкурентов"]
+    if role == access.ROLE_ADMIN:
+        tab_titles.append("👥 Пользователи")
+    tabs = st.tabs(tab_titles)
+    current_tab, history_tab, pairs_tab = tabs[:3]
 
     with current_tab:
         shown = _filter_data(current, key_prefix="current")
@@ -397,6 +529,10 @@ def main() -> None:
 
     with pairs_tab:
         st.dataframe(pairs, use_container_width=True, hide_index=True, height=450)
+
+    if role == access.ROLE_ADMIN:
+        with tabs[3]:
+            _render_users_panel(email, role)
 
     st.download_button(
         "Скачать текущий срез CSV",

@@ -1,4 +1,5 @@
-streamlit>=1.38
+streamlit>=1.42
+Authlib>=1.3.2
 gspread>=6.1
 google-auth>=2.30
 pandas>=2.2
