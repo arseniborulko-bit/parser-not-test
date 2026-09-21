@@ -1,7 +1,7 @@
 """Роли дашборда и список пользователей. Без Streamlit — чтобы правила доступа проверялись тестами.
 
 Вход выполняет Streamlit (Google, OIDC); здесь только решение, что этому человеку можно.
-Админы-«затравка» берутся из секрета ADMIN_EMAILS, остальные — из parser_not_test.dashboard_users.
+Админы-«затравка» берутся из секрета ADMIN_EMAILS, остальные — из bsr_radar.dashboard_users.
 Всё неподтверждённое (нет письма, email не подтверждён, нет в списке, база недоступна) — без прав.
 """
 
@@ -137,14 +137,14 @@ def _run(connect: Connect, sql: str, params: tuple = (), *, fetch: bool = False)
 
 
 def active_user_roles(connect: Connect) -> dict:
-    rows = _run(connect, "SELECT email, role FROM parser_not_test.dashboard_users WHERE active;", fetch=True)
+    rows = _run(connect, "SELECT email, role FROM bsr_radar.dashboard_users WHERE active;", fetch=True)
     return {email: role for email, role in rows if role in _RANK}
 
 
 def list_users(connect: Connect) -> List[dict]:
     rows = _run(
         connect,
-        "SELECT email, role, active, added_by, created_at FROM parser_not_test.dashboard_users ORDER BY email;",
+        "SELECT email, role, active, added_by, created_at FROM bsr_radar.dashboard_users ORDER BY email;",
         fetch=True,
     )
     return [
@@ -165,7 +165,7 @@ def add_user(connect: Connect, email: str, role: str, *, actor_role: Optional[st
     _run(
         connect,
         """
-        INSERT INTO parser_not_test.dashboard_users (email, role, active, added_by)
+        INSERT INTO bsr_radar.dashboard_users (email, role, active, added_by)
         VALUES (%s, %s, TRUE, %s)
         ON CONFLICT (email) DO UPDATE SET role = EXCLUDED.role, active = TRUE, updated_at = now();
         """,
@@ -183,7 +183,7 @@ def set_user_active(connect: Connect, email: str, active: bool, *, actor_role: O
         raise ValueError("Нельзя отключить самого себя.")
     changed = _run(
         connect,
-        "UPDATE parser_not_test.dashboard_users SET active = %s, updated_at = now() WHERE email = %s;",
+        "UPDATE bsr_radar.dashboard_users SET active = %s, updated_at = now() WHERE email = %s;",
         (bool(active), clean),
     )
     if changed != 1:

@@ -6,8 +6,8 @@ name: Сбор данных
 # 2. schedule (cron) — запасной вариант: GitHub запускает его нерегулярно,
 #    иногда раз в несколько часов, поэтому на точное время он не рассчитан.
 # Реальный сбор (расход ScrapingDog) происходит только когда should_collect_now.py
-# решит, что пора: время наступило (parser_not_test.schedule в базе), сегодня ещё
-# не собирали и нет незавершённой попытки (parser_not_test.collection_runs в базе).
+# решит, что пора: время наступило (bsr_radar.schedule в базе), сегодня ещё
+# не собирали и нет незавершённой попытки (bsr_radar.collection_runs в базе).
 on:
   workflow_dispatch:
     inputs:

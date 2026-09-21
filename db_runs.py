@@ -121,17 +121,17 @@ def admit_parser_run(invocation: Invocation) -> Admission:
         # now() был бы временем начала транзакции, ещё до ожидания блокировки.
         cur.execute("SELECT clock_timestamp();")
         now = cur.fetchone()[0]
-        cur.execute("SELECT hour, minute FROM parser_not_test.schedule WHERE id = 1;")
+        cur.execute("SELECT hour, minute FROM bsr_radar.schedule WHERE id = 1;")
         schedule = cur.fetchone()
         cur.execute("""
             SELECT EXISTS (
-                SELECT 1 FROM parser_not_test.collection_runs WHERE status = 'running'
+                SELECT 1 FROM bsr_radar.collection_runs WHERE status = 'running'
             );
         """)
         unfinished = cur.fetchone()[0]
         cur.execute("""
             SELECT count(*), COALESCE(bool_or(status = 'done'), FALSE)
-            FROM parser_not_test.collection_runs
+            FROM bsr_radar.collection_runs
             WHERE step = 'parser'
               AND (started_at AT TIME ZONE 'Europe/Kyiv')::date = %s;
         """, (now.astimezone(TZ).date(),))
@@ -144,7 +144,7 @@ def admit_parser_run(invocation: Invocation) -> Admission:
             decision = Admission(False, reason)
         else:
             cur.execute("""
-                INSERT INTO parser_not_test.collection_runs
+                INSERT INTO bsr_radar.collection_runs
                     (source, step, status, started_at, owner_key)
                 VALUES (%s, 'parser', 'running', %s, %s) RETURNING id;
             """, (invocation.source, now, invocation.owner_key))
@@ -167,7 +167,7 @@ def claim_parser_run(run_id: int, invocation: Invocation) -> None:
     _validate_run_id(run_id)
     with _transaction() as cur:
         cur.execute("""
-            UPDATE parser_not_test.collection_runs SET claimed_at = clock_timestamp()
+            UPDATE bsr_radar.collection_runs SET claimed_at = clock_timestamp()
             WHERE id = %s AND step = 'parser' AND status = 'running'
               AND claimed_at IS NULL AND finished_at IS NULL
               AND source = %s AND owner_key = %s
@@ -184,7 +184,7 @@ def log_start(step: str) -> int:
     source = "github_actions" if os.environ.get("GITHUB_ACTIONS") == "true" else "local"
     with _transaction() as cur:
         cur.execute("""
-            INSERT INTO parser_not_test.collection_runs (source, step, status)
+            INSERT INTO bsr_radar.collection_runs (source, step, status)
             VALUES (%s, %s, 'running') RETURNING id;
         """, (source, step))
         row = cur.fetchone()
@@ -201,7 +201,7 @@ def log_finish(run_id: int, status: str, error: Optional[str] = None) -> None:
         raise RunStoreError("Некорректный итоговый статус попытки.")
     with _transaction() as cur:
         cur.execute("""
-            UPDATE parser_not_test.collection_runs
+            UPDATE bsr_radar.collection_runs
             SET status = %s, error = %s, finished_at = clock_timestamp()
             WHERE id = %s AND status = 'running'
               AND (step <> 'parser' OR claimed_at IS NOT NULL)

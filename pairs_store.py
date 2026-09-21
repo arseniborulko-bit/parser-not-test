@@ -144,9 +144,9 @@ def make_plan(connect: Connect, our_text: object, market_choice: Optional[str], 
     known_rows, active_now = dbutil.run_many(
         connect,
         [
-            ("SELECT marketplace, COALESCE(our_product, '') FROM parser_not_test.competitor_pairs "
+            ("SELECT marketplace, COALESCE(our_product, '') FROM bsr_radar.competitor_pairs "
              "WHERE our_asin = %s ORDER BY active DESC, id;", (our.asin,), True),
-            ("SELECT count(*) FROM parser_not_test.competitor_pairs WHERE active;", (), True),
+            ("SELECT count(*) FROM bsr_radar.competitor_pairs WHERE active;", (), True),
         ],
         error=PairsStoreError, what=_WHAT,
     )
@@ -180,9 +180,9 @@ def make_plan(connect: Connect, our_text: object, market_choice: Optional[str], 
         status_rows, collected_rows = dbutil.run_many(
             connect,
             [
-                ("SELECT comp_asin, active FROM parser_not_test.competitor_pairs "
+                ("SELECT comp_asin, active FROM bsr_radar.competitor_pairs "
                  "WHERE marketplace = %s AND our_asin = %s AND comp_asin = ANY(%s);", (market, our.asin, candidates), True),
-                ("SELECT a FROM unnest(%s::text[]) AS a WHERE EXISTS (SELECT 1 FROM parser_not_test.competitor_pairs "
+                ("SELECT a FROM unnest(%s::text[]) AS a WHERE EXISTS (SELECT 1 FROM bsr_radar.competitor_pairs "
                  "WHERE active AND (our_asin = a OR comp_asin = a));", (candidates + [our.asin],), True),
             ],
             error=PairsStoreError, what=_WHAT,
@@ -207,14 +207,14 @@ def make_plan(connect: Connect, our_text: object, market_choice: Optional[str], 
 
 def journal_exists(connect: Connect) -> bool:
     """Журнал (pair_changes) необязателен: пока таблицы нет, изменения применяются без записи в журнал."""
-    return bool(_run(connect, "SELECT to_regclass('parser_not_test.pair_changes') IS NOT NULL;", fetch=True)[0][0])
+    return bool(_run(connect, "SELECT to_regclass('bsr_radar.pair_changes') IS NOT NULL;", fetch=True)[0][0])
 
 
 _ADD_NO_JOURNAL_SQL = """
 WITH input AS (
     SELECT * FROM unnest(%s::text[], %s::text[], %s::text[], %s::text[]) AS t(marketplace, our_asin, our_product, comp_asin)
 ), changed AS (
-    INSERT INTO parser_not_test.competitor_pairs AS p (marketplace, our_asin, our_product, comp_asin, active)
+    INSERT INTO bsr_radar.competitor_pairs AS p (marketplace, our_asin, our_product, comp_asin, active)
     SELECT marketplace, our_asin, our_product, comp_asin, TRUE FROM input
     ON CONFLICT (marketplace, our_asin, comp_asin) DO UPDATE SET active = TRUE
     WHERE NOT p.active
@@ -227,7 +227,7 @@ _SET_ACTIVE_NO_JOURNAL_SQL = """
 WITH input AS (
     SELECT * FROM unnest(%s::text[], %s::text[], %s::text[]) AS t(marketplace, our_asin, comp_asin)
 ), changed AS (
-    UPDATE parser_not_test.competitor_pairs AS p SET active = %s
+    UPDATE bsr_radar.competitor_pairs AS p SET active = %s
     FROM input i
     WHERE p.marketplace = i.marketplace AND p.our_asin = i.our_asin AND p.comp_asin = i.comp_asin
       AND p.active IS DISTINCT FROM %s
@@ -240,13 +240,13 @@ _ADD_SQL = """
 WITH input AS (
     SELECT * FROM unnest(%s::text[], %s::text[], %s::text[], %s::text[]) AS t(marketplace, our_asin, our_product, comp_asin)
 ), changed AS (
-    INSERT INTO parser_not_test.competitor_pairs AS p (marketplace, our_asin, our_product, comp_asin, active)
+    INSERT INTO bsr_radar.competitor_pairs AS p (marketplace, our_asin, our_product, comp_asin, active)
     SELECT marketplace, our_asin, our_product, comp_asin, TRUE FROM input
     ON CONFLICT (marketplace, our_asin, comp_asin) DO UPDATE SET active = TRUE
     WHERE NOT p.active
     RETURNING p.marketplace, p.our_asin, p.comp_asin, (xmax = 0) AS inserted
 )
-INSERT INTO parser_not_test.pair_changes (actor, action, marketplace, our_asin, comp_asin)
+INSERT INTO bsr_radar.pair_changes (actor, action, marketplace, our_asin, comp_asin)
 SELECT %s, CASE WHEN inserted THEN 'add' ELSE 'enable' END, marketplace, our_asin, comp_asin FROM changed
 RETURNING action;
 """
@@ -255,13 +255,13 @@ _SET_ACTIVE_SQL = """
 WITH input AS (
     SELECT * FROM unnest(%s::text[], %s::text[], %s::text[]) AS t(marketplace, our_asin, comp_asin)
 ), changed AS (
-    UPDATE parser_not_test.competitor_pairs AS p SET active = %s
+    UPDATE bsr_radar.competitor_pairs AS p SET active = %s
     FROM input i
     WHERE p.marketplace = i.marketplace AND p.our_asin = i.our_asin AND p.comp_asin = i.comp_asin
       AND p.active IS DISTINCT FROM %s
     RETURNING p.marketplace, p.our_asin, p.comp_asin
 )
-INSERT INTO parser_not_test.pair_changes (actor, action, marketplace, our_asin, comp_asin)
+INSERT INTO bsr_radar.pair_changes (actor, action, marketplace, our_asin, comp_asin)
 SELECT %s, %s, marketplace, our_asin, comp_asin FROM changed
 RETURNING 1;
 """
@@ -311,7 +311,7 @@ def set_pairs_active(connect: Connect, keys: Sequence[Tuple[str, str, str]], act
 def recent_changes(connect: Connect, limit: int = 30) -> List[dict]:
     rows = _run(
         connect,
-        "SELECT at, actor, action, marketplace, our_asin, comp_asin FROM parser_not_test.pair_changes "
+        "SELECT at, actor, action, marketplace, our_asin, comp_asin FROM bsr_radar.pair_changes "
         "ORDER BY at DESC, id DESC LIMIT %s;",
         (int(limit),), fetch=True,
     )

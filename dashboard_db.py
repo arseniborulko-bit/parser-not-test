@@ -1,5 +1,5 @@
 """
-SaaS-дашборд, читающий данные из Postgres (schema parser_not_test), а не из
+SaaS-дашборд, читающий данные из Postgres (schema bsr_radar), а не из
 Google Sheets API напрямую. Данные в базу попадают через sync_sheets_to_db.py.
 
 Пока читает из базы каждый раз при обновлении (без записи куда-либо) — кнопка
@@ -160,7 +160,7 @@ def load_snapshots() -> pd.DataFrame:
             SELECT snapshot_date, marketplace, currency, our_asin, our_product, our_price,
                    our_bsr, our_bsr_delta_24h, comp_asin, competitor_name, comp_price,
                    comp_bsr, comp_bsr_delta_24h, comp_stock, price_diff_pct, updated_at
-            FROM parser_not_test.snapshots
+            FROM bsr_radar.snapshots
             ORDER BY snapshot_date DESC
             """,
             conn,
@@ -180,8 +180,8 @@ def load_current() -> pd.DataFrame:
                    s.snapshot_date, s.marketplace, s.currency, s.our_asin, s.our_product, s.our_price,
                    s.our_bsr, s.our_bsr_delta_24h, s.comp_asin, s.competitor_name, s.comp_price,
                    s.comp_bsr, s.comp_bsr_delta_24h, s.comp_stock, s.price_diff_pct, s.updated_at
-            FROM parser_not_test.snapshots s
-            JOIN parser_not_test.competitor_pairs p
+            FROM bsr_radar.snapshots s
+            JOIN bsr_radar.competitor_pairs p
               ON p.our_asin = s.our_asin AND p.comp_asin = s.comp_asin AND p.active
             ORDER BY s.our_asin, s.comp_asin, s.snapshot_date DESC
             """,
@@ -202,9 +202,9 @@ def load_competitor_pairs() -> pd.DataFrame:
                    p.comp_asin,
                    COALESCE(NULLIF(p.competitor_name, ''), s.competitor_name, '') AS competitor_name,
                    p.active
-            FROM parser_not_test.competitor_pairs p
+            FROM bsr_radar.competitor_pairs p
             LEFT JOIN LATERAL (
-                SELECT our_product, competitor_name FROM parser_not_test.snapshots
+                SELECT our_product, competitor_name FROM bsr_radar.snapshots
                 WHERE our_asin = p.our_asin AND comp_asin = p.comp_asin
                 ORDER BY snapshot_date DESC LIMIT 1
             ) s ON TRUE
@@ -615,7 +615,7 @@ def main() -> None:
     with left:
         st.markdown('<p class="brand-subtitle">Мониторинг Amazon-конкурентов и аналитика портфеля</p>', unsafe_allow_html=True)
     with right:
-        st.markdown('<div class="source-badge">🗄 Источник: база данных (parser_not_test), не Google Sheets</div>', unsafe_allow_html=True)
+        st.markdown('<div class="source-badge">🗄 Источник: база данных (bsr_radar), не Google Sheets</div>', unsafe_allow_html=True)
         _render_auth_bar(user, email, role)
         if role is None:
             _render_unlock_box()

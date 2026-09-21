@@ -270,4 +270,4 @@ def test_the_current_state_query_only_counts_active_pairs():
     import dashboard_db
 
     source = inspect.getsource(dashboard_db.load_current.__wrapped__ if hasattr(dashboard_db.load_current, "__wrapped__") else dashboard_db.load_current)
-    assert "JOIN parser_not_test.competitor_pairs" in source and "p.active" in source
+    assert "JOIN bsr_radar.competitor_pairs" in source and "p.active" in source

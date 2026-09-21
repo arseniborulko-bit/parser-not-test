@@ -1,9 +1,9 @@
 -- Схема под проект "parser not test" (Amazon BSR competitor tracker).
 -- Живёт в общей базе рядом с другими проектами — ничего вне этой схемы не трогаем.
 
-CREATE SCHEMA IF NOT EXISTS parser_not_test;
+CREATE SCHEMA IF NOT EXISTS bsr_radar;
 
-CREATE TABLE IF NOT EXISTS parser_not_test.competitor_pairs (
+CREATE TABLE IF NOT EXISTS bsr_radar.competitor_pairs (
     id SERIAL PRIMARY KEY,
     marketplace TEXT NOT NULL,
     our_asin TEXT NOT NULL,
@@ -14,7 +14,7 @@ CREATE TABLE IF NOT EXISTS parser_not_test.competitor_pairs (
     UNIQUE (marketplace, our_asin, comp_asin)
 );
 
-CREATE TABLE IF NOT EXISTS parser_not_test.snapshots (
+CREATE TABLE IF NOT EXISTS bsr_radar.snapshots (
     id BIGSERIAL PRIMARY KEY,
     snapshot_date DATE NOT NULL,
     marketplace TEXT NOT NULL,
@@ -38,7 +38,7 @@ CREATE TABLE IF NOT EXISTS parser_not_test.snapshots (
 -- Одна строка (id = 1) — время ежедневного автозапуска парсера. Раньше это
 -- время задавалось в листе Config Google Таблицы; теперь дашборд пишет его
 -- сюда и сразу же перепрограммирует задачу Планировщика Windows.
-CREATE TABLE IF NOT EXISTS parser_not_test.schedule (
+CREATE TABLE IF NOT EXISTS bsr_radar.schedule (
     id SMALLINT PRIMARY KEY DEFAULT 1,
     hour SMALLINT NOT NULL CHECK (hour BETWEEN 0 AND 23),
     minute SMALLINT NOT NULL CHECK (minute BETWEEN 0 AND 59),
@@ -49,7 +49,7 @@ CREATE TABLE IF NOT EXISTS parser_not_test.schedule (
 -- История запусков (ручных и автоматических, локальных и из GitHub Actions).
 -- Нужна дашборду и любому облачному раннеру, чтобы видеть статус — локальный
 -- run_status.json из облака не виден.
-CREATE TABLE IF NOT EXISTS parser_not_test.collection_runs (
+CREATE TABLE IF NOT EXISTS bsr_radar.collection_runs (
     id BIGSERIAL PRIMARY KEY,
     source TEXT NOT NULL,              -- 'local' | 'github_actions' и т.п.
     step TEXT NOT NULL,                -- 'parser' | 'sync'
@@ -65,10 +65,10 @@ CREATE TABLE IF NOT EXISTS parser_not_test.collection_runs (
 -- CREATE TABLE IF NOT EXISTS выше не добавляет колонки в существующие таблицы.
 
 CREATE INDEX IF NOT EXISTS collection_runs_started_at_idx
-    ON parser_not_test.collection_runs (started_at DESC);
+    ON bsr_radar.collection_runs (started_at DESC);
 
 -- Зеркало листа "Подписчики" — кто написал Telegram-боту, чтобы получать отчёты.
-CREATE TABLE IF NOT EXISTS parser_not_test.telegram_subscribers (
+CREATE TABLE IF NOT EXISTS bsr_radar.telegram_subscribers (
     telegram_id TEXT PRIMARY KEY,
     username TEXT,
     first_name TEXT,

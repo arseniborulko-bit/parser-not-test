@@ -1,9 +1,9 @@
 """
-Синхронизация Google Sheets -> Postgres (schema parser_not_test).
+Синхронизация Google Sheets -> Postgres (schema bsr_radar).
 
 Читает листы Competitors / Current / History из таблицы BSR_Competitors_Tracker
 (только на чтение, ничего в Google Sheets не меняет) и заливает данные в
-таблицы parser_not_test.competitor_pairs и parser_not_test.snapshots через
+таблицы bsr_radar.competitor_pairs и bsr_radar.snapshots через
 upsert (ON CONFLICT DO UPDATE), так что повторный запуск безопасен и не
 создаёт дублей.
 
@@ -118,7 +118,7 @@ def sync_competitor_pairs(spreadsheet: gspread.Spreadsheet, conn) -> int:
         execute_values(
             cur,
             """
-            INSERT INTO parser_not_test.competitor_pairs
+            INSERT INTO bsr_radar.competitor_pairs
                 (marketplace, our_asin, our_product, comp_asin, competitor_name, active)
             VALUES %s
             ON CONFLICT (marketplace, our_asin, comp_asin) DO UPDATE SET
@@ -136,7 +136,7 @@ def sync_competitor_pairs(spreadsheet: gspread.Spreadsheet, conn) -> int:
     # Помечаем такие пары неактивными явно.
     seen_keys = set(deduped.keys())
     with conn.cursor() as cur:
-        cur.execute("SELECT marketplace, our_asin, comp_asin FROM parser_not_test.competitor_pairs WHERE active = TRUE;")
+        cur.execute("SELECT marketplace, our_asin, comp_asin FROM bsr_radar.competitor_pairs WHERE active = TRUE;")
         stale_keys = {tuple(row) for row in cur.fetchall()} - seen_keys
 
     if stale_keys:
@@ -144,7 +144,7 @@ def sync_competitor_pairs(spreadsheet: gspread.Spreadsheet, conn) -> int:
             execute_values(
                 cur,
                 """
-                UPDATE parser_not_test.competitor_pairs AS t
+                UPDATE bsr_radar.competitor_pairs AS t
                 SET active = FALSE
                 FROM (VALUES %s) AS s(marketplace, our_asin, comp_asin)
                 WHERE t.marketplace = s.marketplace
@@ -216,7 +216,7 @@ def sync_snapshots(spreadsheet: gspread.Spreadsheet, conn, sheet_title: str) -> 
         execute_values(
             cur,
             """
-            INSERT INTO parser_not_test.snapshots
+            INSERT INTO bsr_radar.snapshots
                 (snapshot_date, marketplace, currency, our_asin, our_product, our_price,
                  our_bsr, our_bsr_delta_24h, comp_asin, competitor_name, comp_price,
                  comp_bsr, comp_bsr_delta_24h, comp_stock, price_diff_pct)
@@ -249,7 +249,7 @@ def _to_int(value: str) -> Optional[int]:
 
 
 def sync_subscribers(spreadsheet: gspread.Spreadsheet, conn) -> int:
-    """Зеркалит лист 'Подписчики' в parser_not_test.telegram_subscribers.
+    """Зеркалит лист 'Подписчики' в bsr_radar.telegram_subscribers.
     Новые подписчики по-прежнему пишутся ботом только в Sheets - здесь только чтение."""
     try:
         ws = spreadsheet.worksheet("Подписчики")
@@ -287,7 +287,7 @@ def sync_subscribers(spreadsheet: gspread.Spreadsheet, conn) -> int:
         execute_values(
             cur,
             """
-            INSERT INTO parser_not_test.telegram_subscribers
+            INSERT INTO bsr_radar.telegram_subscribers
                 (telegram_id, username, first_name, subscribed_at, active)
             VALUES %s
             ON CONFLICT (telegram_id) DO UPDATE SET

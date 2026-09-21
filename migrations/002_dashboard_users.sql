@@ -4,7 +4,7 @@ BEGIN;
 SET LOCAL lock_timeout = '5s';
 SET LOCAL statement_timeout = '10s';
 
-CREATE TABLE IF NOT EXISTS parser_not_test.dashboard_users (
+CREATE TABLE IF NOT EXISTS bsr_radar.dashboard_users (
     email TEXT PRIMARY KEY CHECK (email = lower(email)),
     role TEXT NOT NULL CHECK (role IN ('admin', 'editor')),
     active BOOLEAN NOT NULL DEFAULT TRUE,

@@ -1,5 +1,5 @@
 """
-Чтение подписчиков Telegram напрямую из Postgres (parser_not_test.telegram_subscribers)
+Чтение подписчиков Telegram напрямую из Postgres (bsr_radar.telegram_subscribers)
 как альтернатива чтению листа "Подписчики" в Google Sheets.
 
 Используется парсером только когда задана переменная окружения
@@ -27,7 +27,7 @@ def load_subscribers_from_db() -> List[Dict[str, str]]:
             cur.execute(
                 """
                 SELECT telegram_id, username, first_name, subscribed_at, active
-                FROM parser_not_test.telegram_subscribers
+                FROM bsr_radar.telegram_subscribers
                 ORDER BY telegram_id
                 """
             )

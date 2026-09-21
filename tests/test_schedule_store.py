@@ -160,7 +160,7 @@ def test_enabled_save_upserts_the_single_schedule_row(role):
     db = FakeDb()
     schedule_store.save_schedule(db.connect, 10, 30, True, actor_role=role, actor="Аня")
     sql, params = db.executed[0]
-    assert "INSERT INTO parser_not_test.schedule" in sql and "ON CONFLICT (id)" in sql
+    assert "INSERT INTO bsr_radar.schedule" in sql and "ON CONFLICT (id)" in sql
     assert params == (10, 30)
     assert (db.commits, db.closed) == (1, 1)
 
@@ -169,7 +169,7 @@ def test_disabled_save_removes_the_schedule_row():
     db = FakeDb()
     schedule_store.save_schedule(db.connect, 10, 30, False, actor_role=access.ROLE_EDITOR, actor="Аня")
     sql, params = db.executed[0]
-    assert sql.strip().startswith("DELETE FROM parser_not_test.schedule WHERE id = 1")
+    assert sql.strip().startswith("DELETE FROM bsr_radar.schedule WHERE id = 1")
     assert params == ()
     assert db.commits == 1
 

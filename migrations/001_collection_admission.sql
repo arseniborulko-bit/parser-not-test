@@ -5,7 +5,7 @@ BEGIN;
 SET LOCAL lock_timeout = '5s';
 SET LOCAL statement_timeout = '10s';
 
-ALTER TABLE parser_not_test.collection_runs
+ALTER TABLE bsr_radar.collection_runs
     ADD COLUMN IF NOT EXISTS owner_key TEXT,
     ADD COLUMN IF NOT EXISTS claimed_at TIMESTAMPTZ;
 

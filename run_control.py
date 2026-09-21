@@ -63,10 +63,10 @@ def admission_preview(connect: Connect, now: datetime) -> Optional[str]:
     schedule_rows, unfinished_rows, count_rows = dbutil.run_many(
         connect,
         [
-            ("SELECT hour, minute FROM parser_not_test.schedule WHERE id = 1;", (), True),
-            ("SELECT EXISTS (SELECT 1 FROM parser_not_test.collection_runs WHERE status = 'running');", (), True),
+            ("SELECT hour, minute FROM bsr_radar.schedule WHERE id = 1;", (), True),
+            ("SELECT EXISTS (SELECT 1 FROM bsr_radar.collection_runs WHERE status = 'running');", (), True),
             (
-                "SELECT count(*), COALESCE(bool_or(status = 'done'), FALSE) FROM parser_not_test.collection_runs "
+                "SELECT count(*), COALESCE(bool_or(status = 'done'), FALSE) FROM bsr_radar.collection_runs "
                 "WHERE step = 'parser' AND (started_at AT TIME ZONE 'Europe/Kyiv')::date = %s;",
                 (today,),
                 True,

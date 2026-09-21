@@ -1,5 +1,5 @@
 """
-Чтение пар "наш ASIN - конкурент" напрямую из Postgres (parser_not_test.competitor_pairs)
+Чтение пар "наш ASIN - конкурент" напрямую из Postgres (bsr_radar.competitor_pairs)
 как альтернатива чтению листа Competitors в Google Sheets.
 
 Используется парсером только когда задана переменная окружения PAIR_SOURCE=database
@@ -32,7 +32,7 @@ def load_active_competitor_pairs_from_db() -> List[Dict[str, str]]:
             cur.execute(
                 """
                 SELECT marketplace, our_asin, our_product, comp_asin, competitor_name
-                FROM parser_not_test.competitor_pairs
+                FROM bsr_radar.competitor_pairs
                 WHERE active = TRUE
                 ORDER BY marketplace, our_asin
                 """

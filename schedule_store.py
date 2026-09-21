@@ -1,6 +1,6 @@
 """Расписание автосбора. Без Streamlit — чтобы правила проверялись тестами.
 
-Время хранится в parser_not_test.schedule (одна строка id=1). Нет строки = автосбор выключен:
+Время хранится в bsr_radar.schedule (одна строка id=1). Нет строки = автосбор выключен:
 проверка в GitHub Actions уже пропускает сбор при «Расписание в базе не задано», так что
 выключатель не требует ни новых колонок, ни правок самого сбора.
 """
@@ -74,11 +74,11 @@ def load_overview(connect: Connect, now: datetime) -> Overview:
     schedule_rows, collected_rows, run_rows = dbutil.run_many(
         connect,
         [
-            ("SELECT hour, minute FROM parser_not_test.schedule WHERE id = 1;", (), True),
+            ("SELECT hour, minute FROM bsr_radar.schedule WHERE id = 1;", (), True),
             (
                 """
                 SELECT EXISTS (
-                    SELECT 1 FROM parser_not_test.collection_runs
+                    SELECT 1 FROM bsr_radar.collection_runs
                     WHERE step = 'parser' AND status = 'done'
                       AND (started_at AT TIME ZONE 'Europe/Kyiv')::date = %s
                 );
@@ -89,7 +89,7 @@ def load_overview(connect: Connect, now: datetime) -> Overview:
             (
                 """
                 SELECT started_at, finished_at, status, error
-                FROM parser_not_test.collection_runs
+                FROM bsr_radar.collection_runs
                 WHERE step = 'parser'
                 ORDER BY started_at DESC
                 LIMIT 5;
@@ -117,7 +117,7 @@ def save_schedule(connect: Connect, hour: int, minute: int, enabled: bool, *,
         dbutil.run_sql(
             connect,
             """
-            INSERT INTO parser_not_test.schedule (id, hour, minute, updated_at)
+            INSERT INTO bsr_radar.schedule (id, hour, minute, updated_at)
             VALUES (1, %s, %s, now())
             ON CONFLICT (id) DO UPDATE SET hour = EXCLUDED.hour, minute = EXCLUDED.minute, updated_at = now();
             """,
@@ -128,7 +128,7 @@ def save_schedule(connect: Connect, hour: int, minute: int, enabled: bool, *,
         log.info("Расписание изменено (%s): автосбор включён, %02d:%02d Киев", actor, hour, minute)
     else:
         dbutil.run_sql(
-            connect, "DELETE FROM parser_not_test.schedule WHERE id = 1;", (),
+            connect, "DELETE FROM bsr_radar.schedule WHERE id = 1;", (),
             error=ScheduleStoreError, what=_WHAT,
         )
         log.info("Расписание изменено (%s): автосбор выключен", actor)

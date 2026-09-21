@@ -79,33 +79,33 @@ def connect():
 
 
 def reset(schema_sql: str = NEW_SCHEMA, schedule: tuple | None = (0, 0), migrations: bool = True) -> None:
-    q("DROP SCHEMA IF EXISTS parser_not_test CASCADE;")
-    q("CREATE SCHEMA parser_not_test;")
+    q("DROP SCHEMA IF EXISTS bsr_radar CASCADE;")
+    q("CREATE SCHEMA bsr_radar;")
     q(schema_sql)
     if migrations:
         for sql in MIGRATIONS.values():
             q(sql)
     if schedule:
-        q("INSERT INTO parser_not_test.schedule (id, hour, minute) VALUES (1, %s, %s);", schedule)
+        q("INSERT INTO bsr_radar.schedule (id, hour, minute) VALUES (1, %s, %s);", schedule)
 
 
 def reset_old() -> None:
     """Схема как на боевой до миграции 001: текущая схема без колонок owner_key и claimed_at."""
     reset(migrations=False)
-    q("ALTER TABLE parser_not_test.collection_runs DROP COLUMN owner_key, DROP COLUMN claimed_at;")
+    q("ALTER TABLE bsr_radar.collection_runs DROP COLUMN owner_key, DROP COLUMN claimed_at;")
 
 
 def insert_run(step, status, started, finished=None, owner_key=None, claimed=None, source="github_actions", new_columns=True):
     if new_columns:
-        q("INSERT INTO parser_not_test.collection_runs (source, step, status, started_at, finished_at, owner_key, claimed_at) "
+        q("INSERT INTO bsr_radar.collection_runs (source, step, status, started_at, finished_at, owner_key, claimed_at) "
           "VALUES (%s, %s, %s, %s, %s, %s, %s);", (source, step, status, started, finished, owner_key, claimed))
     else:
-        q("INSERT INTO parser_not_test.collection_runs (source, step, status, started_at, finished_at) "
+        q("INSERT INTO bsr_radar.collection_runs (source, step, status, started_at, finished_at) "
           "VALUES (%s, %s, %s, %s, %s);", (source, step, status, started, finished))
 
 
 def count(where: str = "TRUE") -> int:
-    return q(f"SELECT count(*) FROM parser_not_test.collection_runs WHERE {where};")[0][0]
+    return q(f"SELECT count(*) FROM bsr_radar.collection_runs WHERE {where};")[0][0]
 
 
 def gh(run, attempt=1, force=False):
@@ -143,19 +143,19 @@ def section_schedule_and_users() -> None:
     print("\n== расписание и пользователи дашборда ==")
     editor = dict(actor_role=access.ROLE_EDITOR, actor="Аня")
     reset()
-    q("DELETE FROM parser_not_test.schedule;")
+    q("DELETE FROM bsr_radar.schedule;")
     ov = schedule_store.load_overview(connect, kyiv(2026, 9, 21, 8, 0))
     check("пустая база: расписания нет, сегодня не собирали, запусков нет", ov.schedule is None and not ov.collected_today and ov.runs == [])
     schedule_store.save_schedule(connect, 9, 0, True, **editor)
     check("включение записывает время", schedule_store.load_overview(connect, kyiv(2026, 9, 21, 8, 0)).schedule == schedule_store.Schedule(9, 0))
     schedule_store.save_schedule(connect, 10, 30, True, **editor)
-    check("повторное сохранение обновляет ту же единственную строку", q("SELECT count(*), min(hour), min(minute) FROM parser_not_test.schedule;")[0] == (1, 10, 30))
+    check("повторное сохранение обновляет ту же единственную строку", q("SELECT count(*), min(hour), min(minute) FROM bsr_radar.schedule;")[0] == (1, 10, 30))
     schedule_store.save_schedule(connect, 10, 30, False, **editor)
     check("выключение удаляет строку", schedule_store.load_overview(connect, kyiv(2026, 9, 21, 8, 0)).schedule is None)
     schedule_store.save_schedule(connect, 9, 0, False, **editor)
     check("выключение без строки не падает", True)
 
-    q("INSERT INTO parser_not_test.collection_runs (source, step, status, started_at, finished_at) VALUES "
+    q("INSERT INTO bsr_radar.collection_runs (source, step, status, started_at, finished_at) VALUES "
       "('github_actions','parser','done','2026-09-20 22:30:00+00','2026-09-20 22:42:00+00'),"
       "('github_actions','sync','done','2026-09-20 22:43:00+00','2026-09-20 22:44:00+00'),"
       "('github_actions','parser','error','2026-09-19 06:00:00+00','2026-09-19 06:05:00+00'),"
@@ -175,9 +175,9 @@ def section_schedule_and_users() -> None:
     access.set_user_active(connect, "test@example.com", False, **admin)
     check("отключённый не попадает в активные", access.active_user_roles(connect) == {})
     for label, stmt, params in (
-        ("CHECK: email только строчными", "INSERT INTO parser_not_test.dashboard_users (email, role) VALUES (%s, %s);", ("UPPER@EXAMPLE.COM", "editor")),
-        ("CHECK: роль только admin/editor", "INSERT INTO parser_not_test.dashboard_users (email, role) VALUES (%s, %s);", ("x@example.com", "superuser")),
-        ("CHECK: в расписании допустима только строка id=1", "INSERT INTO parser_not_test.schedule (id, hour, minute) VALUES (2, 9, 0);", ()),
+        ("CHECK: email только строчными", "INSERT INTO bsr_radar.dashboard_users (email, role) VALUES (%s, %s);", ("UPPER@EXAMPLE.COM", "editor")),
+        ("CHECK: роль только admin/editor", "INSERT INTO bsr_radar.dashboard_users (email, role) VALUES (%s, %s);", ("x@example.com", "superuser")),
+        ("CHECK: в расписании допустима только строка id=1", "INSERT INTO bsr_radar.schedule (id, hour, minute) VALUES (2, 9, 0);", ()),
     ):
         try:
             q(stmt, params)
@@ -204,7 +204,7 @@ def section_pairs() -> None:
     ours, mine = "B0OURASIN1", dict(actor_role=access.ROLE_EDITOR, actor="Аня")
 
     def seed():
-        q("INSERT INTO parser_not_test.competitor_pairs (marketplace, our_asin, our_product, comp_asin, competitor_name, active) VALUES "
+        q("INSERT INTO bsr_radar.competitor_pairs (marketplace, our_asin, our_product, comp_asin, competitor_name, active) VALUES "
           "('US', %s, 'Our product', 'B0COMPAAA1', 'Comp A1', TRUE),"
           "('US', %s, 'Our product', 'B0COMPAAA2', '', FALSE),"
           "('CA', 'B0OTHERAA1', 'Other', 'B0COMPBBB1', 'Comp B1', TRUE);", (ours, ours))
@@ -218,7 +218,7 @@ def section_pairs() -> None:
     early = pairs_store.apply_plan(connect, pairs_store.make_plan(connect, ours, None, "B0COMPAAA2 B0COMPAAA3"), **mine)
     check("без журнала пары добавляются и возвращаются", early == {"add": 1, "enable": 1}, str(early))
     check("без журнала пары отключаются", pairs_store.set_pairs_active(connect, [("US", ours, "B0COMPAAA3")], False, **mine) == 1
-          and q("SELECT count(*) FROM parser_not_test.competitor_pairs WHERE active;")[0][0] == 3)
+          and q("SELECT count(*) FROM bsr_radar.competitor_pairs WHERE active;")[0][0] == 3)
     q(MIGRATIONS["003_pair_changes.sql"])
     check("после миграции журнал подключается сам", pairs_store.journal_exists(connect) is True)
 
@@ -230,29 +230,29 @@ def section_pairs() -> None:
           plan.market == "US" and plan.our_product == "Our product" and sorted(plan.to_add) == ["B0COMPAAA3", "B0COMPAAA4"]
           and plan.to_enable == ["B0COMPAAA2"] and plan.already == ["B0COMPAAA1"] and plan.invalid == ["junk"], str(plan.errors))
     check("«в каждый сбор добавится ASIN»: считаются только ASIN, которых ещё нет среди активных", plan.new_asins == 3)
-    check("план ничего не записал", q("SELECT count(*) FROM parser_not_test.competitor_pairs;")[0][0] == 3
-          and q("SELECT count(*) FROM parser_not_test.pair_changes;")[0][0] == 0)
+    check("план ничего не записал", q("SELECT count(*) FROM bsr_radar.competitor_pairs;")[0][0] == 3
+          and q("SELECT count(*) FROM bsr_radar.pair_changes;")[0][0] == 0)
 
     result = pairs_store.apply_plan(connect, plan, **mine)
     check("применение: 2 добавлено, 1 возвращено", result == {"add": 2, "enable": 1}, str(result))
-    log = q("SELECT action, actor, marketplace, our_asin FROM parser_not_test.pair_changes ORDER BY id;")
+    log = q("SELECT action, actor, marketplace, our_asin FROM bsr_radar.pair_changes ORDER BY id;")
     check("журнал записан в той же транзакции: кто, что, где", sorted(a for a, *_ in log) == ["add", "add", "enable"]
           and {row[1] for row in log} == {"Аня"} and {row[2] for row in log} == {"US"})
     check("новые пары активны и получили название нашего товара",
-          q("SELECT count(*) FROM parser_not_test.competitor_pairs WHERE active AND our_product = 'Our product' AND our_asin = %s;", (ours,))[0][0] == 4)
+          q("SELECT count(*) FROM bsr_radar.competitor_pairs WHERE active AND our_product = 'Our product' AND our_asin = %s;", (ours,))[0][0] == 4)
     again = pairs_store.apply_plan(connect, pairs_store.make_plan(connect, ours, None, "B0COMPAAA3 B0COMPAAA2"), **mine)
     check("повторное добавление ничего не меняет и не пишет в журнал", again == {"add": 0, "enable": 0}
-          and q("SELECT count(*) FROM parser_not_test.pair_changes;")[0][0] == 3)
+          and q("SELECT count(*) FROM bsr_radar.pair_changes;")[0][0] == 3)
 
     keys = [("US", ours, "B0COMPAAA3"), ("US", ours, "B0COMPAAA4")]
     check("отключение двух пар", pairs_store.set_pairs_active(connect, keys, False, **mine) == 2)
     check("повторное отключение ничего не меняет", pairs_store.set_pairs_active(connect, keys, False, **mine) == 0)
-    check("отключённые пары остались в таблице (история цела)", q("SELECT count(*) FROM parser_not_test.competitor_pairs WHERE NOT active;")[0][0] == 2)
+    check("отключённые пары остались в таблице (история цела)", q("SELECT count(*) FROM bsr_radar.competitor_pairs WHERE NOT active;")[0][0] == 2)
     plan2 = pairs_store.make_plan(connect, ours, None, "B0COMPAAA3")
     check("отключённую пару можно вернуть добавлением: это «возврат», а не «новая»", plan2.to_enable == ["B0COMPAAA3"] and not plan2.to_add)
     pairs_store.apply_plan(connect, plan2, **mine)
     check("возврат записан в журнал как enable, не add",
-          q("SELECT action FROM parser_not_test.pair_changes ORDER BY id DESC LIMIT 1;")[0][0] == "enable")
+          q("SELECT action FROM bsr_radar.pair_changes ORDER BY id DESC LIMIT 1;")[0][0] == "enable")
     check("последние изменения читаются, новые сверху", pairs_store.recent_changes(connect, 3)[0]["action"] == "enable")
 
     fresh = "B0COMPNEW1"
@@ -261,17 +261,17 @@ def section_pairs() -> None:
     total = sum(r["add"] + r["enable"] for kind, r in out if kind == "ok")
     check("12 одновременных добавлений одной пары: в базе одна строка, в журнале одна запись",
           not [e for kind, e in out if kind == "err"] and total == 1
-          and q("SELECT count(*) FROM parser_not_test.competitor_pairs WHERE comp_asin = %s;", (fresh,))[0][0] == 1
-          and q("SELECT count(*) FROM parser_not_test.pair_changes WHERE comp_asin = %s;", (fresh,))[0][0] == 1)
+          and q("SELECT count(*) FROM bsr_radar.competitor_pairs WHERE comp_asin = %s;", (fresh,))[0][0] == 1
+          and q("SELECT count(*) FROM bsr_radar.pair_changes WHERE comp_asin = %s;", (fresh,))[0][0] == 1)
 
     try:
-        q("INSERT INTO parser_not_test.pair_changes (actor, action, marketplace, our_asin, comp_asin) VALUES ('x', 'delete', 'US', 'a', 'b');")
+        q("INSERT INTO bsr_radar.pair_changes (actor, action, marketplace, our_asin, comp_asin) VALUES ('x', 'delete', 'US', 'a', 'b');")
         check("CHECK: в журнале допустимы только add/enable/disable", False)
     except psycopg2.errors.CheckViolation:
         check("CHECK: в журнале допустимы только add/enable/disable", True)
 
     # Запросы дашборда — ровно те, что лежат в dashboard_db.py.
-    q("INSERT INTO parser_not_test.snapshots (snapshot_date, marketplace, our_asin, our_product, comp_asin, competitor_name, our_bsr, comp_bsr) VALUES "
+    q("INSERT INTO bsr_radar.snapshots (snapshot_date, marketplace, our_asin, our_product, comp_asin, competitor_name, our_bsr, comp_bsr) VALUES "
       "('2026-09-20', 'US', %s, 'Our title', 'B0COMPAAA1', 'Scraped A1', 100, 200),"
       "('2026-09-21', 'US', %s, 'Our title', 'B0COMPAAA1', 'Scraped A1', 101, 201),"
       "('2026-09-21', 'US', %s, 'Our title', 'B0COMPAAA2', 'Scraped A2', 102, 202),"
@@ -290,8 +290,8 @@ def section_pairs() -> None:
     q(MIGRATIONS["003_pair_changes.sql"])
     q(MIGRATIONS["003_pair_changes.sql"])
     check("миграция 003 на «старой» схеме создаёт журнал и индекс и безопасна при повторе",
-          q("SELECT count(*) FROM pg_indexes WHERE schemaname = 'parser_not_test' AND indexname IN ('pair_changes_at_idx', 'snapshots_pair_date_idx');")[0][0] == 2
-          and q("SELECT to_regclass('parser_not_test.pair_changes') IS NOT NULL;")[0][0])
+          q("SELECT count(*) FROM pg_indexes WHERE schemaname = 'bsr_radar' AND indexname IN ('pair_changes_at_idx', 'snapshots_pair_date_idx');")[0][0] == 2
+          and q("SELECT to_regclass('bsr_radar.pair_changes') IS NOT NULL;")[0][0])
 
 
 def section_run_control() -> None:
@@ -438,7 +438,7 @@ def section_admission() -> None:
         check("новый код на немигрированной базе отказывает, а не работает без защиты", count() == 0)
     insert_run("parser", "done", q("SELECT now() - interval '9 days';")[0][0], q("SELECT now() - interval '9 days' + interval '10 minutes';")[0][0], new_columns=False)
     insert_run("sync", "running", q("SELECT now() - interval '2 days';")[0][0], None, new_columns=False)
-    snapshot = "SELECT id, source, step, status, started_at, finished_at, error FROM parser_not_test.collection_runs ORDER BY id;"
+    snapshot = "SELECT id, source, step, status, started_at, finished_at, error FROM bsr_radar.collection_runs ORDER BY id;"
     before = q(snapshot)
     q(MIGRATIONS["001_collection_admission.sql"])
     q(MIGRATIONS["001_collection_admission.sql"])

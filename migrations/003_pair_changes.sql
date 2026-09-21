@@ -4,7 +4,7 @@ BEGIN;
 SET LOCAL lock_timeout = '5s';
 SET LOCAL statement_timeout = '30s';
 
-CREATE TABLE IF NOT EXISTS parser_not_test.pair_changes (
+CREATE TABLE IF NOT EXISTS bsr_radar.pair_changes (
     id BIGSERIAL PRIMARY KEY,
     at TIMESTAMPTZ NOT NULL DEFAULT now(),
     actor TEXT NOT NULL,
@@ -14,10 +14,10 @@ CREATE TABLE IF NOT EXISTS parser_not_test.pair_changes (
     comp_asin TEXT NOT NULL
 );
 
-CREATE INDEX IF NOT EXISTS pair_changes_at_idx ON parser_not_test.pair_changes (at DESC);
+CREATE INDEX IF NOT EXISTS pair_changes_at_idx ON bsr_radar.pair_changes (at DESC);
 
 -- Нужен «Текущему состоянию» и названиям в списке пар: последний снимок каждой пары.
 CREATE INDEX IF NOT EXISTS snapshots_pair_date_idx
-    ON parser_not_test.snapshots (our_asin, comp_asin, snapshot_date DESC);
+    ON bsr_radar.snapshots (our_asin, comp_asin, snapshot_date DESC);
 
 COMMIT;
