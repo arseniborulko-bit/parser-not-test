@@ -178,9 +178,11 @@ def submit_spot(at):
     return at.run(timeout=30)
 
 
-def test_without_a_scrapingdog_token_the_spot_check_is_off(collect_env):
+def test_without_a_scrapingdog_token_the_spot_check_is_not_shown_at_all(collect_env):
     at = run()
-    assert any("Точечная проверка выключена" in i.value for i in at.info)
+    assert not at.exception
+    assert not any("Точечная проверка" in m.value for m in at.markdown)
+    assert not any("Точечная проверка" in i.value or "SCRAPINGDOG_TOKEN" in i.value for i in at.info)
     assert not [t for t in at.text_area if t.key == "spot_text"]
 
 

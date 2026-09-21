@@ -94,10 +94,9 @@ def render_run_block(connect, pairs: pd.DataFrame, preview: Callable[[], Optiona
 
 
 def render_spot_check(token: str, can_edit: bool) -> None:
-    st.markdown('<p class="section-title">Точечная проверка</p>', unsafe_allow_html=True)
     if not token:
-        st.info("Точечная проверка выключена: в секретах Streamlit не задан токен ScrapingDog (SCRAPINGDOG_TOKEN).")
         return
+    st.markdown('<p class="section-title">Точечная проверка</p>', unsafe_allow_html=True)
     if not can_edit:
         st.caption("Чтобы проверять ASIN, откройте «🔒 Управление» вверху страницы.")
         return
