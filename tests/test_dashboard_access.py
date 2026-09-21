@@ -296,13 +296,14 @@ def save(at):
     return at.run(timeout=30)
 
 
-def test_without_a_team_password_management_is_open_with_a_visible_warning(monkeypatch, dash):
+def test_without_a_team_password_management_is_open_and_shows_no_notice_or_name_field(monkeypatch, dash):
     monkeypatch.delenv("TEAM_PASSWORD")
     calls = record_saves(monkeypatch)
     at = run()
     assert not at.exception
-    assert any("Управление открыто: любой, у кого есть ссылка" in c.value for c in at.caption)
-    assert not [t for t in at.text_input if t.key == "unlock_password"]
+    assert not any("Управление открыто" in c.value for c in at.caption)
+    assert not [t for t in at.text_input if t.key in ("unlock_password", "actor_name")]
+    assert not [e for e in at.expander if "Управление" in e.label or "журнала" in e.label]
     assert len(time_inputs(at)) == 1
     assert not any("Дашборд показывает данные" in i.value or "Режим просмотра" in i.value for i in at.info)
     assert not any("Чтобы менять время" in c.value for c in at.caption)
@@ -310,25 +311,17 @@ def test_without_a_team_password_management_is_open_with_a_visible_warning(monke
     assert calls == [(True, access.ROLE_EDITOR, "Команда")]
 
 
-def test_open_management_writes_the_typed_name_to_the_journal(monkeypatch, dash):
+def test_the_page_header_shows_only_the_last_collection_date(monkeypatch, dash):
     monkeypatch.delenv("TEAM_PASSWORD")
-    calls = record_saves(monkeypatch)
     at = run()
-    at.text_input(key="actor_name").input("  Аня  Иванова ")
-    at.run(timeout=30)
-    save(at)
-    assert calls == [(True, access.ROLE_EDITOR, "Аня Иванова")]
-
-
-@pytest.mark.parametrize("name", ["", "   ", "А", "x" * 41])
-def test_open_management_falls_back_to_the_team_label_for_an_unusable_name(monkeypatch, dash, name):
-    monkeypatch.delenv("TEAM_PASSWORD")
-    calls = record_saves(monkeypatch)
-    at = run()
-    at.text_input(key="actor_name").input(name)
-    at.run(timeout=30)
-    save(at)
-    assert calls == [(True, access.ROLE_EDITOR, "Команда")]
+    assert not at.exception
+    boxes = [m.value for m in at.markdown if '<div class="status-box">' in m.value]
+    assert len(boxes) == 1 and "Последний сбор в базе:" in boxes[0]
+    assert "Пар в текущем срезе" not in boxes[0] and "Postgres" not in boxes[0]
+    shown = " ".join([m.value for m in at.markdown] + [c.value for c in at.caption])
+    assert "Количество записей по датам" not in shown
+    assert not any("source-badge" in m.value or "Источник: база данных" in m.value for m in at.markdown)
+    assert not at.get("arrow_vega_lite_chart") and not at.get("arrow_bar_chart")
 
 
 def test_a_short_team_password_keeps_management_closed_instead_of_opening_it(monkeypatch, dash):

@@ -126,9 +126,8 @@ def _apply_design() -> None:
         [data-testid="stSidebar"] { background: #ffffff; }
         .brand { font-size: 2.35rem; font-weight: 800; letter-spacing: -0.045em; margin: 0; }
         .brand-subtitle { color: #64748b; font-size: .87rem; margin: .25rem 0 1.5rem; }
-        .status-box { background: #dbeafe; color: #2563eb; border-radius: 10px; padding: 1rem 1.1rem; min-height: 80px; }
+        .status-box { background: #dbeafe; color: #2563eb; border-radius: 10px; padding: 1rem 1.1rem; }
         .status-box strong { color: #1d4ed8; }
-        .source-badge { display: inline-flex; align-items: center; gap: .4rem; margin-top: .5rem; padding: .3rem .7rem; background: #ecfdf5; color: #047857; border-radius: 999px; font-weight: 700; font-size: .78rem; }
         .metric-card { background: #ffffff; border: 1px solid #e5e7eb; border-radius: 15px; padding: 1rem 1.15rem; min-height: 120px; box-shadow: 0 1px 2px rgba(15,23,42,.025); }
         .metric-label { color: #64748b; font-size: .72rem; letter-spacing: .065em; text-transform: uppercase; }
         .metric-value { color: #111827; font-size: 1.85rem; font-weight: 800; line-height: 1.25; margin: .25rem 0; }
@@ -248,14 +247,6 @@ def _render_overview(data: pd.DataFrame) -> None:
     ]
     for column, card in zip(cards, values):
         column.markdown(card, unsafe_allow_html=True)
-
-    if not data.empty:
-        chart_data = data.copy()
-        chart_data["snapshot_date"] = pd.to_datetime(chart_data["snapshot_date"], errors="coerce")
-        chart_data = chart_data.dropna(subset=["snapshot_date"])
-        if not chart_data.empty:
-            st.caption("Количество записей по датам")
-            st.bar_chart(chart_data.groupby("snapshot_date").size())
 
 
 def _filter_data(data: pd.DataFrame, key_prefix: str) -> pd.DataFrame:
@@ -417,7 +408,7 @@ def _manager(email: str | None, google_role: str | None) -> tuple[str | None, st
     if google_role is not None:
         return email, google_role
     if _management_open():
-        return (access.clean_actor_name(st.session_state.get("actor_name")) or "Команда"), access.ROLE_EDITOR
+        return "Команда", access.ROLE_EDITOR
     name = st.session_state.get("manager_name")
     return (name, access.ROLE_EDITOR) if name else (None, None)
 
@@ -434,12 +425,6 @@ def _show_flash(name: str) -> None:
 
 def _render_unlock_box() -> None:
     state, detail = _team_password_state()
-    if state == "open":
-        st.caption("⚠️ Управление открыто: любой, у кого есть ссылка на сайт, может менять пары и время сбора.")
-        with st.expander("⚙️ Ваше имя для журнала", expanded=False):
-            st.text_input("Имя (необязательно)", key="actor_name", placeholder="Команда")
-            st.caption("Чтобы закрыть управление паролем, задайте секрет TEAM_PASSWORD в настройках Streamlit.")
-        return
     with st.expander("🔒 Управление", expanded=False):
         name = st.session_state.get("manager_name")
         if name:
@@ -615,9 +600,8 @@ def main() -> None:
     with left:
         st.markdown('<p class="brand-subtitle">Мониторинг Amazon-конкурентов и аналитика портфеля</p>', unsafe_allow_html=True)
     with right:
-        st.markdown('<div class="source-badge">🗄 Источник: база данных (bsr_radar), не Google Sheets</div>', unsafe_allow_html=True)
         _render_auth_bar(user, email, role)
-        if role is None:
+        if role is None and not _management_open():
             _render_unlock_box()
     actor, manage_role = _manager(email, role)
 
@@ -642,10 +626,8 @@ def main() -> None:
         dates = pd.to_datetime(current["snapshot_date"], errors="coerce")
         if dates.notna().any():
             latest_label = dates.max().strftime("%d.%m.%Y")
-    active_pairs = int(pairs["active"].sum()) if not pairs.empty else 0
     st.markdown(
-        f'<div class="status-box"><strong>Последний сбор в базе: {escape(latest_label)}</strong><br>'
-        f'Пар в текущем срезе: {len(current)} из {active_pairs} активных. Данные читаются напрямую из Postgres.</div>',
+        f'<div class="status-box"><strong>Последний сбор в базе: {escape(latest_label)}</strong></div>',
         unsafe_allow_html=True,
     )
 

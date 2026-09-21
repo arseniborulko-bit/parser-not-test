@@ -237,15 +237,13 @@ def test_open_management_shows_the_pairs_manager_to_everyone_and_writes_as_the_t
     assert not at.exception
     assert [t for t in at.text_input if t.key == "pairs_our"]
     assert not any("Чтобы добавлять и убирать пары" in c.value for c in at.caption)
-    at.text_input(key="actor_name").input("Борис")
-    at.run(timeout=30)
     at.text_input(key="pairs_our").input(OUR)
     at.text_area(key="pairs_comps").input("B0NEWPAIR1 B0NEWPAIR2")
     at.run(timeout=30)
     [b for b in at.button if b.key == "pairs_add"][0].click()
     at.run(timeout=30)
     (applied, role, actor), = pairs_env["apply"]
-    assert role == access.ROLE_EDITOR and actor == "Борис"
+    assert role == access.ROLE_EDITOR and actor == "Команда"
 
 
 def test_the_pairs_manager_stays_hidden_while_a_password_is_required(pairs_env):
