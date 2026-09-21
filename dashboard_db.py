@@ -621,12 +621,7 @@ def main() -> None:
             _render_unlock_box()
     actor, manage_role = _manager(email, role)
 
-    if _management_open() or manage_role is not None:
-        st.info(
-            "Дашборд показывает данные из PostgreSQL. Время автосбора и список пар можно менять прямо здесь; "
-            "парсер и Google Sheets он не запускает и не меняет."
-        )
-    else:
+    if not _management_open() and manage_role is None:
         st.info(
             "Режим просмотра: дашборд показывает данные из PostgreSQL, не запускает парсер и не "
             "меняет Google Sheets. Время автосбора и список пар меняются после входа в «🔒 Управление»."

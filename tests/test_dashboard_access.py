@@ -304,7 +304,7 @@ def test_without_a_team_password_management_is_open_with_a_visible_warning(monke
     assert any("Управление открыто: любой, у кого есть ссылка" in c.value for c in at.caption)
     assert not [t for t in at.text_input if t.key == "unlock_password"]
     assert len(time_inputs(at)) == 1
-    assert any("можно менять прямо здесь" in i.value for i in at.info)
+    assert not any("Дашборд показывает данные" in i.value or "Режим просмотра" in i.value for i in at.info)
     assert not any("Чтобы менять время" in c.value for c in at.caption)
     save(at)
     assert calls == [(True, access.ROLE_EDITOR, "Команда")]
