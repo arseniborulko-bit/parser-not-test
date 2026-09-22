@@ -8,3 +8,4 @@ python-dotenv>=1.0
 tzdata>=2024.1
 psycopg2-binary>=2.9
 requests>=2.31
+openpyxl>=3.1

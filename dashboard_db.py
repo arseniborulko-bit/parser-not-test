@@ -300,15 +300,19 @@ def _filter_data(data: pd.DataFrame, key_prefix: str) -> pd.DataFrame:
     return result
 
 
+_COLUMN_LABELS = {
+    "snapshot_date": "Дата сбора", "updated_at": "Обновлено", "marketplace": "Страна",
+    "currency": "Валюта", "our_product": "Наш товар", "our_asin": "Наш ASIN",
+    "our_bsr": "BSR наш", "our_price": "Цена наша", "our_bsr_delta_24h": "Δ BSR наш",
+    "competitor_name": "Конкурент", "comp_asin": "ASIN конкурента", "comp_bsr": "BSR конкурента",
+    "comp_price": "Цена конкурента", "comp_bsr_delta_24h": "Δ BSR конкурента",
+    "price_diff_pct": "Разница цен, %", "comp_stock": "Наличие",
+}
+_IMAGE_URL_LABELS = {"our_image_url": "Фото наш (ссылка)", "comp_image_url": "Фото конкурента (ссылка)"}
+
+
 def _present_table(data: pd.DataFrame, *, with_images: bool = False) -> tuple[pd.DataFrame, dict[str, object]]:
-    labels = {
-        "snapshot_date": "Дата сбора", "updated_at": "Обновлено", "marketplace": "Страна",
-        "currency": "Валюта", "our_product": "Наш товар", "our_asin": "Наш ASIN",
-        "our_bsr": "BSR наш", "our_price": "Цена наша", "our_bsr_delta_24h": "Δ BSR наш",
-        "competitor_name": "Конкурент", "comp_asin": "ASIN конкурента", "comp_bsr": "BSR конкурента",
-        "comp_price": "Цена конкурента", "comp_bsr_delta_24h": "Δ BSR конкурента",
-        "price_diff_pct": "Разница цен, %", "comp_stock": "Наличие",
-    }
+    labels = _COLUMN_LABELS
     result = data.rename(columns={k: v for k, v in labels.items() if k in data.columns}).copy()
     link_columns: dict[str, object] = {}
     for source, label in (("our_asin", "Наш ASIN"), ("comp_asin", "ASIN конкурента")):
@@ -331,6 +335,68 @@ def _present_table(data: pd.DataFrame, *, with_images: bool = False) -> tuple[pd
             link_columns[label] = st.column_config.ImageColumn(label, width="small")
             position += 1
     return result, link_columns
+
+
+_EXCEL_GOOD_FILL = "C6EFCE"
+_EXCEL_WARN_FILL = "FFEB9C"
+_EXCEL_BAD_FILL = "FFC7CE"
+_EXCEL_STOCK_FILL = {"In Stock": _EXCEL_GOOD_FILL, "Low Stock (<5)": _EXCEL_WARN_FILL, "Out of Stock": _EXCEL_BAD_FILL}
+
+
+def _as_number(value: object) -> float | None:
+    return float(value) if pd.api.types.is_number(value) and not pd.isna(value) else None
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def _current_to_excel_bytes(data: pd.DataFrame) -> bytes:
+    """Тот же срез, что и CSV, но в Excel и с подсветкой: зелёным — что нам выгодно (BSR снизился,
+    конкурент дороже нас, товар в наличии), красным — обратное, жёлтым — «Low Stock». Данные и раскраска
+    не связаны с Google Sheets — считаются заново из того, что показывает дашборд."""
+    import io
+
+    from openpyxl.styles import Font, PatternFill
+    from openpyxl.utils import get_column_letter
+
+    all_labels = {**_COLUMN_LABELS, **_IMAGE_URL_LABELS}
+    table = data.rename(columns={k: v for k, v in all_labels.items() if k in data.columns})
+    buffer = io.BytesIO()
+    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
+        table.to_excel(writer, index=False, sheet_name="Текущее состояние")
+        sheet = writer.sheets["Текущее состояние"]
+        header_row = {cell.value: cell.column for cell in sheet[1]}
+        for cell in sheet[1]:
+            cell.font = Font(bold=True)
+
+        fills = {name: PatternFill("solid", fgColor=color) for name, color in
+                 (("good", _EXCEL_GOOD_FILL), ("warn", _EXCEL_WARN_FILL), ("bad", _EXCEL_BAD_FILL))}
+
+        def paint(label: str, choose) -> None:
+            column = header_row.get(label)
+            if not column:
+                return
+            for row in range(2, sheet.max_row + 1):
+                cell = sheet.cell(row=row, column=column)
+                key = choose(cell.value)
+                if key:
+                    cell.fill = fills[key]
+
+        def bsr_delta(value: object) -> str | None:
+            number = _as_number(value)
+            return None if number is None or number == 0 else ("good" if number < 0 else "bad")
+
+        def price_edge(value: object) -> str | None:
+            number = _as_number(value)
+            return None if number is None or number == 0 else ("good" if number > 0 else "bad")
+
+        paint("Δ BSR наш", bsr_delta)
+        paint("Δ BSR конкурента", bsr_delta)
+        paint("Разница цен, %", price_edge)
+        paint("Наличие", lambda value: {"In Stock": "good", "Low Stock (<5)": "warn", "Out of Stock": "bad"}.get(value))
+
+        for column_cells in sheet.columns:
+            width = max((len(str(cell.value)) for cell in column_cells if cell.value is not None), default=8)
+            sheet.column_dimensions[get_column_letter(column_cells[0].column)].width = min(max(width + 2, 8), 45)
+    return buffer.getvalue()
 
 
 def _load_run_status() -> dict:
@@ -706,12 +772,17 @@ def main() -> None:
         with tabs[4]:
             _render_users_panel(email, role)
 
-    st.download_button(
-        "Скачать текущий срез CSV",
-        current.to_csv(index=False).encode("utf-8-sig"),
-        file_name="current.csv",
-        mime="text/csv",
-    )
+    download_left, download_right = st.columns(2)
+    with download_left:
+        st.download_button(
+            "⬇ CSV", current.to_csv(index=False).encode("utf-8-sig"),
+            file_name="current.csv", mime="text/csv",
+        )
+    with download_right:
+        st.download_button(
+            "⬇ Excel с цветами", _current_to_excel_bytes(current),
+            file_name="current.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
 
 
 if __name__ == "__main__":
