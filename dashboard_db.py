@@ -334,6 +334,9 @@ def _present_table(data: pd.DataFrame, *, with_images: bool = False) -> tuple[pd
             result = result.drop(columns=[source])  # иначе сырая ссылка останется отдельным текстовым столбцом
             link_columns[label] = st.column_config.ImageColumn(label, width="small")
             position += 1
+    # В этой версии Streamlit пустая ячейка (NaN/None, например нераспознанная цена) рисуется
+    # видимым текстом "None"; пустая строка — действительно пустой ячейкой. Меняем везде разом.
+    result = result.fillna("")
     return result, link_columns
 
 
