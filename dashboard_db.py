@@ -776,7 +776,7 @@ def main() -> None:
         with tabs[4]:
             _render_users_panel(email, role)
 
-    download_left, download_right = st.columns(2)
+    download_left, download_right, _ = st.columns([1, 1, 4])
     with download_left:
         st.download_button(
             "⬇ CSV", current.to_csv(index=False).encode("utf-8-sig"),
