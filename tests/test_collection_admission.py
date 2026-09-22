@@ -87,10 +87,27 @@ def test_explicit_manual_force():
     {"GITHUB_RUN_ID": ""}, {"GITHUB_RUN_ATTEMPT": "0"}, {"GITHUB_REPOSITORY": ""},
     {"GITHUB_EVENT_NAME": "push"}, {"FORCE_COLLECTION": "1"},
     {"GITHUB_EVENT_NAME": "schedule", "FORCE_COLLECTION": "true"},
+    {"COLLECT_SCOPE": "everything"},
+    {"GITHUB_EVENT_NAME": "schedule", "COLLECT_SCOPE": "ours"},
 ])
 def test_invalid_github_context_fails(override):
     with pytest.raises(db_runs.RunStoreError):
         db_runs.invocation_from_environment(github_environment(**override))
+
+
+@pytest.mark.parametrize("scope", ["ours", "competitors"])
+def test_a_partial_scope_is_read_from_the_environment_for_a_manual_run(scope):
+    invocation = db_runs.invocation_from_environment(github_environment(COLLECT_SCOPE=scope))
+    assert invocation.scope == scope
+
+
+def test_missing_scope_defaults_to_all():
+    assert db_runs.invocation_from_environment(github_environment()).scope == "all"
+
+
+def test_scope_all_is_explicitly_allowed_on_a_schedule_run():
+    invocation = db_runs.invocation_from_environment(github_environment(GITHUB_EVENT_NAME="schedule", COLLECT_SCOPE="all"))
+    assert invocation.scope == "all"
 
 
 def test_local_owner_is_unique_and_cannot_force():
@@ -158,7 +175,7 @@ def test_admission_lock_before_fresh_reads_and_commit_before_permission(monkeypa
     assert queries[2][2] == db_runs.ADMISSION_LOCK
     assert "clock_timestamp" in queries[3][1]
     assert all("collection_runs" not in q[1] for q in queries[:4])
-    assert queries[-1][2] == (INVOCATION.source, NOW, INVOCATION.owner_key)
+    assert queries[-1][2] == (INVOCATION.source, NOW, INVOCATION.owner_key, INVOCATION.scope)
     assert conn.events[-2:] == [("commit",), ("close",)]
 
 
@@ -186,9 +203,30 @@ def test_daily_count_uses_kyiv_day_and_counts_all_parser_statuses(monkeypatch):
     db_runs.admit_parser_run(INVOCATION)
     count_query = next(e for e in conn.events if e[0] == "sql" and "count(*)" in e[1])
     assert count_query[2][0].isoformat() == "2026-09-19"
+    assert count_query[2][1] == INVOCATION.scope
     assert "AT TIME ZONE 'Europe/Kyiv'" in count_query[1]
     where = count_query[1].split("WHERE", 1)[1]
     assert "step = 'parser'" in where and "status" not in where
+
+
+def test_daily_count_and_success_are_scoped_independently(monkeypatch):
+    """Дневные лимиты «наших» и «конкурентов» не делят один и тот же счётчик с полным сбором."""
+    ours = db_runs.Invocation("github_actions", "github:example/project:101:1", scope="ours")
+    conn = connect_fake(monkeypatch, admission_rows())
+    db_runs.admit_parser_run(ours)
+    count_query = next(e for e in conn.events if e[0] == "sql" and "count(*)" in e[1])
+    assert count_query[2][1] == "ours"
+    insert_query = next(e for e in conn.events if e[0] == "sql" and "INSERT" in e[1])
+    assert insert_query[2] == (ours.source, NOW, ours.owner_key, "ours")
+    assert "scope" in insert_query[1]
+
+
+def test_the_unfinished_check_still_ignores_scope_so_one_running_collection_blocks_every_scope(monkeypatch):
+    ours = db_runs.Invocation("github_actions", "github:example/project:101:1", scope="ours")
+    conn = connect_fake(monkeypatch, admission_rows(unfinished=True))
+    assert not db_runs.admit_parser_run(ours).should_run
+    query = next(e[1] for e in conn.events if e[0] == "sql" and "EXISTS" in e[1])
+    assert "scope" not in query
 
 
 @pytest.mark.parametrize("result", [None, (None,), (0,)])

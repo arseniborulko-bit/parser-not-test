@@ -23,11 +23,15 @@ class RunStoreError(RuntimeError):
     """Безопасное для логов сообщение, без DSN/текста исключения драйвера."""
 
 
+SCOPES = ("all", "ours", "competitors")
+
+
 @dataclass(frozen=True)
 class Invocation:
     source: str
     owner_key: str
     force: bool = False
+    scope: str = "all"
 
 
 @dataclass(frozen=True)
@@ -42,6 +46,9 @@ def invocation_from_environment(environment: Mapping[str, str]) -> Invocation:
     if raw_force not in ("", "false", "true"):
         raise RunStoreError("Некорректный FORCE_COLLECTION; сбор запрещён.")
     force = raw_force == "true"
+    scope = environment.get("COLLECT_SCOPE", "all").strip().lower() or "all"
+    if scope not in SCOPES:
+        raise RunStoreError("Некорректный COLLECT_SCOPE; сбор запрещён.")
     if environment.get("GITHUB_ACTIONS") == "true":
         event = environment.get("GITHUB_EVENT_NAME")
         repository = environment.get("GITHUB_REPOSITORY", "")
@@ -53,10 +60,12 @@ def invocation_from_environment(environment: Mapping[str, str]) -> Invocation:
             raise RunStoreError("Не удалось определить запуск GitHub Actions; сбор запрещён.")
         if force and event != "workflow_dispatch":
             raise RunStoreError("force разрешён только для явного ручного запуска GitHub Actions.")
-        return Invocation("github_actions", f"github:{repository}:{run_id}:{attempt}", force)
+        if scope != "all" and event != "workflow_dispatch":
+            raise RunStoreError("Частичный сбор разрешён только для явного ручного запуска GitHub Actions.")
+        return Invocation("github_actions", f"github:{repository}:{run_id}:{attempt}", force, scope)
     if force:
         raise RunStoreError("Локальный force не поддерживается; используйте ручной workflow.")
-    return Invocation("local", f"local:{uuid4().hex}")
+    return Invocation("local", f"local:{uuid4().hex}", scope=scope)
 
 
 def admission_block_reason(*, now: datetime, schedule: Optional[tuple[int, int]],
@@ -133,8 +142,9 @@ def admit_parser_run(invocation: Invocation) -> Admission:
             SELECT count(*), COALESCE(bool_or(status = 'done'), FALSE)
             FROM bsr_radar.collection_runs
             WHERE step = 'parser'
-              AND (started_at AT TIME ZONE 'Europe/Kyiv')::date = %s;
-        """, (now.astimezone(TZ).date(),))
+              AND (started_at AT TIME ZONE 'Europe/Kyiv')::date = %s
+              AND scope = %s;
+        """, (now.astimezone(TZ).date(), invocation.scope))
         attempts, successful = cur.fetchone()
         reason = admission_block_reason(
             now=now, schedule=schedule, attempts_today=attempts,
@@ -145,9 +155,9 @@ def admit_parser_run(invocation: Invocation) -> Admission:
         else:
             cur.execute("""
                 INSERT INTO bsr_radar.collection_runs
-                    (source, step, status, started_at, owner_key)
-                VALUES (%s, 'parser', 'running', %s, %s) RETURNING id;
-            """, (invocation.source, now, invocation.owner_key))
+                    (source, step, status, started_at, owner_key, scope)
+                VALUES (%s, 'parser', 'running', %s, %s, %s) RETURNING id;
+            """, (invocation.source, now, invocation.owner_key, invocation.scope))
             row = cur.fetchone()
             if not row:
                 raise RunStoreError("Регистрация попытки не подтверждена; сбор запрещён.")

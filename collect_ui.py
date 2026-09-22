@@ -29,7 +29,7 @@ def _spot_budget() -> spot_check.SpotBudget:
     return spot_check.SpotBudget()
 
 
-def _run_callback(connect, token: str, repo: str, can_edit: bool) -> None:
+def _run_callback(connect, token: str, repo: str, can_edit: bool, scope: str = "all") -> None:
     if not can_edit:
         _flash("error", "Запускать сбор могут только с открытым управлением.")
         return
@@ -37,14 +37,14 @@ def _run_callback(connect, token: str, repo: str, can_edit: bool) -> None:
         _flash("info", "Запуск уже отправлен: подождите пару минут.")
         return
     try:
-        reason = run_control.admission_preview(connect, datetime.now(TZ))
+        reason = run_control.admission_preview(connect, datetime.now(TZ), scope=scope)
     except run_control.RunControlError as exc:
         _flash("error", str(exc))
         return
     if reason:
         _flash("warning", f"Не запускаю: {reason}")
         return
-    result = github_dispatch.dispatch_collection(token, repo)
+    result = github_dispatch.dispatch_collection(token, repo, scope=scope)
     if not result.ok:
         _flash("error", result.message)
         return
@@ -52,7 +52,31 @@ def _run_callback(connect, token: str, repo: str, can_edit: bool) -> None:
     _flash("success", "Запуск отправлен в GitHub. Сбор начнётся в течение минуты и идёт около 10–20 минут; ход виден в «Последних запусках» ниже.")
 
 
-def render_run_block(connect, pairs: pd.DataFrame, preview: Callable[[], Optional[str]], token: str, repo: str,
+def _scope_status(preview: Callable[[str], Optional[str]], token: str, can_edit: bool, cooling: bool,
+                  scope: str) -> tuple[Optional[str], Optional[str]]:
+    """(причина отказа допуска, текст ошибки) для конкретной области; обе None — можно жать кнопку."""
+    if not (can_edit and token and not cooling):
+        return None, None
+    try:
+        return preview(scope), None
+    except run_control.RunControlError as exc:
+        return None, str(exc)
+
+
+def _scope_button(connect, token: str, repo: str, can_edit: bool, cooling: bool, scope: str, label: str, key: str,
+                  reason: Optional[str], error: Optional[str], *, primary: bool = False) -> None:
+    st.button(
+        label, key=key, use_container_width=True, type="primary" if primary else "secondary",
+        disabled=not can_edit or not token or cooling or reason is not None or error is not None,
+        on_click=_run_callback, args=(connect, token, repo, can_edit, scope),
+    )
+    if error:
+        st.caption(f"⚠️ {error}")
+    elif reason:
+        st.caption(reason)
+
+
+def render_run_block(connect, pairs: pd.DataFrame, preview: Callable[[str], Optional[str]], token: str, repo: str,
                      can_edit: bool) -> None:
     flash = st.session_state.pop("collect_flash", None)
     if flash:
@@ -63,34 +87,36 @@ def render_run_block(connect, pairs: pd.DataFrame, preview: Callable[[], Optiona
     else:
         positions = run_control.positions_summary(zip(pairs["marketplace"], pairs["our_asin"], pairs["comp_asin"], pairs["active"]))
     st.caption(run_control.format_positions(positions))
-    st.caption("Каждый ASIN запрашивается один раз за сбор, даже если он входит в несколько пар.")
+    st.caption("Каждый ASIN запрашивается один раз за сбор, даже если он входит в несколько пар. "
+              "Можно собрать всё сразу или только часть — у полного и частичного сбора разные дневные лимиты.")
 
     since = _now_ts() - st.session_state.get("collect_dispatched_at", 0)
     cooling = since < COOLDOWN_SECONDS
-    reason: Optional[str] = None
-    error: Optional[str] = None
-    if can_edit and token and not cooling:
-        try:
-            reason = preview()
-        except run_control.RunControlError as exc:
-            error = str(exc)
-    st.button(
-        "🚀 Собрать сейчас — на серверах GitHub", type="primary", key="collect_run", use_container_width=True,
-        disabled=not can_edit or not token or cooling or reason is not None or error is not None,
-        on_click=_run_callback, args=(connect, token, repo, can_edit),
-    )
+
+    reason_all, error_all = _scope_status(preview, token, can_edit, cooling, "all")
+    _scope_button(connect, token, repo, can_edit, cooling, "all",
+                 f"🚀 Собрать всё ({positions.total}) — на серверах GitHub", "collect_run",
+                 reason_all, error_all, primary=True)
+
+    left, right = st.columns(2)
+    with left:
+        reason_ours, error_ours = _scope_status(preview, token, can_edit, cooling, "ours")
+        _scope_button(connect, token, repo, can_edit, cooling, "ours",
+                     f"Собрать наши ({positions.ours})", "collect_run_ours", reason_ours, error_ours)
+    with right:
+        reason_comp, error_comp = _scope_status(preview, token, can_edit, cooling, "competitors")
+        _scope_button(connect, token, repo, can_edit, cooling, "competitors",
+                     f"Собрать конкурентов ({positions.competitors})", "collect_run_competitors", reason_comp, error_comp)
+
     if not can_edit:
         st.caption("Чтобы запускать сбор, откройте «🔒 Управление» вверху страницы.")
     elif not token:
         st.caption("Кнопка включится, когда в секретах Streamlit появится токен GitHub (GITHUB_DISPATCH_TOKEN). Пока сбор идёт по расписанию, а вручную его можно запустить в GitHub → Actions.")
     elif cooling:
         st.caption(f"Запуск отправлен {int(since)} с назад: сбор начнётся в течение минуты.")
-    elif error:
-        st.warning(error)
-    elif reason:
-        st.info(reason)
     else:
-        st.caption("Сбор идёт на серверах GitHub около 10–20 минут, вкладку можно закрыть. Второй успешный сбор за день не запустится: это защита от лишних трат.")
+        st.caption("Сбор идёт на серверах GitHub около 10–20 минут, вкладку можно закрыть. "
+                  "Второй успешный сбор за день (в своей области — всё/наши/конкуренты) не запустится: это защита от лишних трат.")
 
 
 def render_spot_check(token: str, can_edit: bool) -> None:

@@ -11,6 +11,7 @@ import requests
 DEFAULT_REPO = "arseniborulko-bit/parser-not-test"
 DEFAULT_WORKFLOW = "collect.yml"
 DEFAULT_REF = "main"
+SCOPES = ("all", "ours", "competitors")
 
 _REPO_RE = re.compile(r"^(?!\.{1,2}/)[A-Za-z0-9_.-]+/(?!\.{1,2}$)[A-Za-z0-9_.-]+$")
 _WORKFLOW_RE = re.compile(r"^(?!\.)[A-Za-z0-9_.-]+\.ya?ml$")
@@ -32,12 +33,17 @@ _STATUS_MESSAGES = {
 
 
 def dispatch_collection(token: Optional[str], repo: str = DEFAULT_REPO, *, workflow: str = DEFAULT_WORKFLOW,
-                        ref: str = DEFAULT_REF, post: Optional[Callable] = None, timeout: float = 20) -> DispatchResult:
-    """Просит GitHub запустить сбор. Без входных параметров: force снимает только лимит попыток и отсюда недоступен."""
+                        ref: str = DEFAULT_REF, scope: str = "all", post: Optional[Callable] = None,
+                        timeout: float = 20) -> DispatchResult:
+    """Просит GitHub запустить сбор. force отсюда недоступен — снимает только лимит попыток и есть только
+    внутри самого gate. scope="all" (по умолчанию) не добавляет inputs вовсе — тело запроса остаётся ровно
+    {"ref": ref}, как раньше; "ours"/"competitors" — частичный сбор, добавляет inputs.scope."""
     if not token:
         return DispatchResult(False, "Не задан токен GitHub (секрет GITHUB_DISPATCH_TOKEN).")
     if not (_REPO_RE.match(repo or "") and _WORKFLOW_RE.match(workflow or "") and _REF_RE.match(ref or "")):
         return DispatchResult(False, "Некорректное имя репозитория, workflow или ветки.")
+    if scope not in SCOPES:
+        return DispatchResult(False, "Некорректная область сбора.")
     url = f"https://api.github.com/repos/{repo}/actions/workflows/{workflow}/dispatches"
     headers = {
         "Authorization": f"Bearer {token}",
@@ -45,8 +51,9 @@ def dispatch_collection(token: Optional[str], repo: str = DEFAULT_REPO, *, workf
         "X-GitHub-Api-Version": "2022-11-28",
         "User-Agent": "parser-not-test-dashboard",
     }
+    body = {"ref": ref} if scope == "all" else {"ref": ref, "inputs": {"scope": scope}}
     try:
-        response = (post or requests.post)(url, headers=headers, json={"ref": ref}, timeout=timeout)
+        response = (post or requests.post)(url, headers=headers, json=body, timeout=timeout)
     except requests.Timeout:
         return DispatchResult(False, "GitHub не ответил вовремя. Запуск мог не состояться: проверьте вкладку Actions.")
     except requests.RequestException:

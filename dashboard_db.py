@@ -309,6 +309,19 @@ _COLUMN_LABELS = {
     "price_diff_pct": "Разница цен, %", "comp_stock": "Наличие",
 }
 _IMAGE_URL_LABELS = {"our_image_url": "Фото наш (ссылка)", "comp_image_url": "Фото конкурента (ссылка)"}
+# Числовые столбцы (могут быть NaN из базы). Их нельзя чистить через fillna("") вместе с текстовыми —
+# смесь float и "" в одном столбце валит сериализацию в Arrow (см. коммит с разбором). Вместо этого
+# приводим к строке целиком: пусто для NaN, аккуратный текст для числа.
+_NUMERIC_LABELS = ("Цена наша", "BSR наш", "Δ BSR наш", "Цена конкурента", "BSR конкурента",
+                   "Δ BSR конкурента", "Разница цен, %")
+
+
+def _format_number_or_blank(value: object) -> str:
+    if pd.isna(value):
+        return ""
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    return str(value)
 
 
 def _present_table(data: pd.DataFrame, *, with_images: bool = False) -> tuple[pd.DataFrame, dict[str, object]]:
@@ -334,8 +347,12 @@ def _present_table(data: pd.DataFrame, *, with_images: bool = False) -> tuple[pd
             result = result.drop(columns=[source])  # иначе сырая ссылка останется отдельным текстовым столбцом
             link_columns[label] = st.column_config.ImageColumn(label, width="small")
             position += 1
-    # В этой версии Streamlit пустая ячейка (NaN/None, например нераспознанная цена) рисуется
-    # видимым текстом "None"; пустая строка — действительно пустой ячейкой. Меняем везде разом.
+    # В этой версии Streamlit пустая ячейка (NaN/None, например нераспознанная цена) рисуется видимым
+    # текстом "None"; пустая строка — действительно пустой ячейкой. Числовые столбцы форматируем в
+    # строку отдельно (см. _NUMERIC_LABELS), остальные (текстовые, уже без чисел) — просто fillna.
+    for label in _NUMERIC_LABELS:
+        if label in result.columns:
+            result[label] = result[label].map(_format_number_or_blank)
     result = result.fillna("")
     return result, link_columns
 
@@ -470,9 +487,10 @@ def _now() -> datetime:
 
 
 @st.cache_data(ttl=20, show_spinner=False)
-def _admission_preview_cached() -> str | None:
-    """Решение проверки допуска для подписи под кнопкой запуска (кэш на 20 с; при нажатии проверяется заново)."""
-    return run_control.admission_preview(_connect, _now())
+def _admission_preview_cached(scope: str = "all") -> str | None:
+    """Решение проверки допуска для подписи под кнопкой запуска (кэш на 20 с на каждую область; при нажатии
+    проверяется заново)."""
+    return run_control.admission_preview(_connect, _now(), scope=scope)
 
 
 @st.cache_resource

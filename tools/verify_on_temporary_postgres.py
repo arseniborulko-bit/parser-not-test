@@ -56,7 +56,7 @@ import schedule_store  # noqa: E402
 NEW_SCHEMA = (PROJECT / "schema.sql").read_text(encoding="utf-8")
 MIGRATIONS = {n: (PROJECT / "migrations" / n).read_text(encoding="utf-8")
               for n in ("001_collection_admission.sql", "002_dashboard_users.sql", "003_pair_changes.sql",
-                        "004_snapshot_images.sql")}
+                        "004_snapshot_images.sql", "005_run_scope.sql")}
 
 
 def check(name: str, condition: object, extra: str = "") -> None:
@@ -96,10 +96,10 @@ def reset_old() -> None:
     q("ALTER TABLE bsr_radar.collection_runs DROP COLUMN owner_key, DROP COLUMN claimed_at;")
 
 
-def insert_run(step, status, started, finished=None, owner_key=None, claimed=None, source="github_actions", new_columns=True):
+def insert_run(step, status, started, finished=None, owner_key=None, claimed=None, source="github_actions", new_columns=True, scope="all"):
     if new_columns:
-        q("INSERT INTO bsr_radar.collection_runs (source, step, status, started_at, finished_at, owner_key, claimed_at) "
-          "VALUES (%s, %s, %s, %s, %s, %s, %s);", (source, step, status, started, finished, owner_key, claimed))
+        q("INSERT INTO bsr_radar.collection_runs (source, step, status, started_at, finished_at, owner_key, claimed_at, scope) "
+          "VALUES (%s, %s, %s, %s, %s, %s, %s, %s);", (source, step, status, started, finished, owner_key, claimed, scope))
     else:
         q("INSERT INTO bsr_radar.collection_runs (source, step, status, started_at, finished_at) "
           "VALUES (%s, %s, %s, %s, %s);", (source, step, status, started, finished))
@@ -109,8 +109,8 @@ def count(where: str = "TRUE") -> int:
     return q(f"SELECT count(*) FROM bsr_radar.collection_runs WHERE {where};")[0][0]
 
 
-def gh(run, attempt=1, force=False):
-    return db_runs.Invocation("github_actions", f"github:owner/repo:{run}:{attempt}", force)
+def gh(run, attempt=1, force=False, scope="all"):
+    return db_runs.Invocation("github_actions", f"github:owner/repo:{run}:{attempt}", force, scope)
 
 
 def local():
@@ -308,6 +308,20 @@ def section_pairs() -> None:
           q("SELECT count(*) FROM information_schema.columns WHERE table_schema = 'bsr_radar' "
             "AND table_name = 'snapshots' AND column_name IN ('our_image_url', 'comp_image_url');")[0][0] == 2)
 
+    q("ALTER TABLE bsr_radar.collection_runs DROP CONSTRAINT collection_runs_scope_check;")
+    q("ALTER TABLE bsr_radar.collection_runs DROP COLUMN scope;")
+    q(MIGRATIONS["005_run_scope.sql"])
+    q(MIGRATIONS["005_run_scope.sql"])
+    check("миграция 005 на «старой» схеме (без scope) добавляет колонку со значением 'all' у старых строк и безопасна при повторе",
+          q("SELECT count(*) FROM bsr_radar.collection_runs WHERE scope <> 'all';")[0][0] == 0
+          and q("SELECT count(*) FROM information_schema.columns WHERE table_schema = 'bsr_radar' "
+                "AND table_name = 'collection_runs' AND column_name = 'scope';")[0][0] == 1)
+    try:
+        q("INSERT INTO bsr_radar.collection_runs (source, step, status, scope) VALUES ('x', 'parser', 'done', 'bogus');")
+        check("CHECK: scope принимает только all/ours/competitors", False)
+    except psycopg2.errors.CheckViolation:
+        check("CHECK: scope принимает только all/ours/competitors", True)
+
 
 def section_run_control() -> None:
     print("\n== предпросмотр допуска (кнопка «Собрать сейчас») ==")
@@ -345,6 +359,45 @@ def section_run_control() -> None:
     reset()
     insert_run("sync", "running", hours_ago(72), owner_key="github:owner/repo:1:1")
     agree("старая зависшая запись")
+
+    print("\n== частичный сбор: у каждой области сбора свой дневной лимит ==")
+
+    def agree_scope(label: str, scope: str) -> None:
+        before = count()
+        preview = run_control.admission_preview(connect, datetime.now(schedule_store.TZ), scope=scope)
+        check(f"предпросмотр ({scope}) ничего не записывает: {label}", count() == before)
+        decision = db_runs.admit_parser_run(gh(next(counter), scope=scope))
+        check(f"предпросмотр ({scope}) совпадает с настоящей проверкой: {label}",
+              (preview is None) == decision.should_run, f"предпросмотр={preview!r}; проверка={decision.reason!r}")
+
+    reset()
+    insert_run("parser", "done", hours_ago(0), hours_ago(0), owner_key="github:owner/repo:1:1", scope="all")
+    check("успешный сбор «всё» не блокирует область «наши»",
+          run_control.admission_preview(connect, datetime.now(schedule_store.TZ), scope="ours") is None)
+    check("успешный сбор «всё» не блокирует область «конкуренты»",
+          run_control.admission_preview(connect, datetime.now(schedule_store.TZ), scope="competitors") is None)
+    agree_scope("но саму область «всё» блокирует", "all")
+
+    reset()
+    insert_run("parser", "done", hours_ago(0), hours_ago(0), owner_key="github:owner/repo:1:1", scope="ours")
+    agree_scope("успешный сбор «наши» блокирует именно «наши»", "ours")
+    check("но не блокирует «конкуренты»",
+          run_control.admission_preview(connect, datetime.now(schedule_store.TZ), scope="competitors") is None)
+    check("и не блокирует «всё»",
+          run_control.admission_preview(connect, datetime.now(schedule_store.TZ), scope="all") is None)
+
+    reset()
+    insert_run("parser", "running", hours_ago(0), owner_key="github:owner/repo:1:1", scope="ours")
+    check("незавершённый частичный сбор («наши») блокирует и «конкуренты» — общий на все области",
+          run_control.admission_preview(connect, datetime.now(schedule_store.TZ), scope="competitors") is not None)
+    check("и «всё» тоже заблокировано",
+          run_control.admission_preview(connect, datetime.now(schedule_store.TZ), scope="all") is not None)
+
+    reset()
+    for _ in range(3):
+        insert_run("parser", "error", hours_ago(0), hours_ago(0), owner_key="github:owner/repo:1:1", scope="competitors")
+    agree_scope("лимит попыток «конкуренты» исчерпан именно у «конкуренты»", "competitors")
+    check("«наши» при этом свободны", run_control.admission_preview(connect, datetime.now(schedule_store.TZ), scope="ours") is None)
 
 
 def section_admission() -> None:

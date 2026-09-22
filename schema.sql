@@ -60,7 +60,10 @@ CREATE TABLE IF NOT EXISTS bsr_radar.collection_runs (
     finished_at TIMESTAMPTZ,
     error TEXT,
     owner_key TEXT,                    -- владелец разрешения (workflow + attempt / local UUID)
-    claimed_at TIMESTAMPTZ             -- однократное использование разрешения
+    claimed_at TIMESTAMPTZ,            -- однократное использование разрешения
+    scope TEXT NOT NULL DEFAULT 'all' CHECK (scope IN ('all', 'ours', 'competitors'))
+        -- частичный сбор (кнопки "Собрать наши"/"Собрать конкурентов"); у каждой области свой
+        -- дневной лимит попыток и правило "уже был успешный сбор сегодня" — независимо от других
 );
 
 -- Для существующей таблицы нужен отдельный migrations/001_collection_admission.sql.

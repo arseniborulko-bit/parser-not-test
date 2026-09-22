@@ -17,8 +17,8 @@ BLOCKED = "Сегодня уже был успешный сбор — пропу
 DEFAULT_REPO = github_dispatch.DEFAULT_REPO
 
 
-def run_button(at):
-    return [b for b in at.button if b.key == "collect_run"][0]
+def run_button(at, key="collect_run"):
+    return [b for b in at.button if b.key == key][0]
 
 
 def captions(at):
@@ -30,16 +30,18 @@ def collect_env(monkeypatch, dash):  # noqa: F811
     """Управление открыто (секрета TEAM_PASSWORD нет), токен GitHub есть, отправка и время подменены."""
     monkeypatch.delenv("TEAM_PASSWORD")
     monkeypatch.setenv("GITHUB_DISPATCH_TOKEN", GITHUB_TOKEN)
-    state = {"dispatches": [], "now": 1_000_000.0, "gate": None, "result": github_dispatch.DispatchResult(True, "ok")}
+    state = {"dispatches": [], "now": 1_000_000.0, "gate": None, "gate_by_scope": {},
+             "result": github_dispatch.DispatchResult(True, "ok")}
 
-    def fake_dispatch(token, repo=DEFAULT_REPO, **kwargs):
-        state["dispatches"].append((token, repo))
+    def fake_dispatch(token, repo=DEFAULT_REPO, *, scope="all", **kwargs):
+        state["dispatches"].append((token, repo, scope))
         return state["result"]
 
-    def fake_gate(connect, now):
-        if isinstance(state["gate"], Exception):
-            raise state["gate"]
-        return state["gate"]
+    def fake_gate(connect, now, scope="all"):
+        value = state["gate_by_scope"].get(scope, state["gate"])
+        if isinstance(value, Exception):
+            raise value
+        return value
 
     monkeypatch.setattr(github_dispatch, "dispatch_collection", fake_dispatch)
     monkeypatch.setattr(run_control, "admission_preview", fake_gate)
@@ -65,24 +67,24 @@ def test_without_a_github_token_the_button_is_off_and_explains_how_to_turn_it_on
 def test_a_free_moment_enables_the_button(collect_env):
     at = run()
     assert not run_button(at).disabled
-    assert "Второй успешный сбор за день не запустится" in captions(at)
+    assert "Второй успешный сбор за день" in captions(at) and "не запустится" in captions(at)
 
 
 def test_a_closed_gate_disables_the_button_and_shows_its_reason(monkeypatch, dash, collect_env):  # noqa: F811
-    monkeypatch.setattr(dash, "_admission_preview_cached", lambda: BLOCKED)
+    monkeypatch.setattr(dash, "_admission_preview_cached", lambda scope="all": BLOCKED)
     at = run()
     assert run_button(at).disabled
-    assert any(BLOCKED in i.value for i in at.info)
+    assert BLOCKED in captions(at)
 
 
 def test_a_failing_preview_disables_the_button_with_a_warning(monkeypatch, dash, collect_env):  # noqa: F811
-    def broken():
+    def broken(scope="all"):
         raise run_control.RunControlError("Проверка возможности запуска не подтверждена (OperationalError).")
 
     monkeypatch.setattr(dash, "_admission_preview_cached", broken)
     at = run()
     assert not at.exception and run_button(at).disabled
-    assert any("не подтверждена" in w.value for w in at.warning)
+    assert any("не подтверждена" in c.value for c in at.caption)
 
 
 def test_clicking_sends_one_dispatch_with_the_token_and_repo_then_cools_down(collect_env):
@@ -90,7 +92,7 @@ def test_clicking_sends_one_dispatch_with_the_token_and_repo_then_cools_down(col
     run_button(at).click()
     at.run(timeout=30)
     assert not at.exception
-    assert collect_env["dispatches"] == [(GITHUB_TOKEN, DEFAULT_REPO)]
+    assert collect_env["dispatches"] == [(GITHUB_TOKEN, DEFAULT_REPO, "all")]
     assert any("Запуск отправлен в GitHub" in s.value for s in at.success)
     assert run_button(at).disabled
     assert "Запуск отправлен" in captions(at)
@@ -105,7 +107,24 @@ def test_the_repository_can_be_changed_in_the_secrets(monkeypatch, collect_env):
     at = run()
     run_button(at).click()
     at.run(timeout=30)
-    assert collect_env["dispatches"] == [(GITHUB_TOKEN, "acme/tracker")]
+    assert collect_env["dispatches"] == [(GITHUB_TOKEN, "acme/tracker", "all")]
+
+
+def test_the_partial_scope_buttons_show_their_own_counts_and_dispatch_their_own_scope(collect_env):
+    at = run()
+    assert run_button(at, "collect_run_ours").label == "Собрать наши (1)"
+    assert run_button(at, "collect_run_competitors").label == "Собрать конкурентов (1)"
+    run_button(at, "collect_run_ours").click()
+    at.run(timeout=30)
+    assert collect_env["dispatches"] == [(GITHUB_TOKEN, DEFAULT_REPO, "ours")]
+
+
+def test_a_scope_blocked_today_does_not_disable_the_other_scopes(monkeypatch, dash, collect_env):  # noqa: F811
+    monkeypatch.setattr(dash, "_admission_preview_cached", lambda scope="all": BLOCKED if scope == "all" else None)
+    at = run()
+    assert run_button(at).disabled
+    assert not run_button(at, "collect_run_ours").disabled
+    assert not run_button(at, "collect_run_competitors").disabled
 
 
 def test_the_click_asks_the_gate_again_and_does_not_dispatch_if_it_closed_meanwhile(collect_env):
@@ -150,7 +169,7 @@ def test_after_the_password_is_entered_the_run_button_works(monkeypatch, collect
     assert not run_button(at).disabled
     run_button(at).click()
     at.run(timeout=30)
-    assert collect_env["dispatches"] == [(GITHUB_TOKEN, DEFAULT_REPO)]
+    assert collect_env["dispatches"] == [(GITHUB_TOKEN, DEFAULT_REPO, "all")]
 
 
 def test_the_click_handler_itself_refuses_without_rights(monkeypatch, collect_env):

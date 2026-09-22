@@ -151,7 +151,29 @@ def test_todays_attempts_are_counted_for_the_kyiv_day(now, day):
     db = preview_db()
     run_control.admission_preview(db.connect, now)
     sql, params = db.executed[2]
-    assert params == (day,) and "Europe/Kyiv" in sql
+    assert params == (day, "all") and "Europe/Kyiv" in sql
+
+
+@pytest.mark.parametrize("scope", ["ours", "competitors"])
+def test_a_scope_is_passed_through_to_the_daily_count_query(scope):
+    db = preview_db()
+    run_control.admission_preview(db.connect, KYIV_NOON, scope=scope)
+    sql, params = db.executed[2]
+    assert params[1] == scope and "scope = %s" in sql
+
+
+def test_an_unknown_scope_is_refused_before_touching_the_database():
+    db = preview_db()
+    with pytest.raises(run_control.RunControlError):
+        run_control.admission_preview(db.connect, KYIV_NOON, scope="bogus")
+    assert db.connects == 0
+
+
+def test_the_preview_matches_the_gates_own_policy_for_a_partial_scope():
+    expected = db_runs.admission_block_reason(
+        now=KYIV_NOON, schedule=(9, 0), attempts_today=2, successful_today=False, unfinished=False, force=False,
+    )
+    assert run_control.admission_preview(preview_db(attempts=2).connect, KYIV_NOON, scope="ours") == expected
 
 
 def test_a_time_without_a_zone_is_refused_before_touching_the_database():

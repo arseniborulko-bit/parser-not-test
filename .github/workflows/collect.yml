@@ -16,6 +16,12 @@ on:
         type: boolean
         required: false
         default: false
+      scope:
+        description: "Область сбора: all — всё, ours — только наши товары, competitors — только конкуренты"
+        type: choice
+        options: [all, ours, competitors]
+        required: false
+        default: all
   schedule:
     - cron: "11,41 * * * *"
 
@@ -30,6 +36,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       FORCE_COLLECTION: ${{ github.event_name == 'workflow_dispatch' && inputs.force || false }}
+      COLLECT_SCOPE: ${{ github.event_name == 'workflow_dispatch' && inputs.scope || 'all' }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4

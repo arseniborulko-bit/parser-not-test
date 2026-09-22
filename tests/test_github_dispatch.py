@@ -44,6 +44,20 @@ def test_force_can_never_be_sent_from_here():
     assert "inputs" not in calls[0][1]["json"]
 
 
+@pytest.mark.parametrize("scope", ["ours", "competitors"])
+def test_a_partial_scope_is_sent_as_a_workflow_input(scope):
+    post, calls = recorder()
+    result = github_dispatch.dispatch_collection(TOKEN, scope=scope, post=post)
+    assert result.ok
+    assert calls[0][1]["json"] == {"ref": "main", "inputs": {"scope": scope}}
+
+
+def test_an_unknown_scope_is_refused_before_any_request():
+    post, calls = recorder()
+    result = github_dispatch.dispatch_collection(TOKEN, scope="bogus", post=post)
+    assert not result.ok and calls == []
+
+
 @pytest.mark.parametrize("token", [None, "", "   "[:0]])
 def test_without_a_token_nothing_is_sent(token):
     post, calls = recorder()

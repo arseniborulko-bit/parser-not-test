@@ -65,11 +65,25 @@ def build_asin_domain_map_from_db() -> Dict[str, str]:
     return domain_map
 
 
-def asins_from_pairs(pairs: List[Dict[str, str]]) -> List[str]:
-    """Тот же порядок/дедупликация по смыслу, что sheets.load_asins_from_config()."""
+def asins_from_pairs(pairs: List[Dict[str, str]], scope: str = "all") -> List[str]:
+    """Тот же порядок/дедупликация по смыслу, что sheets.load_asins_from_config().
+
+    scope сужает список для частичного сбора: "ours" — только наши товары, "competitors" —
+    только конкуренты, "all" (по умолчанию) — все, как раньше. "Наш" — ASIN, который хотя бы в
+    одной активной паре стоит как our_asin (то же правило, что в run_control.positions_summary,
+    чтобы число ASIN на кнопке совпадало с тем, что реально уйдёт в сбор).
+    """
+    if scope not in ("all", "ours", "competitors"):
+        scope = "all"
+    our_asins = {pair["our_asin"] for pair in pairs if pair["our_asin"]}
     seen: Dict[str, None] = {}
     for pair in pairs:
         for asin in (pair["our_asin"], pair["comp_asin"]):
-            if asin:
-                seen[asin] = None
+            if not asin:
+                continue
+            if scope == "ours" and asin not in our_asins:
+                continue
+            if scope == "competitors" and asin in our_asins:
+                continue
+            seen[asin] = None
     return list(seen.keys())

@@ -64,7 +64,7 @@ def dash(monkeypatch):
     monkeypatch.setattr(module, "load_snapshots", lambda: pd.DataFrame([SNAPSHOT_ROW]))
     monkeypatch.setattr(module, "load_competitor_pairs", lambda: pd.DataFrame([PAIR_ROW]))
     monkeypatch.setattr(module, "_now", lambda: NOW)
-    monkeypatch.setattr(module, "_admission_preview_cached", lambda: None)
+    monkeypatch.setattr(module, "_admission_preview_cached", lambda scope="all": None)
     monkeypatch.setattr(schedule_store, "load_overview", lambda connect, now: overview())
     yield module
     st.cache_resource.clear()

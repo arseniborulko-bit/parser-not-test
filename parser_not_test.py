@@ -236,6 +236,10 @@ def run_parser(progress_callback: Optional[Callable[[float, str], None]] = None)
     # не читается. По умолчанию (sheets) поведение прежнее.
     # Запись результатов при этом всё равно идёт в Google Sheets, как раньше.
     pair_source = os.environ.get("PAIR_SOURCE", "sheets").strip().lower()
+    # Частичный сбор (кнопки "Собрать наши"/"Собрать конкурентов" в дашборде): сужает список
+    # ASIN для сбора, но НЕ список пар для раскладки листа Current — сторону, которую в этот раз
+    # не проверяли, sheets.py сохраняет по прежнему значению (см. _refresh_current_sheet_from_matrix).
+    collect_scope = os.environ.get("COLLECT_SCOPE", "all").strip().lower() or "all"
 
     if key_file:
         try:
@@ -243,8 +247,8 @@ def run_parser(progress_callback: Optional[Callable[[float, str], None]] = None)
             if pair_source == "database":
                 pairs = load_active_competitor_pairs_from_db()
                 layout_pairs = pairs
-                asins = resolve_asins_from_environment(asins_from_pairs(pairs))
-                logger.info(f"PAIR_SOURCE=database. Получено ASIN для проверки: {len(asins)}")
+                asins = resolve_asins_from_environment(asins_from_pairs(pairs, scope=collect_scope))
+                logger.info(f"PAIR_SOURCE=database. Область сбора: {collect_scope}. Получено ASIN для проверки: {len(asins)}")
                 try:
                     asin_domains = build_asin_domain_map_from_db()
                     logger.info(f"Построена карта ASIN->маркетплейс (база) для {len(asin_domains)} ASIN.")

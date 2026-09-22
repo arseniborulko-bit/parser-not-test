@@ -55,10 +55,16 @@ def format_positions(positions: Positions) -> str:
     return f"В работе {positions.total} ASIN: наших {positions.ours} · конкурентов {positions.competitors} ({markets})"
 
 
-def admission_preview(connect: Connect, now: datetime) -> Optional[str]:
-    """Причина, по которой проверка допуска не пустит сбор прямо сейчас; None — пустит. Ничего не записывает."""
+def admission_preview(connect: Connect, now: datetime, scope: str = "all") -> Optional[str]:
+    """Причина, по которой проверка допуска не пустит сбор прямо сейчас; None — пустит. Ничего не записывает.
+
+    scope — та же область, что у кнопки ("all"/"ours"/"competitors"): у каждой свой дневной лимит и
+    правило "уже был успешный сбор сегодня", а "идёт незавершённый сбор" — общее на все области сразу
+    (нельзя собирать двумя запросами одновременно, точно как в db_runs.admit_parser_run)."""
     if now.tzinfo is None:
         raise RunControlError("Некорректное время для проверки.")
+    if scope not in db_runs.SCOPES:
+        raise RunControlError("Некорректная область сбора для проверки.")
     today = now.astimezone(db_runs.TZ).date()
     schedule_rows, unfinished_rows, count_rows = dbutil.run_many(
         connect,
@@ -67,8 +73,8 @@ def admission_preview(connect: Connect, now: datetime) -> Optional[str]:
             ("SELECT EXISTS (SELECT 1 FROM bsr_radar.collection_runs WHERE status = 'running');", (), True),
             (
                 "SELECT count(*), COALESCE(bool_or(status = 'done'), FALSE) FROM bsr_radar.collection_runs "
-                "WHERE step = 'parser' AND (started_at AT TIME ZONE 'Europe/Kyiv')::date = %s;",
-                (today,),
+                "WHERE step = 'parser' AND (started_at AT TIME ZONE 'Europe/Kyiv')::date = %s AND scope = %s;",
+                (today, scope),
                 True,
             ),
         ],
