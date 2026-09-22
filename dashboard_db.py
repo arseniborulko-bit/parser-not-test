@@ -170,22 +170,44 @@ def load_snapshots() -> pd.DataFrame:
 
 @st.cache_data(ttl=60, show_spinner=False)
 def load_current() -> pd.DataFrame:
-    """Последний снимок каждой АКТИВНОЙ пары (our_asin, comp_asin): убранная пара из текущего состояния исчезает."""
+    """Последний снимок каждой АКТИВНОЙ пары (our_asin, comp_asin): убранная пара из текущего состояния исчезает.
+    our_image_url/comp_image_url — необязательные столбцы (миграция 004); если их в базе ещё нет, запрос
+    повторяется без них, а колонки в результате получаются пустыми, вместо того чтобы ломать всю вкладку."""
     conn = psycopg2.connect(_database_url())
     try:
-        return pd.read_sql(
-            """
-            SELECT DISTINCT ON (s.our_asin, s.comp_asin)
-                   s.snapshot_date, s.marketplace, s.currency, s.our_asin, s.our_product, s.our_price,
-                   s.our_bsr, s.our_bsr_delta_24h, s.comp_asin, s.competitor_name, s.comp_price,
-                   s.comp_bsr, s.comp_bsr_delta_24h, s.comp_stock, s.price_diff_pct, s.updated_at
-            FROM bsr_radar.snapshots s
-            JOIN bsr_radar.competitor_pairs p
-              ON p.our_asin = s.our_asin AND p.comp_asin = s.comp_asin AND p.active
-            ORDER BY s.our_asin, s.comp_asin, s.snapshot_date DESC
-            """,
-            conn,
-        )
+        try:
+            return pd.read_sql(
+                """
+                SELECT DISTINCT ON (s.our_asin, s.comp_asin)
+                       s.snapshot_date, s.marketplace, s.currency, s.our_asin, s.our_product, s.our_price,
+                       s.our_bsr, s.our_bsr_delta_24h, s.comp_asin, s.competitor_name, s.comp_price,
+                       s.comp_bsr, s.comp_bsr_delta_24h, s.comp_stock, s.price_diff_pct, s.updated_at,
+                       s.our_image_url, s.comp_image_url
+                FROM bsr_radar.snapshots s
+                JOIN bsr_radar.competitor_pairs p
+                  ON p.our_asin = s.our_asin AND p.comp_asin = s.comp_asin AND p.active
+                ORDER BY s.our_asin, s.comp_asin, s.snapshot_date DESC
+                """,
+                conn,
+            )
+        except psycopg2.errors.UndefinedColumn:
+            conn.rollback()
+            data = pd.read_sql(
+                """
+                SELECT DISTINCT ON (s.our_asin, s.comp_asin)
+                       s.snapshot_date, s.marketplace, s.currency, s.our_asin, s.our_product, s.our_price,
+                       s.our_bsr, s.our_bsr_delta_24h, s.comp_asin, s.competitor_name, s.comp_price,
+                       s.comp_bsr, s.comp_bsr_delta_24h, s.comp_stock, s.price_diff_pct, s.updated_at
+                FROM bsr_radar.snapshots s
+                JOIN bsr_radar.competitor_pairs p
+                  ON p.our_asin = s.our_asin AND p.comp_asin = s.comp_asin AND p.active
+                ORDER BY s.our_asin, s.comp_asin, s.snapshot_date DESC
+                """,
+                conn,
+            )
+            data["our_image_url"] = ""
+            data["comp_image_url"] = ""
+            return data
     finally:
         conn.close()
 
@@ -278,7 +300,7 @@ def _filter_data(data: pd.DataFrame, key_prefix: str) -> pd.DataFrame:
     return result
 
 
-def _present_table(data: pd.DataFrame) -> tuple[pd.DataFrame, dict[str, object]]:
+def _present_table(data: pd.DataFrame, *, with_images: bool = False) -> tuple[pd.DataFrame, dict[str, object]]:
     labels = {
         "snapshot_date": "Дата сбора", "updated_at": "Обновлено", "marketplace": "Страна",
         "currency": "Валюта", "our_product": "Наш товар", "our_asin": "Наш ASIN",
@@ -297,6 +319,17 @@ def _present_table(data: pd.DataFrame) -> tuple[pd.DataFrame, dict[str, object]]
             label, help="Открыть карточку товара на Amazon",
             display_text=r"https://www\.amazon\.[^/]+/dp/([A-Z0-9]{10})", width="small",
         )
+    if with_images:
+        # Пустая строка рендерится пустой ячейкой; Python None/NaN в этой версии Streamlit
+        # ImageColumn рисует как видимый текст "None" — поэтому оставляем "" как есть, не заменяем.
+        position = 0
+        for source, label in (("our_image_url", "Фото наш"), ("comp_image_url", "Фото конкурента")):
+            if source not in data.columns:
+                continue
+            result.insert(position, label, data[source])
+            result = result.drop(columns=[source])  # иначе сырая ссылка останется отдельным текстовым столбцом
+            link_columns[label] = st.column_config.ImageColumn(label, width="small")
+            position += 1
     return result, link_columns
 
 
@@ -644,7 +677,7 @@ def main() -> None:
 
     with current_tab:
         shown = _filter_data(current, key_prefix="current")
-        presented, table_config = _present_table(shown)
+        presented, table_config = _present_table(shown, with_images=True)
         st.dataframe(presented, use_container_width=True, hide_index=True, height=450, column_config=table_config)
 
     with history_tab:

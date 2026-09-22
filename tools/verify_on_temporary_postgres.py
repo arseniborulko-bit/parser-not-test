@@ -55,7 +55,8 @@ import schedule_store  # noqa: E402
 
 NEW_SCHEMA = (PROJECT / "schema.sql").read_text(encoding="utf-8")
 MIGRATIONS = {n: (PROJECT / "migrations" / n).read_text(encoding="utf-8")
-              for n in ("001_collection_admission.sql", "002_dashboard_users.sql", "003_pair_changes.sql")}
+              for n in ("001_collection_admission.sql", "002_dashboard_users.sql", "003_pair_changes.sql",
+                        "004_snapshot_images.sql")}
 
 
 def check(name: str, condition: object, extra: str = "") -> None:
@@ -280,6 +281,13 @@ def section_pairs() -> None:
     got = sorted((row[3], row[8]) for row in current)
     check("«Текущее состояние»: только активные пары и только последний снимок каждой",
           got == [(ours, "B0COMPAAA1"), (ours, "B0COMPAAA2")] and {row[0].isoformat() for row in current} == {"2026-09-21"}, str(got))
+
+    check("запрос «Текущего состояния» в дашборде читает фото (миграция 004)",
+          "our_image_url" in dashboard_sql("load_current") and "comp_image_url" in dashboard_sql("load_current"))
+    q("UPDATE bsr_radar.snapshots SET our_image_url = 'https://x/our.jpg', comp_image_url = 'https://x/comp.jpg' "
+      "WHERE comp_asin = 'B0COMPAAA1' AND snapshot_date = '2026-09-21';")
+    photo_row = next(row for row in q(dashboard_sql("load_current")) if row[8] == "B0COMPAAA1")
+    check("фото читается из последнего снимка пары", photo_row[-2:] == ("https://x/our.jpg", "https://x/comp.jpg"))
     listing = {row[3]: row for row in q(dashboard_sql("load_competitor_pairs"))}
     check("список пар: пустое название подставляется из последнего снимка, заданное остаётся",
           listing["B0COMPAAA2"][4] == "Scraped A2" and listing["B0COMPAAA1"][4] == "Comp A1" and listing["B0COMPAAA1"][2] == "Our product")
@@ -292,6 +300,13 @@ def section_pairs() -> None:
     check("миграция 003 на «старой» схеме создаёт журнал и индекс и безопасна при повторе",
           q("SELECT count(*) FROM pg_indexes WHERE schemaname = 'bsr_radar' AND indexname IN ('pair_changes_at_idx', 'snapshots_pair_date_idx');")[0][0] == 2
           and q("SELECT to_regclass('bsr_radar.pair_changes') IS NOT NULL;")[0][0])
+
+    q("ALTER TABLE bsr_radar.snapshots DROP COLUMN our_image_url, DROP COLUMN comp_image_url;")
+    q(MIGRATIONS["004_snapshot_images.sql"])
+    q(MIGRATIONS["004_snapshot_images.sql"])
+    check("миграция 004 на «старой» схеме (без фото) добавляет обе колонки и безопасна при повторе",
+          q("SELECT count(*) FROM information_schema.columns WHERE table_schema = 'bsr_radar' "
+            "AND table_name = 'snapshots' AND column_name IN ('our_image_url', 'comp_image_url');")[0][0] == 2)
 
 
 def section_run_control() -> None:

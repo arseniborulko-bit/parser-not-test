@@ -35,6 +35,7 @@ class ProductData:
     category: str = ""
     brand: str = ""
     stock_status: str = ""
+    image_url: str = ""
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)

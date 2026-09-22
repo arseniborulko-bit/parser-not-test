@@ -513,6 +513,7 @@ def _refresh_current_sheet_from_matrix(
             "snapshot_date", "our_bsr", "our_price", "our_bsr_delta_24h",
             "comp_bsr", "comp_price", "price_diff_pct",
             "comp_bsr_delta_24h", "comp_stock", "updated_at",
+            "our_image_url", "comp_image_url",
         ):
             if field in columns:
                 row[columns[field]] = ""
@@ -530,6 +531,8 @@ def _refresh_current_sheet_from_matrix(
                 row[columns["our_bsr_delta_24h"]] = (
                     new_bsr - old_bsr if new_bsr is not None and old_bsr is not None else ""
                 )
+            if "our_image_url" in columns:
+                row[columns["our_image_url"]] = our_product.get("image_url") or ""
         elif our_asin in failed_asins_set and our_asin:
             for field in (
                 "our_product",
@@ -555,6 +558,8 @@ def _refresh_current_sheet_from_matrix(
                 row[columns["comp_bsr_delta_24h"]] = (
                     new_bsr - old_bsr if new_bsr is not None and old_bsr is not None else ""
                 )
+            if "comp_image_url" in columns:
+                row[columns["comp_image_url"]] = comp_product.get("image_url") or ""
         elif comp_asin in failed_asins_set and comp_asin:
             for field in (
                 "competitor",

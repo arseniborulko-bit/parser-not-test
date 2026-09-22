@@ -31,6 +31,8 @@ CREATE TABLE IF NOT EXISTS bsr_radar.snapshots (
     comp_bsr_delta_24h NUMERIC,
     comp_stock TEXT,
     price_diff_pct NUMERIC,
+    our_image_url TEXT,
+    comp_image_url TEXT,
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     UNIQUE (snapshot_date, our_asin, comp_asin)
 );

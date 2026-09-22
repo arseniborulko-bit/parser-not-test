@@ -160,6 +160,17 @@ def sync_competitor_pairs(spreadsheet: gspread.Spreadsheet, conn) -> int:
     return len(rows)
 
 
+def _snapshots_has_image_columns(conn) -> bool:
+    """Миграция 004 (our_image_url/comp_image_url) могла ещё не применяться к боевой базе — тогда
+    синк пишет снимки без фото, а не падает целиком (иначе одна новая колонка сломала бы весь сбор)."""
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT count(*) FROM information_schema.columns WHERE table_schema = 'bsr_radar' "
+            "AND table_name = 'snapshots' AND column_name IN ('our_image_url', 'comp_image_url');"
+        )
+        return cur.fetchone()[0] == 2
+
+
 def sync_snapshots(spreadsheet: gspread.Spreadsheet, conn, sheet_title: str) -> int:
     try:
         ws = spreadsheet.worksheet(sheet_title)
@@ -178,6 +189,7 @@ def sync_snapshots(spreadsheet: gspread.Spreadsheet, conn, sheet_title: str) -> 
         logger.warning(f"В листе '{sheet_title}' нет ожидаемых колонок — пропускаю.")
         return 0
 
+    has_images = _snapshots_has_image_columns(conn)
     deduped: Dict[Tuple[str, str, str], Tuple] = {}
     for raw in values[header_row_idx + 1:]:
         snapshot_date = _cell(raw, headers.get("snapshot_date"))
@@ -206,20 +218,25 @@ def sync_snapshots(spreadsheet: gspread.Spreadsheet, conn, sheet_title: str) -> 
             clean_number(_cell(raw, headers.get("comp_bsr_delta_24h"))),
             _cell(raw, headers.get("comp_stock")) or None,
             clean_number(_cell(raw, headers.get("price_diff_pct"))),
-        )
+        ) + ((
+            _cell(raw, headers.get("our_image_url")) or None,
+            _cell(raw, headers.get("comp_image_url")) or None,
+        ) if has_images else ())
 
     rows = list(deduped.values())
     if not rows:
         return 0
 
+    image_columns = ", our_image_url, comp_image_url" if has_images else ""
+    image_updates = "our_image_url = EXCLUDED.our_image_url, comp_image_url = EXCLUDED.comp_image_url," if has_images else ""
     with conn.cursor() as cur:
         execute_values(
             cur,
-            """
+            f"""
             INSERT INTO bsr_radar.snapshots
                 (snapshot_date, marketplace, currency, our_asin, our_product, our_price,
                  our_bsr, our_bsr_delta_24h, comp_asin, competitor_name, comp_price,
-                 comp_bsr, comp_bsr_delta_24h, comp_stock, price_diff_pct)
+                 comp_bsr, comp_bsr_delta_24h, comp_stock, price_diff_pct{image_columns})
             VALUES %s
             ON CONFLICT (snapshot_date, our_asin, comp_asin) DO UPDATE SET
                 marketplace = EXCLUDED.marketplace,
@@ -234,6 +251,7 @@ def sync_snapshots(spreadsheet: gspread.Spreadsheet, conn, sheet_title: str) -> 
                 comp_bsr_delta_24h = EXCLUDED.comp_bsr_delta_24h,
                 comp_stock = EXCLUDED.comp_stock,
                 price_diff_pct = EXCLUDED.price_diff_pct,
+                {image_updates}
                 updated_at = now()
             """,
             rows,

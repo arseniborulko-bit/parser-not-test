@@ -121,6 +121,20 @@ def fetch_product(asin: str, domain: str = DOMAIN, token: Optional[str] = None, 
     return None
 
 
+def _extract_image_url(data: dict) -> str:
+    """main_image, а при его отсутствии — первая ссылка из images_of_specified_asin/images."""
+    main = data.get("main_image")
+    if isinstance(main, str) and main.startswith("http"):
+        return main
+    for key in ("images_of_specified_asin", "images"):
+        gallery = data.get(key)
+        if isinstance(gallery, list):
+            for item in gallery:
+                if isinstance(item, str) and item.startswith("http"):
+                    return item
+    return ""
+
+
 def parse_product(data: dict, asin: str = "") -> ProductData:
     """Достаёт нужные поля из ответа API и возвращает структуру ProductData."""
     product_info = data.get("product_information", {}) or {}
@@ -189,6 +203,7 @@ def parse_product(data: dict, asin: str = "") -> ProductData:
         category=category,
         brand=data.get("brand") or data.get("manufacturer") or "",
         stock_status=normalize_stock_status(stock_status),
+        image_url=_extract_image_url(data),
     )
 
 
