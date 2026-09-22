@@ -542,6 +542,13 @@ def _refresh_current_sheet_from_matrix(
             ):
                 if field in columns:
                     row[columns[field]] = "@"
+        elif our_asin and previous_pair_values:
+            # Нашу сторону в этом запуске не проверяли вовсе (не в products_by_asin и не
+            # среди неудачных) — например, частичный сбор только по конкурентам/по рынку.
+            # Сохраняем последнее известное состояние, а не затираем его пустыми значениями.
+            for field in ("our_product", "our_bsr", "our_price", "our_bsr_delta_24h", "our_image_url"):
+                if field in columns and previous_pair_values.get(field):
+                    row[columns[field]] = previous_pair_values[field]
 
         if comp_product:
             old_bsr = clean_number(previous_pair_values.get("comp_bsr"))
@@ -574,10 +581,18 @@ def _refresh_current_sheet_from_matrix(
             # Очищаем поле updated_at, чтобы не оставлять старую дату
             if "updated_at" in columns:
                 row[columns["updated_at"]] = ""
+        elif comp_asin and previous_pair_values:
+            # Сторону конкурента в этом запуске не проверяли — сохраняем последнее известное состояние.
+            for field in ("competitor", "comp_bsr", "comp_price", "comp_bsr_delta_24h", "comp_stock", "comp_image_url"):
+                if field in columns and previous_pair_values.get(field):
+                    row[columns[field]] = previous_pair_values[field]
 
-        if our_product and comp_product and "price_diff_pct" in columns:
-            own_price = clean_number(our_product.get("price"))
-            comp_price = clean_number(comp_product.get("price"))
+        if "price_diff_pct" in columns:
+            # Берём эффективные цены из самой строки (свежие или сохранённые от прошлого раза),
+            # а не только что полученные products_by_asin — так пара с одной освежённой и одной
+            # сохранённой стороной (частичный сбор) тоже получает разницу цен, а не пустую ячейку.
+            own_price = clean_number(row[columns["our_price"]]) if "our_price" in columns else None
+            comp_price = clean_number(row[columns["comp_price"]]) if "comp_price" in columns else None
             row[columns["price_diff_pct"]] = (
                 f"{(comp_price / own_price - 1):.1%}"
                 if own_price not in (None, 0) and comp_price is not None else ""
@@ -783,6 +798,12 @@ def mark_failed_asins_in_competitors(
             logger.warning(f"Ошибка применения формата к листу Competitors: {exc}")
 
 
+_PRESERVABLE_FIELDS = (
+    "our_product", "our_bsr", "our_price", "our_bsr_delta_24h", "our_image_url",
+    "competitor", "comp_bsr", "comp_price", "comp_bsr_delta_24h", "comp_stock", "comp_image_url",
+)
+
+
 def _get_previous_bsr_snapshot(
     spreadsheet: gspread.Spreadsheet,
 ) -> Dict[Tuple[Optional[str], Optional[str]], Dict[str, Any]]:
@@ -796,6 +817,11 @@ def _get_previous_bsr_snapshot(
     "предыдущим" BSR для delta_24h становился BSR, только что записанный этим же
     прогоном, а не результат вчерашнего запуска — и дельта схлопывалась в 0
     почти для всех пар, кроме обработанных в самом последнем пакете.
+
+    Кроме BSR (для дельты) сохраняет и остальные поля стороны пары (_PRESERVABLE_FIELDS) —
+    они нужны, чтобы при частичном сборе (например, только наши товары или только один
+    рынок) сторона, которую в этот раз не проверяли, не затиралась пустыми значениями,
+    а сохраняла последнее известное состояние.
     """
     global _PREVIOUS_BSR_SNAPSHOT_CACHE
     if _PREVIOUS_BSR_SNAPSHOT_CACHE is not None:
@@ -827,14 +853,11 @@ def _get_previous_bsr_snapshot(
                 if not prev_comp_asin:
                     continue
                 previous_bsr_by_pair[(prev_our_asin, prev_comp_asin)] = {
-                    "our_bsr": (
-                        prev_row[prev_columns["our_bsr"]]
-                        if "our_bsr" in prev_columns and len(prev_row) > prev_columns["our_bsr"] else ""
-                    ),
-                    "comp_bsr": (
-                        prev_row[prev_columns["comp_bsr"]]
-                        if "comp_bsr" in prev_columns and len(prev_row) > prev_columns["comp_bsr"] else ""
-                    ),
+                    field: (
+                        prev_row[prev_columns[field]]
+                        if field in prev_columns and len(prev_row) > prev_columns[field] else ""
+                    )
+                    for field in _PRESERVABLE_FIELDS
                 }
 
     _PREVIOUS_BSR_SNAPSHOT_CACHE = previous_bsr_by_pair
