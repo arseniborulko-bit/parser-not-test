@@ -57,6 +57,13 @@ def test_a_decimal_from_postgres_numeric_columns_is_colored_like_a_plain_number(
     assert fill(ws, "Δ BSR наш") == GOOD
 
 
+def test_a_timezone_aware_updated_at_from_postgres_does_not_crash_excel():
+    """updated_at — TIMESTAMPTZ; Excel не понимает часовой пояс в дате и падает, если его не снять."""
+    ts = pd.Timestamp("2026-09-22 10:00:00", tz="UTC")
+    ws = sheet_from([{"our_asin": "B0X", "comp_asin": "B0Y", "updated_at": ts}])
+    assert "Обновлено" in headers(ws)
+
+
 def test_an_empty_table_does_not_crash():
     columns = ["our_asin", "comp_asin", "our_bsr_delta_24h", "comp_bsr_delta_24h", "price_diff_pct", "comp_stock"]
     ws = sheet_from(pd.DataFrame(columns=columns).to_dict("records"))

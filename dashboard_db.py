@@ -359,6 +359,10 @@ def _current_to_excel_bytes(data: pd.DataFrame) -> bytes:
 
     all_labels = {**_COLUMN_LABELS, **_IMAGE_URL_LABELS}
     table = data.rename(columns={k: v for k, v in all_labels.items() if k in data.columns})
+    # updated_at приходит из Postgres как TIMESTAMPTZ (с часовым поясом) — Excel такие значения
+    # не поддерживает вовсе и падает при записи; час не пересчитываем, просто снимаем метку пояса.
+    for column in table.columns[table.dtypes.apply(lambda dtype: getattr(dtype, "tz", None) is not None)]:
+        table[column] = table[column].dt.tz_localize(None)
     buffer = io.BytesIO()
     with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
         table.to_excel(writer, index=False, sheet_name="Текущее состояние")
