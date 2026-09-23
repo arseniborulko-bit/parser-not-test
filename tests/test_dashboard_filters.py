@@ -36,9 +36,11 @@ def test_one_set_of_filters_is_shared_by_both_tables(dash):  # noqa: F811
     at = run()
     keys = {widget.key for widget in at.selectbox} | {widget.key for widget in at.text_input}
     assert {"global_asin", "global_period", "global_market", "global_search"} <= keys
-    assert not any(str(key).startswith(("current_", "history_")) for key in keys if key), (
-        "отдельные фильтры на вкладку означают, что выбор теряется при переходе между ними"
-    )
+    # Свои элементы у вкладки допустимы (например, выбор пары для графика) — недопустим ИМЕННО
+    # второй комплект фильтров: тогда выбор теряется при переходе между вкладками.
+    duplicated = {f"{prefix}_{name}" for prefix in ("current", "history")
+                  for name in ("asin", "search", "period", "market")}
+    assert not (duplicated & keys), f"фильтры продублированы по вкладкам: {duplicated & keys}"
 
 
 def test_the_note_above_the_tabs_no_longer_promises_filters_on_every_tab(dash):  # noqa: F811

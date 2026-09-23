@@ -191,15 +191,16 @@ def load_current() -> pd.DataFrame:
         try:
             return pd.read_sql(
                 """
-                SELECT DISTINCT ON (s.our_asin, s.comp_asin)
+                SELECT DISTINCT ON (s.marketplace, s.our_asin, s.comp_asin)
                        s.snapshot_date, s.marketplace, s.currency, s.our_asin, s.our_product, s.our_price,
                        s.our_bsr, s.our_bsr_delta_24h, s.comp_asin, s.competitor_name, s.comp_price,
                        s.comp_bsr, s.comp_bsr_delta_24h, s.comp_stock, s.price_diff_pct, s.updated_at,
                        s.our_image_url, s.comp_image_url
                 FROM bsr_radar.snapshots s
                 JOIN bsr_radar.competitor_pairs p
-                  ON p.our_asin = s.our_asin AND p.comp_asin = s.comp_asin AND p.active
-                ORDER BY s.our_asin, s.comp_asin, s.snapshot_date DESC
+                  ON p.our_asin = s.our_asin AND p.comp_asin = s.comp_asin
+                 AND p.marketplace = s.marketplace AND p.active
+                ORDER BY s.marketplace, s.our_asin, s.comp_asin, s.snapshot_date DESC
                 """,
                 conn,
             )
@@ -207,14 +208,15 @@ def load_current() -> pd.DataFrame:
             conn.rollback()
             data = pd.read_sql(
                 """
-                SELECT DISTINCT ON (s.our_asin, s.comp_asin)
+                SELECT DISTINCT ON (s.marketplace, s.our_asin, s.comp_asin)
                        s.snapshot_date, s.marketplace, s.currency, s.our_asin, s.our_product, s.our_price,
                        s.our_bsr, s.our_bsr_delta_24h, s.comp_asin, s.competitor_name, s.comp_price,
                        s.comp_bsr, s.comp_bsr_delta_24h, s.comp_stock, s.price_diff_pct, s.updated_at
                 FROM bsr_radar.snapshots s
                 JOIN bsr_radar.competitor_pairs p
-                  ON p.our_asin = s.our_asin AND p.comp_asin = s.comp_asin AND p.active
-                ORDER BY s.our_asin, s.comp_asin, s.snapshot_date DESC
+                  ON p.our_asin = s.our_asin AND p.comp_asin = s.comp_asin
+                 AND p.marketplace = s.marketplace AND p.active
+                ORDER BY s.marketplace, s.our_asin, s.comp_asin, s.snapshot_date DESC
                 """,
                 conn,
             )
@@ -418,6 +420,60 @@ def _present_table(data: pd.DataFrame, *, with_images: bool = False) -> tuple[pd
         result["Обновлено"] = result["Обновлено"].map(_format_kyiv_time)
     result = result.fillna("")
     return result, link_columns
+
+
+_CHART_METRICS = {
+    "BSR (чем меньше, тем лучше)": ("our_bsr", "comp_bsr"),
+    "Цена": ("our_price", "comp_price"),
+}
+
+
+def _pair_label(row: pd.Series) -> str:
+    """Короткая подпись пары: рынок и оба ASIN. Названия товаров слишком длинные для легенды."""
+    return f"{row.get('marketplace', '')} · {row.get('our_asin', '')} ↔ {row.get('comp_asin', '')}"
+
+
+def _history_series(data: pd.DataFrame, pair_label: str, ours: str, theirs: str) -> pd.DataFrame:
+    """Две линии по дням для выбранной пары: наш товар и конкурент.
+
+    Работает и для пары, которую уже отключили: берём данные из самих снимков и ничего не
+    сверяем со справочником активных пар — снимки не удаляются, поэтому история остаётся
+    доступной и после того, как ASIN перестали собирать."""
+    rows = data[data.apply(_pair_label, axis=1) == pair_label]
+    if rows.empty:
+        return pd.DataFrame()
+    frame = pd.DataFrame({
+        "Дата": pd.to_datetime(rows["snapshot_date"], errors="coerce"),
+        "Наш товар": pd.to_numeric(rows[ours], errors="coerce") if ours in rows else pd.NA,
+        "Конкурент": pd.to_numeric(rows[theirs], errors="coerce") if theirs in rows else pd.NA,
+    })
+    frame = frame.dropna(subset=["Дата"]).set_index("Дата").sort_index()
+    return frame.dropna(axis=1, how="all")
+
+
+def _render_history_charts(data: pd.DataFrame) -> None:
+    """График «наш против конкурента» по дням — ради этого историю и собирают."""
+    if data.empty or "snapshot_date" not in data:
+        return
+    labels = sorted(data.apply(_pair_label, axis=1).unique())
+    if not labels:
+        return
+
+    st.markdown('<p class="section-title">Динамика по дням</p>', unsafe_allow_html=True)
+    chart_columns = st.columns([3, 2])
+    with chart_columns[0]:
+        pair_label = st.selectbox("Пара", labels, key="history_chart_pair")
+    with chart_columns[1]:
+        metric = st.selectbox("Показатель", list(_CHART_METRICS), key="history_chart_metric")
+
+    ours, theirs = _CHART_METRICS[metric]
+    series = _history_series(data, pair_label, ours, theirs)
+    if series.empty:
+        st.info("По этой паре пока нет чисел для графика — данные не собрались ни за один день.")
+        return
+    if len(series) < 2:
+        st.caption("Пока только один день с данными: линия появится со следующего сбора.")
+    st.line_chart(series, height=320)
 
 
 def _table_or_note(data: pd.DataFrame, *, with_images: bool = False) -> None:
@@ -847,6 +903,7 @@ def main() -> None:
         _table_or_note(shown, with_images=True)
 
     with history_tab:
+        _render_history_charts(shown_history)
         _table_or_note(shown_history)
 
     with pairs_tab:
