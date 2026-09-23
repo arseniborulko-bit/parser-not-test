@@ -119,12 +119,13 @@ AMAZON_DOMAINS = {
 st.set_page_config(page_title="Competitor BSR — мониторинг конкурентов", page_icon="📡", layout="wide")
 
 
-# Прятать ли собственную шапку Streamlit («Fork», значок GitHub, меню приложения).
-# ВРЕМЕННО False по просьбе владельца 23.09.2026: через это меню он добирается до настроек
-# приложения. Чтобы снова спрятать — поставить True, менять больше ничего не нужно.
+# Прятать ли собственную шапку Streamlit («Share», «Fork», значок GitHub, меню приложения).
+# Владельцу она нужна изредка: чтобы вернуть — поставить False, менять больше ничего не нужно.
+# Настройки приложения от этого не закрываются: адрес и прочее меняются на share.streamlit.io
+# (список приложений → ⋮ → Settings), а не через эту шапку.
 # Значки Streamlit Cloud в правом нижнем углу этим флагом НЕ управляются: они рисуются вне
 # нашего iframe (div._streamlitAppContainer — сосед, а не потомок) и коду приложения недоступны.
-HIDE_STREAMLIT_CHROME = False
+HIDE_STREAMLIT_CHROME = True
 
 # Проверено на живом сайте: кнопка «Fork» лежит в
 # header[data-testid="stHeader"] > [data-testid="stToolbar"] > stToolbarActions.
