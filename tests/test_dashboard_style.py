@@ -31,7 +31,12 @@ def test_disabled_buttons_inside_tabs_look_disabled(dash):  # noqa: F811
 
 
 def test_the_fork_github_toolbar_is_hidden(dash):  # noqa: F811
-    assert re.search(r'\[data-testid="stToolbar"\]\s*\{[^}]*display: none !important', style_of(run()))
+    """На живом сайте кнопка «Fork» лежит в header[stHeader] > stToolbar > stToolbarActions.
+    Прячем весь колонтитул, чтобы не зависеть от того, в каком узле её разместит новая версия."""
+    css = style_of(run())
+    for selector in ('header\\[data-testid="stHeader"\\]', '\\[data-testid="stToolbar"\\]',
+                     '\\[data-testid="stToolbarActions"\\]'):
+        assert re.search(selector + r'[^{]*\{[^}]*display: none !important', css), selector
 
 
 def test_the_lagging_underline_is_removed_because_we_resize_the_tabs(dash):  # noqa: F811
