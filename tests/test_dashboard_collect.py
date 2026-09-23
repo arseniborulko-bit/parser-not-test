@@ -54,14 +54,13 @@ def test_the_tab_says_what_is_in_work_from_the_active_pairs(collect_env):
     assert not at.exception
     assert "⚙ Сбор и управление" in [t.label for t in at.tabs]
     assert "В работе 2 ASIN: наших 1 · конкурентов 1 (US 2)" in captions(at)
-    assert "Каждый ASIN запрашивается один раз за сбор" in captions(at)
 
 
-def test_without_a_github_token_the_button_is_off_and_explains_how_to_turn_it_on(monkeypatch, collect_env):
+def test_without_a_github_token_the_button_is_off_and_nothing_is_explained(monkeypatch, collect_env):
     monkeypatch.delenv("GITHUB_DISPATCH_TOKEN")
     at = run()
     assert run_button(at).disabled
-    assert "GITHUB_DISPATCH_TOKEN" in captions(at)
+    assert "GITHUB_DISPATCH_TOKEN" not in captions(at)
 
 
 def test_a_free_moment_enables_the_button(collect_env):

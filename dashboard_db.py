@@ -617,10 +617,8 @@ def _render_schedule_tab(actor: str | None, role: str | None) -> None:
     else:
         st.success(f"Автосбор включён: каждый день после {schedule.hour:02d}:{schedule.minute:02d} (Киев).")
         upcoming = schedule_store.next_run(now, schedule, overview.collected_today)
-        if upcoming.due_now:
-            st.caption("Время уже наступило, а успешного сбора сегодня нет — он начнётся при ближайшей проверке. GitHub запускает проверку нерегулярно (бывает раз в несколько часов), поэтому старт может сильно задержаться.")
-        else:
-            st.caption(f"Следующий запуск: {upcoming.when:%d.%m в %H:%M} (Киев) или позже: GitHub запускает проверку нерегулярно, задержка бывает до нескольких часов.")
+        if not upcoming.due_now:
+            st.caption(f"Следующий запуск: {upcoming.when:%d.%m в %H:%M} (Киев).")
     if any(run["status"] == "running" for run in overview.runs):
         st.warning("Сейчас идёт сбор данных.")
 

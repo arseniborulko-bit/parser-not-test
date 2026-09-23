@@ -464,10 +464,11 @@ def test_running_collection_is_announced(monkeypatch, dash):
     assert any("Сейчас идёт сбор данных" in w.value for w in at.warning)
 
 
-def test_todays_time_already_passed_without_collection_is_explained(monkeypatch, dash):
+def test_todays_time_already_passed_without_collection_shows_no_technical_explanation(monkeypatch, dash):
     monkeypatch.setattr(dash, "_now", lambda: NOW.replace(hour=11))
     at = run()
-    assert any("ближайшей проверке" in c.value for c in at.caption)
+    assert not at.exception
+    assert not any("Следующий запуск" in c.value or "нерегулярно" in c.value for c in at.caption)
 
 
 def test_collected_today_moves_next_run_to_tomorrow(monkeypatch, dash):

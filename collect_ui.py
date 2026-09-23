@@ -87,8 +87,6 @@ def render_run_block(connect, pairs: pd.DataFrame, preview: Callable[[str], Opti
     else:
         positions = run_control.positions_summary(zip(pairs["marketplace"], pairs["our_asin"], pairs["comp_asin"], pairs["active"]))
     st.caption(run_control.format_positions(positions))
-    st.caption("Каждый ASIN запрашивается один раз за сбор, даже если он входит в несколько пар. "
-              "Можно собрать всё сразу или только часть — у полного и частичного сбора разные дневные лимиты.")
 
     since = _now_ts() - st.session_state.get("collect_dispatched_at", 0)
     cooling = since < COOLDOWN_SECONDS
@@ -111,7 +109,7 @@ def render_run_block(connect, pairs: pd.DataFrame, preview: Callable[[str], Opti
     if not can_edit:
         st.caption("Чтобы запускать сбор, откройте «🔒 Управление» вверху страницы.")
     elif not token:
-        st.caption("Кнопка включится, когда в секретах Streamlit появится токен GitHub (GITHUB_DISPATCH_TOKEN). Пока сбор идёт по расписанию, а вручную его можно запустить в GitHub → Actions.")
+        pass
     elif cooling:
         st.caption(f"Запуск отправлен {int(since)} с назад: сбор начнётся в течение минуты.")
     else:
