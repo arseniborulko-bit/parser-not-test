@@ -145,6 +145,11 @@ def _apply_design() -> None:
         div[data-testid="stTabs"] [role="tab"] { background: #121826 !important; color: #fff !important; border-radius: 7px 7px 0 0; padding: .6rem 1rem; margin-right: 2px; opacity: 1 !important; }
         div[data-testid="stTabs"] [role="tab"] * { color: #fff !important; opacity: 1 !important; }
         div[data-testid="stTabs"] [role="tab"][aria-selected="true"] { background: #168ed0 !important; color: #fff !important; }
+        /* Своя полоска-подчёркивание Streamlit позиционируется скриптом по ширине вкладки, а мы
+        меняем вкладкам padding/margin — из-за этого она отставала на шаг и подчёркивала предыдущую
+        вкладку. Активную вкладку и так видно по синей заливке, поэтому полоску убираем. */
+        div[data-testid="stTabs"] [data-baseweb="tab-highlight"],
+        div[data-testid="stTabs"] [data-baseweb="tab-border"] { display: none !important; }
         div[data-testid="stTabs"] button:disabled { opacity: .45 !important; cursor: not-allowed; }
         .stButton > button { background: #168ed0; color: #fff; border: 0; border-radius: 8px; font-weight: 650; }
         .stButton > button:hover { background: #075b9b; color: #fff; }

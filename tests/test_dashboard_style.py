@@ -34,6 +34,14 @@ def test_the_fork_github_toolbar_is_hidden(dash):  # noqa: F811
     assert re.search(r'\[data-testid="stToolbar"\]\s*\{[^}]*display: none !important', style_of(run()))
 
 
+def test_the_lagging_underline_is_removed_because_we_resize_the_tabs(dash):  # noqa: F811
+    """Полоска Streamlit позиционируется скриптом по ширине вкладки; мы меняем padding/margin,
+    и она отставала на шаг — подчёркивала предыдущую вкладку, а не открытую."""
+    css = style_of(run())
+    assert re.search(r'\[data-baseweb="tab-highlight"\][^{]*\{[^}]*display: none !important', css)
+    assert re.search(r'\[data-baseweb="tab-border"\]\s*\{[^}]*display: none !important', css)
+
+
 def test_tab_styling_does_not_leak_onto_every_button_inside_a_tab(dash):  # noqa: F811
     """Оформление вкладки доставалось и кнопке-подсказке «?» внутри формы: она выглядела
     тёмным пустым квадратом. Красим только сами заголовки вкладок ([role="tab"])."""
