@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Mapping, Optional
 from uuid import uuid4
 from zoneinfo import ZoneInfo
@@ -17,6 +17,10 @@ TZ = ZoneInfo("Europe/Kyiv")
 DAILY_ATTEMPT_LIMIT = 3
 # Один ключ для ВСЕХ путей допуска; транзакция заканчивается до парсинга.
 ADMISSION_LOCK = (782143, 1)
+# Обычный сбор занимает минуты, не часы. Попытка, которая провисела в статусе
+# 'running' дольше этого срока, считается зависшей (раннер упал/убит, до
+# log_finish дело не дошло) и не должна блокировать сбор до конца дня.
+STALE_RUNNING_MINUTES = 180
 
 
 class RunStoreError(RuntimeError):
@@ -132,6 +136,15 @@ def admit_parser_run(invocation: Invocation) -> Admission:
         now = cur.fetchone()[0]
         cur.execute("SELECT hour, minute FROM bsr_radar.schedule WHERE id = 1;")
         schedule = cur.fetchone()
+        # Зависшие попытки (никто не вызвал log_finish, например раннер упал) не
+        # должны блокировать сбор на весь день — списываем их как ошибку.
+        stale_before = now - timedelta(minutes=STALE_RUNNING_MINUTES)
+        cur.execute("""
+            UPDATE bsr_radar.collection_runs
+            SET status = 'error', error = 'Зависла в статусе running — списано автоматически',
+                finished_at = clock_timestamp()
+            WHERE status = 'running' AND started_at < %s;
+        """, (stale_before,))
         cur.execute("""
             SELECT EXISTS (
                 SELECT 1 FROM bsr_radar.collection_runs WHERE status = 'running'

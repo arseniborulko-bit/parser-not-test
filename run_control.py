@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from collections import Counter
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Dict, Iterable, Optional, Tuple
 
 import db_runs
@@ -66,11 +66,18 @@ def admission_preview(connect: Connect, now: datetime, scope: str = "all") -> Op
     if scope not in db_runs.SCOPES:
         raise RunControlError("Некорректная область сбора для проверки.")
     today = now.astimezone(db_runs.TZ).date()
+    # Попытка running старше db_runs.STALE_RUNNING_MINUTES не в счёт: настоящая проверка (admit_parser_run)
+    # такую спишет как ошибку сама, до этого момента предпросмотр не должен пугать несуществующей блокировкой.
+    stale_before = now - timedelta(minutes=db_runs.STALE_RUNNING_MINUTES)
     schedule_rows, unfinished_rows, count_rows = dbutil.run_many(
         connect,
         [
             ("SELECT hour, minute FROM bsr_radar.schedule WHERE id = 1;", (), True),
-            ("SELECT EXISTS (SELECT 1 FROM bsr_radar.collection_runs WHERE status = 'running');", (), True),
+            (
+                "SELECT EXISTS (SELECT 1 FROM bsr_radar.collection_runs WHERE status = 'running' AND started_at >= %s);",
+                (stale_before,),
+                True,
+            ),
             (
                 "SELECT count(*), COALESCE(bool_or(status = 'done'), FALSE) FROM bsr_radar.collection_runs "
                 "WHERE step = 'parser' AND (started_at AT TIME ZONE 'Europe/Kyiv')::date = %s AND scope = %s;",

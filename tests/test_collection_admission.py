@@ -189,6 +189,18 @@ def test_denial_does_not_register_attempt(monkeypatch, override):
     assert not any("INSERT" in e[1] for e in conn.events if e[0] == "sql")
 
 
+def test_a_stale_running_attempt_is_written_off_before_the_unfinished_check(monkeypatch):
+    conn = connect_fake(monkeypatch, admission_rows())
+    db_runs.admit_parser_run(INVOCATION)
+    queries = [e for e in conn.events if e[0] == "sql"]
+    stale_index = next(i for i, q in enumerate(queries) if "collection_runs" in q[1] and "SET status = 'error'" in q[1])
+    exists_index = next(i for i, q in enumerate(queries) if "EXISTS" in q[1])
+    assert stale_index < exists_index
+    stale_query = queries[stale_index]
+    assert "WHERE status = 'running'" in stale_query[1]
+    assert stale_query[2] == (NOW - db_runs.timedelta(minutes=db_runs.STALE_RUNNING_MINUTES),)
+
+
 def test_unfinished_check_has_no_day_or_step_filter(monkeypatch):
     conn = connect_fake(monkeypatch, admission_rows(unfinished=True))
     assert not db_runs.admit_parser_run(INVOCATION).should_run

@@ -455,8 +455,12 @@ def section_admission() -> None:
     for step in ("parser", "sync"):
         reset()
         insert_run(step, "running", q("SELECT now() - interval '3 days';")[0][0], owner_key="github:owner/repo:1:1")
+        # Первый вызов списывает трёхдневную running как зависшую и сам проходит (создавая
+        # СВОЮ, уже свежую running); второй вызов блокируется именно этой свежей записью,
+        # а не старой — force её тоже не снимает, это отдельная (не дневная) защита.
         d, d_force = db_runs.admit_parser_run(gh(601)), db_runs.admit_parser_run(gh(602, force=True))
-        check(f"running шага {step} трёхдневной давности блокирует допуск (в т.ч. force)", not d.should_run and not d_force.should_run, d.reason)
+        check(f"running шага {step} трёхдневной давности списывается, допуск проходит, но следующий вызов блокирует уже свежая running",
+              d.should_run and not d_force.should_run, d_force.reason)
 
     reset()
     for _ in range(3):
@@ -497,6 +501,20 @@ def section_admission() -> None:
         check("нельзя закрыть запись второй раз", True)
     check("полный путь: parser и sync закрыты как done", count("status = 'done'") == 2 and count("status = 'running'") == 0)
 
+    reset()
+    recent_start = q("SELECT now() - interval '10 minutes';")[0][0]
+    insert_run("parser", "running", recent_start, None, owner_key="github:owner/repo:1201:1")
+    d = db_runs.admit_parser_run(gh(1202))
+    check("свежая (10 минут) running всё ещё блокирует — не списывается раньше срока",
+          not d.should_run and "незавершённая" in d.reason and count("status = 'running'") == 1)
+
+    reset()
+    old_start = q(f"SELECT now() - interval '{db_runs.STALE_RUNNING_MINUTES + 1} minutes';")[0][0]
+    insert_run("parser", "running", old_start, None, owner_key="github:owner/repo:1203:1")
+    d = db_runs.admit_parser_run(gh(1204))
+    check("running за порогом списывается автоматически и допуск проходит",
+          d.should_run and count("status = 'error'") == 1 and count("status = 'running'") == 1)
+
     reset_old()
     q(MIGRATIONS["002_dashboard_users.sql"])
     try:
@@ -512,7 +530,8 @@ def section_admission() -> None:
     q(MIGRATIONS["001_collection_admission.sql"])
     check("миграция 001 не меняет существующие строки и безопасна при повторе", before == q(snapshot))
     d = db_runs.admit_parser_run(gh(1002))
-    check("старая зависшая running продолжает блокировать после миграции", not d.should_run and "незавершённая" in d.reason)
+    check("старая (2 дня) зависшая running теперь списывается автоматически и не блокирует", d.should_run)
+    check("списанная попытка получила статус error, а не осталась висеть running", count("status = 'error'") == 1)
 
     copy = WORK / "gate_copy"
     copy.mkdir()

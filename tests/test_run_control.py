@@ -141,6 +141,16 @@ def test_the_preview_reads_over_one_connection_and_writes_nothing():
     assert all(sql.lstrip().upper().startswith("SELECT") for sql, _ in db.executed)
 
 
+def test_the_unfinished_check_ignores_running_rows_older_than_the_gates_own_stale_threshold():
+    from datetime import timedelta
+
+    db = preview_db()
+    run_control.admission_preview(db.connect, KYIV_NOON)
+    sql, params = db.executed[1]
+    assert "started_at >= %s" in sql
+    assert params == (KYIV_NOON - timedelta(minutes=db_runs.STALE_RUNNING_MINUTES),)
+
+
 @pytest.mark.parametrize("now, day", [
     (datetime(2026, 9, 21, 12, 0, tzinfo=TZ), date(2026, 9, 21)),
     (datetime(2026, 9, 20, 22, 30, tzinfo=timezone.utc), date(2026, 9, 21)),
