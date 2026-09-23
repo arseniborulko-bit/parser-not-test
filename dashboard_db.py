@@ -860,11 +860,6 @@ def main() -> None:
         unsafe_allow_html=True,
     )
 
-    st.markdown('<p class="section-title">Мониторинг конкурентов</p>', unsafe_allow_html=True)
-    st.markdown(
-        '<p class="section-note">Фильтры ниже применяются к вкладкам «Текущее состояние» и «История».</p>',
-        unsafe_allow_html=True,
-    )
     choice = _filter_controls([current, history])
     shown = _apply_filter(current, choice)
     shown_history = _apply_filter(history, choice)

@@ -43,10 +43,11 @@ def test_one_set_of_filters_is_shared_by_both_tables(dash):  # noqa: F811
     assert not (duplicated & keys), f"фильтры продублированы по вкладкам: {duplicated & keys}"
 
 
-def test_the_note_above_the_tabs_no_longer_promises_filters_on_every_tab(dash):  # noqa: F811
+def test_no_explanatory_notes_are_written_above_the_tabs(dash):  # noqa: F811
+    """Владелец не хочет пояснительных подписей в интерфейсе: элементы должны говорить сами за себя."""
     text = " ".join(block.value for block in run().markdown)
-    assert "Фильтры ниже применяются" in text
-    assert "Фильтруйте сохранённые данные по ASIN, стране и периоду" not in text
+    for note in ("Фильтры ниже применяются", "Фильтруйте сохранённые данные", "Мониторинг конкурентов"):
+        assert note not in text, note
 
 
 FRAME = pd.DataFrame([
