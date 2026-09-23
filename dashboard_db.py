@@ -12,9 +12,11 @@ import json
 import os
 import subprocess
 import sys
+from dataclasses import dataclass
 from datetime import datetime
 from html import escape
 from pathlib import Path
+from typing import Iterable
 
 import pandas as pd
 import psycopg2
@@ -275,32 +277,54 @@ def _render_overview(data: pd.DataFrame) -> None:
         column.markdown(card, unsafe_allow_html=True)
 
 
-def _filter_data(data: pd.DataFrame, key_prefix: str) -> pd.DataFrame:
+@dataclass(frozen=True)
+class FilterChoice:
+    """Один выбор фильтров на весь дашборд. Раньше фильтры жили внутри каждой вкладки и рисовались
+    ПОСЛЕ карточек-итогов, поэтому карточки физически не могли их учесть и всегда показывали всю
+    базу, хотя подписаны были «в выбранном срезе». Заодно выбор больше не теряется при переходе
+    между вкладками «Текущее состояние» и «История»."""
+
+    asin: str = "Все"
+    search: str = ""
+    period: str = "Всё время"
+    market: str = "Все"
+
+
+def _options(frames: Iterable[pd.DataFrame], column: str) -> list[str]:
+    values: set[str] = set()
+    for frame in frames:
+        if column in frame:
+            values.update(frame[column].dropna().unique())
+    return ["Все"] + sorted(values)
+
+
+def _filter_controls(frames: Iterable[pd.DataFrame], key_prefix: str = "global") -> FilterChoice:
+    frames = list(frames)
     filter_columns = st.columns(4)
     with filter_columns[0]:
-        asins = ["Все"] + sorted(data["our_asin"].dropna().unique()) if "our_asin" in data else ["Все"]
-        asin = st.selectbox("ASIN", asins, key=f"{key_prefix}_asin")
+        asin = st.selectbox("ASIN", _options(frames, "our_asin"), key=f"{key_prefix}_asin")
     with filter_columns[1]:
         search = st.text_input("Поиск", placeholder="ASIN, товар, бренд…", key=f"{key_prefix}_search")
     with filter_columns[2]:
         period = st.selectbox("Период", ["Всё время", "7 дней", "30 дней", "90 дней"], key=f"{key_prefix}_period")
     with filter_columns[3]:
-        markets = ["Все"] + sorted(data["marketplace"].dropna().unique()) if "marketplace" in data else ["Все"]
-        market = st.selectbox("Маркетплейс", markets, key=f"{key_prefix}_market")
+        market = st.selectbox("Маркетплейс", _options(frames, "marketplace"), key=f"{key_prefix}_market")
+    return FilterChoice(asin=asin, search=search, period=period, market=market)
 
+
+def _apply_filter(data: pd.DataFrame, choice: FilterChoice) -> pd.DataFrame:
     result = data.copy()
-    if asin != "Все":
-        result = result[result["our_asin"] == asin]
-    if market != "Все":
-        result = result[result["marketplace"] == market]
-    if search.strip():
-        contains = result.astype(str).apply(lambda column: column.str.contains(search, case=False, na=False))
+    if choice.asin != "Все" and "our_asin" in result:
+        result = result[result["our_asin"] == choice.asin]
+    if choice.market != "Все" and "marketplace" in result:
+        result = result[result["marketplace"] == choice.market]
+    if choice.search.strip():
+        contains = result.astype(str).apply(lambda column: column.str.contains(choice.search, case=False, na=False))
         result = result[contains.any(axis=1)]
-    if period != "Всё время":
+    if choice.period != "Всё время" and "snapshot_date" in result:
         dates = pd.to_datetime(result["snapshot_date"], errors="coerce")
-        days = int(period.split()[0])
+        days = int(choice.period.split()[0])
         result = result[dates >= (datetime.now() - pd.Timedelta(days=days))]
-    st.caption(f"Уникальных ASIN в выборке: {result['our_asin'].nunique() if 'our_asin' in result else 0}")
     return result
 
 
@@ -757,10 +781,16 @@ def main() -> None:
         unsafe_allow_html=True,
     )
 
-    _render_overview(current)
-
     st.markdown('<p class="section-title">Мониторинг конкурентов</p>', unsafe_allow_html=True)
-    st.markdown('<p class="section-note">Фильтруйте сохранённые данные по ASIN, стране и периоду.</p>', unsafe_allow_html=True)
+    st.markdown(
+        '<p class="section-note">Фильтры ниже применяются к вкладкам «Текущее состояние» и «История».</p>',
+        unsafe_allow_html=True,
+    )
+    choice = _filter_controls([current, history])
+    shown = _apply_filter(current, choice)
+    shown_history = _apply_filter(history, choice)
+
+    _render_overview(shown)
 
     tab_titles = ["📋 Текущее состояние", "📅 История", "🥊 Пары конкурентов", "⚙ Сбор и управление"]
     if role == access.ROLE_ADMIN:
@@ -769,12 +799,10 @@ def main() -> None:
     current_tab, history_tab, pairs_tab, schedule_tab = tabs[:4]
 
     with current_tab:
-        shown = _filter_data(current, key_prefix="current")
         presented, table_config = _present_table(shown, with_images=True)
         st.dataframe(presented, use_container_width=True, hide_index=True, height=450, column_config=table_config)
 
     with history_tab:
-        shown_history = _filter_data(history, key_prefix="history")
         presented_h, config_h = _present_table(shown_history)
         st.dataframe(presented_h, use_container_width=True, hide_index=True, height=450, column_config=config_h)
 
