@@ -119,6 +119,26 @@ AMAZON_DOMAINS = {
 st.set_page_config(page_title="BSR Radar — мониторинг конкурентов", page_icon="📦", layout="wide")
 
 
+# Прятать ли собственную шапку Streamlit («Fork», значок GitHub, меню приложения).
+# ВРЕМЕННО False по просьбе владельца 23.09.2026: через это меню он добирается до настроек
+# приложения. Чтобы снова спрятать — поставить True, менять больше ничего не нужно.
+# Значки Streamlit Cloud в правом нижнем углу этим флагом НЕ управляются: они рисуются вне
+# нашего iframe (div._streamlitAppContainer — сосед, а не потомок) и коду приложения недоступны.
+HIDE_STREAMLIT_CHROME = False
+
+# Проверено на живом сайте: кнопка «Fork» лежит в
+# header[data-testid="stHeader"] > [data-testid="stToolbar"] > stToolbarActions.
+# Прячем колонтитул целиком, чтобы не зависеть от того, в каком из этих узлов
+# Streamlit разместит кнопку в следующей версии.
+_CHROME_CSS = """
+<style>
+header[data-testid="stHeader"], .stAppHeader { display: none !important; }
+[data-testid="stToolbar"], .stAppToolbar,
+[data-testid="stToolbarActions"], [data-testid="stToolbarActionButton"] { display: none !important; }
+</style>
+"""
+
+
 def _apply_design() -> None:
     st.markdown(
         """
@@ -158,19 +178,12 @@ def _apply_design() -> None:
         div[data-testid="stTabs"] button:disabled { opacity: .45 !important; cursor: not-allowed; }
         .stButton > button { background: #168ed0; color: #fff; border: 0; border-radius: 8px; font-weight: 650; }
         .stButton > button:hover { background: #075b9b; color: #fff; }
-        /* «Fork»/GitHub/Stop в верхнем правом углу. Проверено на живом сайте: кнопка лежит в
-        header[data-testid="stHeader"] > [data-testid="stToolbar"] > stToolbarActions, всё внутри
-        нашего же фрейма. Прячем весь колонтитул целиком, а не только панель: так не важно, в каком
-        из этих узлов Streamlit в очередной версии разместит кнопку. Значки Streamlit Cloud снизу
-        справа отсюда не достать — они рисуются ВНЕ фрейма приложения (проверено обходом DOM:
-        div._streamlitAppContainer — сосед нашего iframe, а не потомок). */
-        header[data-testid="stHeader"], .stAppHeader { display: none !important; }
-        [data-testid="stToolbar"], .stAppToolbar,
-        [data-testid="stToolbarActions"], [data-testid="stToolbarActionButton"] { display: none !important; }
         </style>
         """,
         unsafe_allow_html=True,
     )
+    if HIDE_STREAMLIT_CHROME:
+        st.markdown(_CHROME_CSS, unsafe_allow_html=True)
 
 
 @st.cache_data(ttl=60, show_spinner=False)

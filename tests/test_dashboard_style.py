@@ -30,13 +30,24 @@ def test_disabled_buttons_inside_tabs_look_disabled(dash):  # noqa: F811
     assert re.search(r'stTabs"\] button:disabled\s*\{[^}]*opacity: \.45 !important', style_of(run()))
 
 
-def test_the_fork_github_toolbar_is_hidden(dash):  # noqa: F811
-    """На живом сайте кнопка «Fork» лежит в header[stHeader] > stToolbar > stToolbarActions.
-    Прячем весь колонтитул, чтобы не зависеть от того, в каком узле её разместит новая версия."""
+SELECTORS = ('header\\[data-testid="stHeader"\\]', '\\[data-testid="stToolbar"\\]',
+             '\\[data-testid="stToolbarActions"\\]')
+
+
+def test_hiding_the_streamlit_header_is_one_switch(dash, monkeypatch):  # noqa: F811
+    """Владельцу временами нужна родная шапка Streamlit — через неё он попадает в меню
+    приложения. Поэтому сокрытие включается одним флагом, а не правкой CSS по месту."""
+    monkeypatch.setattr(dash, "HIDE_STREAMLIT_CHROME", True)
     css = style_of(run())
-    for selector in ('header\\[data-testid="stHeader"\\]', '\\[data-testid="stToolbar"\\]',
-                     '\\[data-testid="stToolbarActions"\\]'):
+    for selector in SELECTORS:
         assert re.search(selector + r'[^{]*\{[^}]*display: none !important', css), selector
+
+
+def test_with_the_switch_off_the_header_stays_visible(dash, monkeypatch):  # noqa: F811
+    monkeypatch.setattr(dash, "HIDE_STREAMLIT_CHROME", False)
+    css = style_of(run())
+    for selector in SELECTORS:
+        assert not re.search(selector + r'[^{]*\{[^}]*display: none !important', css), selector
 
 
 def test_the_lagging_underline_is_removed_because_we_resize_the_tabs(dash):  # noqa: F811
