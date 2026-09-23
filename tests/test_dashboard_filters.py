@@ -34,7 +34,8 @@ def test_the_summary_cards_follow_the_filter(dash):  # noqa: F811
 
 def test_one_set_of_filters_is_shared_by_both_tables(dash):  # noqa: F811
     at = run()
-    keys = {widget.key for widget in at.selectbox} | {widget.key for widget in at.text_input}
+    keys = ({widget.key for widget in at.selectbox} | {widget.key for widget in at.text_input}
+            | {widget.key for widget in at.multiselect})
     assert {"global_asin", "global_period", "global_market", "global_search"} <= keys
     # Свои элементы у вкладки допустимы (например, выбор пары для графика) — недопустим ИМЕННО
     # второй комплект фильтров: тогда выбор теряется при переходе между вкладками.
@@ -65,9 +66,29 @@ def test_no_filter_keeps_everything():
     assert len(dash_module._apply_filter(FRAME, choice())) == 3
 
 
-def test_filtering_by_asin_and_by_market():
+def test_filtering_by_asin():
     assert list(dash_module._apply_filter(FRAME, choice(asin="B000000009"))["marketplace"]) == ["UK"]
-    assert list(dash_module._apply_filter(FRAME, choice(market="UK"))["our_asin"]) == ["B000000009"]
+
+
+def test_one_country_shows_only_that_country():
+    assert list(dash_module._apply_filter(FRAME, choice(markets=("UK",)))["our_asin"]) == ["B000000009"]
+
+
+def test_several_countries_can_be_picked_at_once():
+    result = dash_module._apply_filter(FRAME, choice(markets=("UK", "US")))
+    assert sorted(set(result["marketplace"])) == ["UK", "US"]
+
+
+def test_picking_no_country_means_all_of_them():
+    """Пустой набор = все страны, поэтому отдельный пункт «Все» в списке не нужен."""
+    assert len(dash_module._apply_filter(FRAME, choice(markets=()))) == len(FRAME)
+
+
+def test_the_country_list_has_no_fake_all_entry(dash):  # noqa: F811
+    at = run()
+    options = next(widget.options for widget in at.multiselect if widget.key == "global_market")
+    assert "Все" not in options
+    assert options == sorted(options)
 
 
 def test_search_looks_across_columns_and_ignores_case():
@@ -89,4 +110,4 @@ def test_the_options_come_from_both_tables_so_history_only_values_stay_selectabl
 def test_a_filter_on_a_missing_column_does_not_crash():
     """История и «текущее» — разные таблицы; фильтр не должен падать, если колонки нет."""
     bare = pd.DataFrame([{"snapshot_date": date(2026, 9, 18)}])
-    assert len(dash_module._apply_filter(bare, choice(asin="B000000001", market="US"))) == 1
+    assert len(dash_module._apply_filter(bare, choice(asin="B000000001", markets=("US",)))) == 1

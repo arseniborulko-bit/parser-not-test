@@ -357,15 +357,21 @@ class FilterChoice:
     asin: str = "Все"
     search: str = ""
     period: str = "Всё время"
-    market: str = "Все"
+    # Пустой набор = все страны. Так «ничего не выбрано» и «выбрано всё» — одно и то же,
+    # и отдельный пункт «Все» в списке не нужен.
+    markets: tuple[str, ...] = ()
 
 
-def _options(frames: Iterable[pd.DataFrame], column: str) -> list[str]:
+def _values(frames: Iterable[pd.DataFrame], column: str) -> list[str]:
     values: set[str] = set()
     for frame in frames:
         if column in frame:
             values.update(frame[column].dropna().unique())
-    return ["Все"] + sorted(values)
+    return sorted(values)
+
+
+def _options(frames: Iterable[pd.DataFrame], column: str) -> list[str]:
+    return ["Все"] + _values(frames, column)
 
 
 def _filter_controls(frames: Iterable[pd.DataFrame], key_prefix: str = "global") -> FilterChoice:
@@ -378,16 +384,19 @@ def _filter_controls(frames: Iterable[pd.DataFrame], key_prefix: str = "global")
     with filter_columns[2]:
         period = st.selectbox("Период", ["Всё время", "7 дней", "30 дней", "90 дней"], key=f"{key_prefix}_period")
     with filter_columns[3]:
-        market = st.selectbox("Маркетплейс", _options(frames, "marketplace"), key=f"{key_prefix}_market")
-    return FilterChoice(asin=asin, search=search, period=period, market=market)
+        markets = st.multiselect(
+            "Страны", _values(frames, "marketplace"), key=f"{key_prefix}_market",
+            placeholder="Все страны",
+        )
+    return FilterChoice(asin=asin, search=search, period=period, markets=tuple(markets))
 
 
 def _apply_filter(data: pd.DataFrame, choice: FilterChoice) -> pd.DataFrame:
     result = data.copy()
     if choice.asin != "Все" and "our_asin" in result:
         result = result[result["our_asin"] == choice.asin]
-    if choice.market != "Все" and "marketplace" in result:
-        result = result[result["marketplace"] == choice.market]
+    if choice.markets and "marketplace" in result:
+        result = result[result["marketplace"].isin(choice.markets)]
     if choice.search.strip():
         contains = result.astype(str).apply(lambda column: column.str.contains(choice.search, case=False, na=False))
         result = result[contains.any(axis=1)]
