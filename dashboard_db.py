@@ -145,9 +145,13 @@ def _apply_design() -> None:
         div[data-testid="stTabs"] [role="tab"] { background: #121826 !important; color: #fff !important; border-radius: 7px 7px 0 0; padding: .6rem 1rem; margin-right: 2px; opacity: 1 !important; }
         div[data-testid="stTabs"] [role="tab"] * { color: #fff !important; opacity: 1 !important; }
         div[data-testid="stTabs"] [role="tab"][aria-selected="true"] { background: #168ed0 !important; color: #fff !important; }
-        /* Своя полоска-подчёркивание Streamlit позиционируется скриптом по ширине вкладки, а мы
-        меняем вкладкам padding/margin — из-за этого она отставала на шаг и подчёркивала предыдущую
-        вкладку. Активную вкладку и так видно по синей заливке, поэтому полоску убираем. */
+        /* Красная полоска-указатель активной вкладки позиционируется скриптом по ширине вкладки,
+        а мы вкладкам меняем padding/margin — из-за этого она отставала на шаг и подчёркивала
+        предыдущую вкладку. Активную вкладку и так видно по синей заливке, поэтому полоску убираем.
+        Селектор подсмотрен в живом DOM: div.react-aria-SelectionIndicator (2px, rgb(255,75,75)).
+        Прежние [data-baseweb="tab-highlight"]/[data-baseweb="tab-border"] в этой версии Streamlit
+        не существуют вовсе — оставлены на случай отката к старой разметке. */
+        div[data-testid="stTabs"] .react-aria-SelectionIndicator,
         div[data-testid="stTabs"] [data-baseweb="tab-highlight"],
         div[data-testid="stTabs"] [data-baseweb="tab-border"] { display: none !important; }
         div[data-testid="stTabs"] button:disabled { opacity: .45 !important; cursor: not-allowed; }

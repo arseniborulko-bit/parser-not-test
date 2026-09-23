@@ -43,8 +43,9 @@ def test_the_lagging_underline_is_removed_because_we_resize_the_tabs(dash):  # n
     """Полоска Streamlit позиционируется скриптом по ширине вкладки; мы меняем padding/margin,
     и она отставала на шаг — подчёркивала предыдущую вкладку, а не открытую."""
     css = style_of(run())
+    # Имя класса взято из живого DOM: полоску рисует div.react-aria-SelectionIndicator.
+    assert re.search(r'\.react-aria-SelectionIndicator[^{]*\{[^}]*display: none !important', css)
     assert re.search(r'\[data-baseweb="tab-highlight"\][^{]*\{[^}]*display: none !important', css)
-    assert re.search(r'\[data-baseweb="tab-border"\]\s*\{[^}]*display: none !important', css)
 
 
 def test_tab_styling_does_not_leak_onto_every_button_inside_a_tab(dash):  # noqa: F811
