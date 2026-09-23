@@ -520,8 +520,7 @@ GitHub, а проверка решает, пора ли: своё расписа
 
 
 def _render_how_it_works() -> None:
-    with st.expander("ℹ️ Как это работает"):
-        st.markdown(_HOW_IT_WORKS)
+    st.markdown(_HOW_IT_WORKS)
 
 
 _RETIRED_LABELS = {
@@ -971,11 +970,12 @@ def main() -> None:
 
     _render_overview(shown)
 
-    tab_titles = ["📋 Текущее состояние", "📅 История", "🥊 Пары конкурентов", "⚙ Сбор и управление"]
+    tab_titles = ["📋 Текущее состояние", "📅 История", "🥊 Пары конкурентов", "⚙ Сбор и управление",
+                  "ℹ️ Как это работает"]
     if role == access.ROLE_ADMIN:
         tab_titles.append("👥 Пользователи")
     tabs = st.tabs(tab_titles)
-    current_tab, history_tab, pairs_tab, schedule_tab = tabs[:4]
+    current_tab, history_tab, pairs_tab, schedule_tab, how_tab = tabs[:5]
 
     with current_tab:
         _table_or_note(shown, with_images=True)
@@ -998,12 +998,14 @@ def main() -> None:
             _render_schedule_tab(actor, manage_role)
         with right:
             collect_ui.render_spot_check(_secret("SCRAPINGDOG_TOKEN"), can_edit)
-        _render_how_it_works()
         _render_retired_block()
         collect_ui.render_refresh_button()
 
+    with how_tab:
+        _render_how_it_works()
+
     if role == access.ROLE_ADMIN:
-        with tabs[4]:
+        with tabs[5]:
             _render_users_panel(email, role)
 
     download_left, download_right, _ = st.columns([1, 1, 4])

@@ -11,16 +11,12 @@ from test_dashboard_access import dash, run  # noqa: F401
 import dashboard_db as dash_module
 
 
-def test_the_section_exists_and_is_collapsed_by_default(dash):  # noqa: F811
-    import inspect
-
+def test_it_is_a_tab_of_its_own_right_after_the_management_tab(dash):  # noqa: F811
+    """Владелец хочет видеть, как пользоваться, рядом со «Сбор и управление», а не внутри неё."""
     at = run()
-    titles = [str(block.label) for block in at.expander]
-    assert any("Как это работает" in title for title in titles), titles
-    # AppTest этой версии не отдаёт признак свёрнутости, поэтому проверяем вызов:
-    # без expanded=True раздел свёрнут, иначе это снова текст поверх данных.
-    source = inspect.getsource(dash_module._render_how_it_works)
-    assert "expanded=True" not in source
+    labels = [str(tab.label) for tab in at.tabs]
+    assert "ℹ️ Как это работает" in labels, labels
+    assert labels.index("ℹ️ Как это работает") == labels.index("⚙ Сбор и управление") + 1
 
 
 def test_it_is_the_only_explanatory_text_on_screen(dash):  # noqa: F811
