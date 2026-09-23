@@ -63,6 +63,14 @@ def test_the_page_has_a_name_of_its_own(dash):  # noqa: F811
     assert "BSR Radar" in text
 
 
+def test_the_header_is_one_block_so_the_mark_and_the_name_stay_aligned(dash):  # noqa: F811
+    """Двумя отдельными абзацами Streamlit разводит значок и название по высоте."""
+    # Именно разметка шапки, а не блок <style>, где те же имена классов встречаются как правила.
+    header = next(block.value for block in run().markdown if 'class="brand-title"' in block.value)
+    for part in ('class="brand"', 'class="brand-mark"', 'class="brand-title"', 'class="brand-subtitle"'):
+        assert part in header, part
+
+
 def test_the_browser_tab_is_not_called_streamlit():
     source = dash_module.__file__
     with open(source, encoding="utf-8") as handle:

@@ -126,9 +126,10 @@ def _apply_design() -> None:
         .stApp { background: #f6f7fb; color: #121826; }
         .block-container { max-width: 1320px; padding-top: 2.25rem; padding-bottom: 3rem; }
         [data-testid="stSidebar"] { background: #ffffff; }
-        .brand { font-size: 2.35rem; font-weight: 800; letter-spacing: -0.045em; margin: 0; }
-        .brand-title { font-size: 1.9rem; font-weight: 800; color: #111827; margin: 0; line-height: 1.2; }
-        .brand-subtitle { color: #64748b; font-size: .87rem; margin: .25rem 0 1.5rem; }
+        .brand { display: flex; align-items: center; gap: .7rem; margin: 0 0 1.4rem; }
+        .brand-mark { font-size: 2.6rem; line-height: 1; }
+        .brand-title { font-size: 2.35rem; font-weight: 800; letter-spacing: -0.03em; color: #111827; margin: 0; line-height: 1.1; }
+        .brand-subtitle { color: #64748b; font-size: .9rem; margin: .15rem 0 0; }
         .status-box { background: #dbeafe; color: #2563eb; border-radius: 10px; padding: 1rem 1.1rem; }
         .status-box strong { color: #1d4ed8; }
         .metric-card { background: #ffffff; border: 1px solid #e5e7eb; border-radius: 15px; padding: 1rem 1.15rem; min-height: 120px; box-shadow: 0 1px 2px rgba(15,23,42,.025); }
@@ -803,8 +804,16 @@ def main() -> None:
     user, email, role = _resolve_access()
     left, right = st.columns([3, 2])
     with left:
-        st.markdown('<p class="brand-title">📦 BSR Radar</p>', unsafe_allow_html=True)
-        st.markdown('<p class="brand-subtitle">Мониторинг Amazon-конкурентов и аналитика портфеля</p>', unsafe_allow_html=True)
+        # Одним блоком, а не двумя отдельными абзацами: иначе Streamlit ставит между ними
+        # собственный отступ и значок с названием расходятся по высоте.
+        st.markdown(
+            '<div class="brand">'
+            '<span class="brand-mark">📡</span>'
+            '<div><p class="brand-title">BSR Radar</p>'
+            '<p class="brand-subtitle">Мониторинг Amazon-конкурентов и аналитика портфеля</p></div>'
+            '</div>',
+            unsafe_allow_html=True,
+        )
     with right:
         _render_auth_bar(user, email, role)
         if role is None and not _management_open():
