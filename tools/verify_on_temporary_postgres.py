@@ -21,6 +21,7 @@ import tempfile
 import threading
 import uuid
 from datetime import datetime
+from decimal import Decimal
 from pathlib import Path
 
 import pgserver
@@ -56,7 +57,8 @@ import schedule_store  # noqa: E402
 NEW_SCHEMA = (PROJECT / "schema.sql").read_text(encoding="utf-8")
 MIGRATIONS = {n: (PROJECT / "migrations" / n).read_text(encoding="utf-8")
               for n in ("001_collection_admission.sql", "002_dashboard_users.sql", "003_pair_changes.sql",
-                        "004_snapshot_images.sql", "005_run_scope.sql")}
+                        "004_snapshot_images.sql", "005_run_scope.sql",
+                        "006_snapshot_marketplace_key.sql")}
 
 
 def check(name: str, condition: object, extra: str = "") -> None:
@@ -562,11 +564,71 @@ def section_admission() -> None:
     check("за все проверки gate создана ровно одна запись", count() == 1)
 
 
+def section_snapshot_marketplace_key() -> None:
+    """Миграция 006: страна в ключе снимков. На боевой базе 25 пар ASIN отслеживаются сразу
+    на нескольких рынках и до этой миграции схлопывались в одну строку за день."""
+    print("\n== страна в ключе снимков (миграция 006) ==")
+
+    def snapshot_key() -> str:
+        rows = q("""
+            SELECT pg_get_constraintdef(oid) FROM pg_constraint
+            WHERE conrelid = 'bsr_radar.snapshots'::regclass AND contype = 'u';
+        """)
+        return rows[0][0] if rows else ""
+
+    def insert_snapshot(market, price, day="2026-09-23", our="B0OURASIN1", comp="B0COMPAAA1", target=None):
+        q(f"""
+            INSERT INTO bsr_radar.snapshots (snapshot_date, marketplace, our_asin, comp_asin, our_price)
+            VALUES (%s, %s, %s, %s, %s)
+            ON CONFLICT {target} DO UPDATE SET marketplace = EXCLUDED.marketplace, our_price = EXCLUDED.our_price;
+        """, (day, market, our, comp, price))
+
+    def snapshot_rows():
+        return q("SELECT marketplace, our_price FROM bsr_radar.snapshots ORDER BY marketplace;")
+
+    # Старая схема (ключ без страны) — воспроизводим сам баг, чтобы было видно, что чиним.
+    reset(migrations=False)
+    q("ALTER TABLE bsr_radar.snapshots DROP CONSTRAINT snapshots_day_market_pair_key;")
+    q("ALTER TABLE bsr_radar.snapshots ADD CONSTRAINT snapshots_snapshot_date_our_asin_comp_asin_key "
+      "UNIQUE (snapshot_date, our_asin, comp_asin);")
+    for market, price in (("ES", 19.99), ("FR", 21.50), ("IT", 23.00)):
+        insert_snapshot(market, price, target="(snapshot_date, our_asin, comp_asin)")
+    check("старый ключ: три рынка схлопываются в одну строку (сам баг)", len(snapshot_rows()) == 1, str(snapshot_rows()))
+
+    # Миграция на «боевых» данных: строки должны пережить расширение ключа.
+    before = q("SELECT id, snapshot_date, marketplace, our_asin, comp_asin, our_price FROM bsr_radar.snapshots ORDER BY id;")
+    q(MIGRATIONS["006_snapshot_marketplace_key.sql"])
+    q(MIGRATIONS["006_snapshot_marketplace_key.sql"])
+    after = q("SELECT id, snapshot_date, marketplace, our_asin, comp_asin, our_price FROM bsr_radar.snapshots ORDER BY id;")
+    check("миграция 006 не меняет существующие строки и безопасна при повторе", before == after)
+    check("после миграции ключ включает страну", "marketplace" in snapshot_key(), snapshot_key())
+
+    # После миграции те же три рынка живут как три отдельные строки.
+    target = "(snapshot_date, marketplace, our_asin, comp_asin)"
+    for market, price in (("ES", 19.99), ("FR", 21.50), ("IT", 23.00)):
+        insert_snapshot(market, price, target=target)
+    rows = snapshot_rows()
+    check("новый ключ: три рынка — три строки, данные не затирают друг друга",
+          len(rows) == 3 and [r[0] for r in rows] == ["ES", "FR", "IT"], str(rows))
+
+    # Повторный сбор того же дня по-прежнему обновляет строку, а не плодит дубли.
+    insert_snapshot("FR", 25.00, target=target)
+    rows = snapshot_rows()
+    check("повторный сбор обновляет строку своего рынка и только её",
+          len(rows) == 3 and dict(rows)["FR"] == 25 and dict(rows)["ES"] == Decimal("19.99"), str(rows))
+
+    # Разные пары на одном рынке не сливаются.
+    insert_snapshot("FR", 30.00, comp="B0COMPBBB2", target=target)
+    check("разные пары на одном рынке остаются разными строками",
+          len(q("SELECT 1 FROM bsr_radar.snapshots;")) == 4)
+
+
 try:
     section_schedule_and_users()
     section_pairs()
     section_run_control()
     section_admission()
+    section_snapshot_marketplace_key()
 finally:
     failed = [name for name, ok in checks if not ok]
     print(f"\nитого: {len(checks) - len(failed)} из {len(checks)} проверок прошли")

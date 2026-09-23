@@ -171,6 +171,24 @@ def _snapshots_has_image_columns(conn) -> bool:
         return cur.fetchone()[0] == 2
 
 
+def _snapshots_key_has_marketplace(conn) -> bool:
+    """Миграция 006 (страна в ключе снимков) могла ещё не применяться к боевой базе. Тогда ключ
+    старый — (дата, наш ASIN, ASIN конкурента) — и ON CONFLICT обязан называть именно его, иначе
+    Postgres откажет ("no unique or exclusion constraint matching"). Так синк работает в любом
+    порядке выкатки: и когда код опубликован раньше миграции, и когда позже."""
+    with conn.cursor() as cur:
+        cur.execute("""
+            SELECT EXISTS (
+                SELECT 1 FROM pg_constraint
+                WHERE conrelid = 'bsr_radar.snapshots'::regclass AND contype = 'u'
+                  AND (SELECT count(*) FROM unnest(conkey) AS k
+                       JOIN pg_attribute a ON a.attrelid = conrelid AND a.attnum = k
+                       WHERE a.attname = 'marketplace') = 1
+            );
+        """)
+        return cur.fetchone()[0]
+
+
 def sync_snapshots(spreadsheet: gspread.Spreadsheet, conn, sheet_title: str) -> int:
     try:
         ws = spreadsheet.worksheet(sheet_title)
@@ -190,7 +208,11 @@ def sync_snapshots(spreadsheet: gspread.Spreadsheet, conn, sheet_title: str) -> 
         return 0
 
     has_images = _snapshots_has_image_columns(conn)
-    deduped: Dict[Tuple[str, str, str], Tuple] = {}
+    # Ключ дедупликации обязан совпадать с ключом в базе. Если развести строки по стране, пока в
+    # базе ключ без страны, то в одном execute_values окажутся две строки с одинаковым ключом и
+    # Postgres откажет: "ON CONFLICT DO UPDATE command cannot affect row a second time".
+    key_has_marketplace = _snapshots_key_has_marketplace(conn)
+    deduped: Dict[Tuple[str, ...], Tuple] = {}
     for raw in values[header_row_idx + 1:]:
         snapshot_date = _cell(raw, headers.get("snapshot_date"))
         our_asin = extract_asin_from_text(_cell(raw, headers.get("our_asin")))
@@ -202,9 +224,12 @@ def sync_snapshots(spreadsheet: gspread.Spreadsheet, conn, sheet_title: str) -> 
         if competitor_col is None:
             competitor_col = headers.get("competitor name")
 
-        deduped[(snapshot_date, our_asin, comp_asin)] = (
+        marketplace = _cell(raw, headers.get("marketplace")).upper() or "US"
+        key = ((snapshot_date, marketplace, our_asin, comp_asin) if key_has_marketplace
+               else (snapshot_date, our_asin, comp_asin))
+        deduped[key] = (
             snapshot_date,
-            _cell(raw, headers.get("marketplace")).upper() or "US",
+            marketplace,
             _cell(raw, headers.get("currency")) or None,
             our_asin,
             _cell(raw, headers.get("our_product")) or None,
@@ -229,6 +254,8 @@ def sync_snapshots(spreadsheet: gspread.Spreadsheet, conn, sheet_title: str) -> 
 
     image_columns = ", our_image_url, comp_image_url" if has_images else ""
     image_updates = "our_image_url = EXCLUDED.our_image_url, comp_image_url = EXCLUDED.comp_image_url," if has_images else ""
+    conflict_target = ("(snapshot_date, marketplace, our_asin, comp_asin)" if key_has_marketplace
+                       else "(snapshot_date, our_asin, comp_asin)")
     with conn.cursor() as cur:
         execute_values(
             cur,
@@ -238,7 +265,7 @@ def sync_snapshots(spreadsheet: gspread.Spreadsheet, conn, sheet_title: str) -> 
                  our_bsr, our_bsr_delta_24h, comp_asin, competitor_name, comp_price,
                  comp_bsr, comp_bsr_delta_24h, comp_stock, price_diff_pct{image_columns})
             VALUES %s
-            ON CONFLICT (snapshot_date, our_asin, comp_asin) DO UPDATE SET
+            ON CONFLICT {conflict_target} DO UPDATE SET
                 marketplace = EXCLUDED.marketplace,
                 currency = EXCLUDED.currency,
                 our_product = EXCLUDED.our_product,

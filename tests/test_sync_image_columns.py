@@ -4,8 +4,9 @@ import sync_sheets_to_db as sync
 
 
 class FakeCursor:
-    def __init__(self, count):
+    def __init__(self, count, key_has_marketplace=True):
         self.count = count
+        self.key_has_marketplace = key_has_marketplace
         self.sql = None
 
     def __enter__(self):
@@ -18,12 +19,16 @@ class FakeCursor:
         self.sql = sql
 
     def fetchone(self):
+        # Синк спрашивает базу о двух разных вещах: есть ли колонки фото (количество) и есть ли
+        # страна в ключе (да/нет). Отвечаем по тексту запроса, а не одним числом на всё.
+        if "pg_constraint" in (self.sql or ""):
+            return (self.key_has_marketplace,)
         return (self.count,)
 
 
 class FakeConn:
-    def __init__(self, count):
-        self.cursor_obj = FakeCursor(count)
+    def __init__(self, count, key_has_marketplace=True):
+        self.cursor_obj = FakeCursor(count, key_has_marketplace)
 
     def cursor(self):
         return self.cursor_obj
@@ -63,8 +68,8 @@ class FakeSpreadsheet:
 
 
 class CommittingFakeConn(FakeConn):
-    def __init__(self, count):
-        super().__init__(count)
+    def __init__(self, count, key_has_marketplace=True):
+        super().__init__(count, key_has_marketplace)
         self.committed = False
 
     def commit(self):

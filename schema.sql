@@ -34,7 +34,9 @@ CREATE TABLE IF NOT EXISTS bsr_radar.snapshots (
     our_image_url TEXT,
     comp_image_url TEXT,
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    UNIQUE (snapshot_date, our_asin, comp_asin)
+    -- Страна обязана быть в ключе: одна и та же пара ASIN может отслеживаться на нескольких
+    -- рынках, и без страны такие строки затирали бы друг друга (см. migrations/006).
+    CONSTRAINT snapshots_day_market_pair_key UNIQUE (snapshot_date, marketplace, our_asin, comp_asin)
 );
 
 -- Одна строка (id = 1) — время ежедневного автозапуска парсера. Раньше это
