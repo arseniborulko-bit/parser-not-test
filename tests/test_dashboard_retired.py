@@ -52,10 +52,14 @@ def test_a_date_is_shown_for_an_asin_that_was_collected_and_blank_for_one_that_n
     assert list(table["Данные до"]) == ["01.09.2026", ""]
 
 
+def heading_shown(at) -> bool:
+    """Именно заголовок блока. Саму фразу упоминает ещё и раздел «Как это работает»."""
+    return any('class="section-title">Больше не собираются' in block.value for block in at.markdown)
+
+
 def test_nothing_is_drawn_when_every_asin_is_still_collected(dash, monkeypatch):  # noqa: F811
     monkeypatch.setattr(dash, "load_retired_asins", lambda: RETIRED.iloc[0:0].copy())
-    text = " ".join(block.value for block in run().markdown)
-    assert "Больше не собираются" not in text
+    assert not heading_shown(run())
 
 
 def test_a_database_error_does_not_break_the_tab(dash, monkeypatch):  # noqa: F811
@@ -66,7 +70,7 @@ def test_a_database_error_does_not_break_the_tab(dash, monkeypatch):  # noqa: F8
     monkeypatch.setattr(dash, "load_retired_asins", broken)
     at = run()
     assert not at.exception
-    assert "Больше не собираются" not in " ".join(block.value for block in at.markdown)
+    assert not heading_shown(at)
 
 
 def test_the_query_looks_for_asins_that_are_in_no_active_pair():
