@@ -79,6 +79,17 @@ def test_the_pairs_table_has_russian_headers():
     }
 
 
+def test_the_current_snapshot_query_keeps_markets_apart():
+    """После миграции 006 у пары на нескольких рынках свои строки — запрос обязан их различать,
+    иначе дашборд по-прежнему показывал бы одну строку вместо трёх."""
+    import inspect
+
+    sql = inspect.getsource(dash_module.load_current)
+    assert "DISTINCT ON (s.marketplace, s.our_asin, s.comp_asin)" in sql
+    assert "p.marketplace = s.marketplace" in sql
+    assert "DISTINCT ON (s.our_asin, s.comp_asin)" not in sql
+
+
 def test_the_product_name_is_taken_from_the_same_market():
     """После миграции 006 у пары на нескольких рынках свои строки — название нельзя брать с чужого."""
     import inspect
