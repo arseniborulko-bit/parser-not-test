@@ -22,6 +22,13 @@ class FakeHistorySheet:
         self.rows = [list(row) for row in initial_rows]
         self.append_rows_calls = []
 
+    @property
+    def row_count(self):
+        """Есть у настоящего gspread.Worksheet: _append_checked_rows_to_history читает лист
+        только при row_count > 0. Без этого свойства код уходил в обработчик ошибки и молча
+        возвращал 0 — из-за чего три теста в этом файле падали, а не проверяли дедупликацию."""
+        return len(self.rows)
+
     def get_all_values(self):
         return [list(row) for row in self.rows]
 
