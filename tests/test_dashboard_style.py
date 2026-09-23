@@ -32,3 +32,17 @@ def test_disabled_buttons_inside_tabs_look_disabled(dash):  # noqa: F811
 
 def test_the_fork_github_toolbar_is_hidden(dash):  # noqa: F811
     assert re.search(r'\[data-testid="stToolbar"\]\s*\{[^}]*display: none !important', style_of(run()))
+
+
+def test_tab_styling_does_not_leak_onto_every_button_inside_a_tab(dash):  # noqa: F811
+    """Оформление вкладки доставалось и кнопке-подсказке «?» внутри формы: она выглядела
+    тёмным пустым квадратом. Красим только сами заголовки вкладок ([role="tab"])."""
+    css = style_of(run())
+    painting = [rule for rule in css.split("}") if "#121826 !important" in rule]
+    assert painting, "правило, красящее заголовки вкладок, пропало"
+    for rule in painting:
+        selector = rule.split("{")[0]
+        assert 'role="tab"' in selector
+        assert not re.search(r'stTabs"\]\s+button\s*(,|\{|$)', selector), (
+            f"оформление вкладки красит все кнопки внутри вкладки: {selector.strip()}"
+        )

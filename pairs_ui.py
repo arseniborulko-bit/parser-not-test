@@ -10,6 +10,11 @@ import pairs_store
 from schedule_store import TZ
 
 _ACTION_LABELS = {"add": "добавлена", "enable": "возвращена", "disable": "отключена"}
+# Иначе таблица пар — единственное место в дашборде с английскими заголовками из базы.
+_PAIR_COLUMNS = {
+    "marketplace": "Страна", "our_asin": "Наш ASIN", "our_product": "Наш товар",
+    "comp_asin": "ASIN конкурента", "competitor_name": "Конкурент", "active": "Активна",
+}
 _STATUS_ALL = "Все"
 _STATUS_ACTIVE = "Активные"
 _STATUS_OFF = "Отключённые"
@@ -224,7 +229,13 @@ def render_pairs_tab(connect, pairs: pd.DataFrame, actor: str | None, role: str 
         shown = pairs[pairs["active"]]
     elif status == _STATUS_OFF:
         shown = pairs[~pairs["active"]]
-    st.dataframe(_matches(shown, query), use_container_width=True, hide_index=True, height=350)
+    found = _matches(shown, query)
+    if found.empty:
+        # Пустой st.dataframe рисует английское "empty" — для владельца это выглядит как сбой.
+        st.info("Ничего не найдено: попробуйте изменить поиск или переключить «Показать».")
+    else:
+        st.dataframe(found, use_container_width=True, hide_index=True, height=350,
+                     column_config=_PAIR_COLUMNS)
 
     if not access.has_role(role, access.ROLE_EDITOR):
         st.caption("Чтобы добавлять и убирать пары, откройте «🔒 Управление» вверху страницы.")

@@ -116,7 +116,7 @@ AMAZON_DOMAINS = {
     "ES": "es", "IT": "it", "MX": "com.mx", "JP": "co.jp", "AU": "com.au",
 }
 
-st.set_page_config(page_title="Amazon Parser Dashboard", page_icon="📦", layout="wide")
+st.set_page_config(page_title="BSR Radar — мониторинг конкурентов", page_icon="📦", layout="wide")
 
 
 def _apply_design() -> None:
@@ -127,6 +127,7 @@ def _apply_design() -> None:
         .block-container { max-width: 1320px; padding-top: 2.25rem; padding-bottom: 3rem; }
         [data-testid="stSidebar"] { background: #ffffff; }
         .brand { font-size: 2.35rem; font-weight: 800; letter-spacing: -0.045em; margin: 0; }
+        .brand-title { font-size: 1.9rem; font-weight: 800; color: #111827; margin: 0; line-height: 1.2; }
         .brand-subtitle { color: #64748b; font-size: .87rem; margin: .25rem 0 1.5rem; }
         .status-box { background: #dbeafe; color: #2563eb; border-radius: 10px; padding: 1rem 1.1rem; }
         .status-box strong { color: #1d4ed8; }
@@ -138,10 +139,11 @@ def _apply_design() -> None:
         .section-note { color: #64748b; font-size: .86rem; margin-bottom: .6rem; }
         /* Вкладки выбираются по role: в новых версиях Streamlit это уже не <button> и не baseweb. */
         div[data-testid="stTabs"] [role="tablist"] { gap: 3px; border-bottom: 1px solid #dfe3ea; }
-        div[data-testid="stTabs"] [role="tab"],
-        div[data-testid="stTabs"] button { background: #121826 !important; color: #fff !important; border-radius: 7px 7px 0 0; padding: .6rem 1rem; margin-right: 2px; opacity: 1 !important; }
-        div[data-testid="stTabs"] [role="tab"] *,
-        div[data-testid="stTabs"] button * { color: #fff !important; opacity: 1 !important; }
+        /* Только сами заголовки вкладок. Раньше здесь был ещё и просто "button", из-за чего
+        оформление вкладки доставалось каждой кнопке ВНУТРИ вкладки — в том числе кнопке-подсказке
+        «?» у полей формы: она становилась тёмным квадратом с белым значком внутри. */
+        div[data-testid="stTabs"] [role="tab"] { background: #121826 !important; color: #fff !important; border-radius: 7px 7px 0 0; padding: .6rem 1rem; margin-right: 2px; opacity: 1 !important; }
+        div[data-testid="stTabs"] [role="tab"] * { color: #fff !important; opacity: 1 !important; }
         div[data-testid="stTabs"] [role="tab"][aria-selected="true"] { background: #168ed0 !important; color: #fff !important; }
         div[data-testid="stTabs"] button:disabled { opacity: .45 !important; cursor: not-allowed; }
         .stButton > button { background: #168ed0; color: #fff; border: 0; border-radius: 8px; font-weight: 650; }
@@ -233,6 +235,7 @@ def load_competitor_pairs() -> pd.DataFrame:
             LEFT JOIN LATERAL (
                 SELECT our_product, competitor_name FROM bsr_radar.snapshots
                 WHERE our_asin = p.our_asin AND comp_asin = p.comp_asin
+                  AND marketplace = p.marketplace  -- иначе название подтянется с чужого рынка
                 ORDER BY snapshot_date DESC LIMIT 1
             ) s ON TRUE
             ORDER BY p.marketplace, p.our_asin, p.comp_asin
@@ -344,12 +347,35 @@ _NUMERIC_LABELS = ("Цена наша", "BSR наш", "Δ BSR наш", "Цена
                    "Δ BSR конкурента", "Разница цен, %")
 
 
+# Столбцы, где знак и есть смысл: «кто дешевле» и «BSR стал лучше или хуже». Без явного «+»
+# (минус-то рисуется сам) по числу не видно направления, на это и жаловались при разборе.
+_SIGNED_LABELS = ("Δ BSR наш", "Δ BSR конкурента", "Разница цен, %")
+
+
 def _format_number_or_blank(value: object) -> str:
     if pd.isna(value):
         return ""
     if isinstance(value, float) and value.is_integer():
         return str(int(value))
     return str(value)
+
+
+def _format_signed_or_blank(value: object) -> str:
+    text = _format_number_or_blank(value)
+    if not text or not pd.api.types.is_number(value) or pd.isna(value):
+        return text
+    return f"+{text}" if float(value) > 0 else text  # минус и ноль рисуются сами
+
+
+def _format_kyiv_time(value: object) -> str:
+    if pd.isna(value):
+        return ""
+    moment = pd.to_datetime(value, errors="coerce")
+    if pd.isna(moment):
+        return str(value)
+    # Наивное время из базы считаем UTC: именно так оно туда и попадало (TIMESTAMPTZ в UTC).
+    moment = moment.tz_localize("UTC") if moment.tzinfo is None else moment
+    return moment.tz_convert(schedule_store.TZ).strftime("%d.%m %H:%M")
 
 
 def _present_table(data: pd.DataFrame, *, with_images: bool = False) -> tuple[pd.DataFrame, dict[str, object]]:
@@ -380,9 +406,22 @@ def _present_table(data: pd.DataFrame, *, with_images: bool = False) -> tuple[pd
     # строку отдельно (см. _NUMERIC_LABELS), остальные (текстовые, уже без чисел) — просто fillna.
     for label in _NUMERIC_LABELS:
         if label in result.columns:
-            result[label] = result[label].map(_format_number_or_blank)
+            formatter = _format_signed_or_blank if label in _SIGNED_LABELS else _format_number_or_blank
+            result[label] = result[label].map(formatter)
+    if "Обновлено" in result.columns:
+        # Всё остальное в дашборде — по Киеву; столбец из базы приходил как UTC со смещением.
+        result["Обновлено"] = result["Обновлено"].map(_format_kyiv_time)
     result = result.fillna("")
     return result, link_columns
+
+
+def _table_or_note(data: pd.DataFrame, *, with_images: bool = False) -> None:
+    """Пустой st.dataframe рисует английское "empty" — вместо этого объясняем словами."""
+    if data.empty:
+        st.info("Ничего не найдено: попробуйте снять фильтры выше или расширить период.")
+        return
+    presented, table_config = _present_table(data, with_images=with_images)
+    st.dataframe(presented, use_container_width=True, hide_index=True, height=450, column_config=table_config)
 
 
 _EXCEL_GOOD_FILL = "C6EFCE"
@@ -748,6 +787,7 @@ def main() -> None:
     user, email, role = _resolve_access()
     left, right = st.columns([3, 2])
     with left:
+        st.markdown('<p class="brand-title">📦 BSR Radar</p>', unsafe_allow_html=True)
         st.markdown('<p class="brand-subtitle">Мониторинг Amazon-конкурентов и аналитика портфеля</p>', unsafe_allow_html=True)
     with right:
         _render_auth_bar(user, email, role)
@@ -799,12 +839,10 @@ def main() -> None:
     current_tab, history_tab, pairs_tab, schedule_tab = tabs[:4]
 
     with current_tab:
-        presented, table_config = _present_table(shown, with_images=True)
-        st.dataframe(presented, use_container_width=True, hide_index=True, height=450, column_config=table_config)
+        _table_or_note(shown, with_images=True)
 
     with history_tab:
-        presented_h, config_h = _present_table(shown_history)
-        st.dataframe(presented_h, use_container_width=True, hide_index=True, height=450, column_config=config_h)
+        _table_or_note(shown_history)
 
     with pairs_tab:
         pairs_ui.render_pairs_tab(_connect, pairs, actor, manage_role, _max_active())
