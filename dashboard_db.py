@@ -116,7 +116,7 @@ AMAZON_DOMAINS = {
     "ES": "es", "IT": "it", "MX": "com.mx", "JP": "co.jp", "AU": "com.au",
 }
 
-st.set_page_config(page_title="BSR Radar — мониторинг конкурентов", page_icon="📦", layout="wide")
+st.set_page_config(page_title="Competitor BSR — мониторинг конкурентов", page_icon="📡", layout="wide")
 
 
 # Прятать ли собственную шапку Streamlit («Fork», значок GitHub, меню приложения).
@@ -822,7 +822,7 @@ def main() -> None:
         st.markdown(
             '<div class="brand">'
             '<span class="brand-mark">📡</span>'
-            '<div><p class="brand-title">BSR Radar</p>'
+            '<div><p class="brand-title">Competitor BSR</p>'
             '<p class="brand-subtitle">Мониторинг Amazon-конкурентов и аналитика портфеля</p></div>'
             '</div>',
             unsafe_allow_html=True,

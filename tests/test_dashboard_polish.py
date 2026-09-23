@@ -60,7 +60,7 @@ def test_an_empty_result_is_explained_in_russian_instead_of_the_default_empty(da
 
 def test_the_page_has_a_name_of_its_own(dash):  # noqa: F811
     text = " ".join(block.value for block in run().markdown)
-    assert "BSR Radar" in text
+    assert "Competitor BSR" in text
 
 
 def test_the_header_is_one_block_so_the_mark_and_the_name_stay_aligned(dash):  # noqa: F811
@@ -75,7 +75,7 @@ def test_the_browser_tab_is_not_called_streamlit():
     source = dash_module.__file__
     with open(source, encoding="utf-8") as handle:
         body = handle.read()
-    assert 'page_title="BSR Radar' in body
+    assert 'page_title="Competitor BSR' in body
 
 
 def test_the_pairs_table_has_russian_headers():
