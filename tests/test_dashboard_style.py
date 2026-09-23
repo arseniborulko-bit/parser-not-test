@@ -28,3 +28,7 @@ def test_tabs_are_styled_by_role_which_newer_streamlit_versions_still_have(dash)
 
 def test_disabled_buttons_inside_tabs_look_disabled(dash):  # noqa: F811
     assert re.search(r'stTabs"\] button:disabled\s*\{[^}]*opacity: \.45 !important', style_of(run()))
+
+
+def test_the_fork_github_toolbar_is_hidden(dash):  # noqa: F811
+    assert re.search(r'\[data-testid="stToolbar"\]\s*\{[^}]*display: none !important', style_of(run()))

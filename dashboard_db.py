@@ -144,6 +144,10 @@ def _apply_design() -> None:
         div[data-testid="stTabs"] button:disabled { opacity: .45 !important; cursor: not-allowed; }
         .stButton > button { background: #168ed0; color: #fff; border: 0; border-radius: 8px; font-weight: 650; }
         .stButton > button:hover { background: #075b9b; color: #fff; }
+        /* Скрывает «Fork»/GitHub/Stop в верхнем правом углу — они часть нашего приложения,
+        их видно даже при toolbarMode=minimal. Красный значок Streamlit Cloud снизу справа
+        (тариф хостинга) отсюда не достать — он рисуется снаружи, самим Streamlit Cloud. */
+        [data-testid="stToolbar"] { display: none !important; }
         </style>
         """,
         unsafe_allow_html=True,
