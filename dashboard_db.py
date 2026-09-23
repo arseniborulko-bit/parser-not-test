@@ -252,6 +252,42 @@ def load_current() -> pd.DataFrame:
 
 
 @st.cache_data(ttl=60, show_spinner=False)
+def load_retired_asins() -> pd.DataFrame:
+    """ASIN, которых нет ни в одной активной паре, — их больше не собирают.
+
+    Пары отключаются, а не удаляются, и снимки не удаляются никогда, поэтому такой ASIN
+    не пропадает: последний столбец показывает, до какого числа по нему есть данные
+    (пусто — значит пару отключили раньше, чем он успел попасть в сбор)."""
+    conn = psycopg2.connect(_database_url())
+    try:
+        return pd.read_sql(
+            """
+            WITH any_side AS (
+                SELECT marketplace, our_asin AS asin, our_product AS name, 'наш' AS role, active
+                FROM bsr_radar.competitor_pairs
+                UNION ALL
+                SELECT marketplace, comp_asin, competitor_name, 'конкурент', active
+                FROM bsr_radar.competitor_pairs
+            ),
+            active_asins AS (SELECT DISTINCT asin FROM any_side WHERE active)
+            SELECT s.marketplace, s.asin, max(NULLIF(s.name, '')) AS name,
+                   min(s.role) AS role, max(h.last_seen) AS last_seen
+            FROM any_side s
+            LEFT JOIN LATERAL (
+                SELECT max(snapshot_date) AS last_seen FROM bsr_radar.snapshots
+                WHERE our_asin = s.asin OR comp_asin = s.asin
+            ) h ON TRUE
+            WHERE s.asin NOT IN (SELECT asin FROM active_asins)
+            GROUP BY s.marketplace, s.asin
+            ORDER BY max(h.last_seen) DESC NULLS LAST, s.marketplace, s.asin
+            """,
+            conn,
+        )
+    finally:
+        conn.close()
+
+
+@st.cache_data(ttl=60, show_spinner=False)
 def load_competitor_pairs() -> pd.DataFrame:
     conn = psycopg2.connect(_database_url())
     try:
@@ -444,6 +480,33 @@ def _present_table(data: pd.DataFrame, *, with_images: bool = False) -> tuple[pd
         result["Обновлено"] = result["Обновлено"].map(_format_kyiv_time)
     result = result.fillna("")
     return result, link_columns
+
+
+_RETIRED_LABELS = {
+    "marketplace": "Страна", "asin": "ASIN", "name": "Товар",
+    "role": "Роль", "last_seen": "Данные до",
+}
+
+
+def _render_retired_block() -> None:
+    """ASIN, которые больше не собираются: пару отключили, но и ASIN, и его история остались."""
+    try:
+        retired = load_retired_asins()
+    except Exception:  # noqa: BLE001
+        return
+    if retired.empty:
+        return
+    st.markdown(
+        f'<p class="section-title">Больше не собираются — {len(retired)}</p>',
+        unsafe_allow_html=True,
+    )
+    table = retired.rename(columns=_RETIRED_LABELS)
+    if "Данные до" in table.columns:
+        table["Данные до"] = [
+            "" if pd.isna(value) else pd.to_datetime(value).strftime("%d.%m.%Y")
+            for value in table["Данные до"]
+        ]
+    st.dataframe(table.fillna(""), use_container_width=True, hide_index=True, height=260)
 
 
 def _table_or_note(data: pd.DataFrame, *, with_images: bool = False) -> None:
@@ -893,6 +956,7 @@ def main() -> None:
             _render_schedule_tab(actor, manage_role)
         with right:
             collect_ui.render_spot_check(_secret("SCRAPINGDOG_TOKEN"), can_edit)
+        _render_retired_block()
         collect_ui.render_refresh_button()
 
     if role == access.ROLE_ADMIN:
