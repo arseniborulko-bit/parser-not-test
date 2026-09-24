@@ -152,48 +152,81 @@ def _with_links(frame: pd.DataFrame) -> pd.DataFrame:
     return result
 
 
-def _edit_callback(connect, key, our_product: str, competitor_name: str, actor: str, role: str) -> None:
-    try:
-        changed = pairs_store.edit_pair_names(
-            connect, key, our_product, competitor_name, actor_role=role, actor=actor,
-        )
-    except _ERRORS as exc:
-        st.session_state["pairs_flash"] = ("error", str(exc))
+MAX_EDIT_ROWS = 200
+
+
+def _edit_callback(connect, changes, actor: str, role: str) -> None:
+    """Сохраняет все изменённые строки сетки за одно нажатие."""
+    if not changes:
+        st.session_state["pairs_flash"] = ("info", "Ничего не изменено.")
         return
-    st.session_state["pairs_flash"] = (
-        ("success", "Названия обновлены.") if changed else ("info", "Названия и так такие — менять нечего.")
-    )
+    saved = 0
+    try:
+        for key, our_product, competitor_name in changes:
+            saved += pairs_store.edit_pair_names(
+                connect, key, our_product, competitor_name, actor_role=role, actor=actor,
+            )
+    except _ERRORS as exc:
+        st.session_state["pairs_flash"] = (
+            "error", f"Сохранено строк: {saved}, дальше ошибка — {exc}" if saved else str(exc),
+        )
+        return
+    st.session_state["pairs_flash"] = ("success", f"Сохранено строк: {saved}.")
 
 
 def _render_edit(connect, pairs: pd.DataFrame, actor: str, role: str) -> None:
-    """Правка уже заведённой пары. Меняются только подписи: ключ пары (рынок и оба ASIN) —
-    это ключ снимков, и его смена означала бы другую пару, без прежней истории."""
+    """Правка названий сеткой: правишь сколько нужно строк и сохраняешь одним нажатием.
+
+    Ключ пары (рынок и оба ASIN) не редактируется: это же ключ снимков, и его смена означала бы
+    другую пару, без прежней истории. Поэтому ASIN здесь — ссылка, а не поле ввода."""
     if pairs.empty:
         st.info("Пар пока нет.")
         return
-    options = list(pairs.itertuples())
-    picked = st.selectbox(
-        "Пара", range(len(options)), key="pairs_edit_pick",
-        format_func=lambda i: (
-            f"{options[i].marketplace} · {options[i].our_asin} ↔ {options[i].comp_asin}"
-            f"{'' if options[i].active else ' (отключена)'}"
-        ),
+
+    top = st.columns([3, 2])
+    query = top[0].text_input("ASIN или часть названия", key="pairs_edit_search")
+    only_empty = top[1].checkbox("Только без названия", key="pairs_edit_only_empty")
+
+    shown = _matches(pairs, query)
+    if only_empty:
+        blank = shown["our_product"].fillna("").str.strip().eq("") | shown["competitor_name"].fillna("").str.strip().eq("")
+        shown = shown[blank]
+    if shown.empty:
+        st.info("Ничего не найдено.")
+        return
+    shown = shown.head(MAX_EDIT_ROWS).reset_index(drop=True)
+
+    table = pd.DataFrame({
+        "Страна": shown["marketplace"],
+        "Наш ASIN": [_asin_url(a, m) for a, m in zip(shown["our_asin"], shown["marketplace"])],
+        "Наш товар": shown["our_product"].fillna(""),
+        "ASIN конкурента": [_asin_url(a, m) for a, m in zip(shown["comp_asin"], shown["marketplace"])],
+        "Конкурент": shown["competitor_name"].fillna(""),
+    })
+    edited = st.data_editor(
+        table, key="pairs_edit_grid", hide_index=True, use_container_width=True, height=400,
+        disabled=["Страна", "Наш ASIN", "ASIN конкурента"],
+        column_config={
+            "Наш ASIN": st.column_config.LinkColumn("Наш ASIN", display_text=_ASIN_LINK_TEXT, width="small"),
+            "ASIN конкурента": st.column_config.LinkColumn("ASIN конкурента", display_text=_ASIN_LINK_TEXT, width="small"),
+            "Наш товар": st.column_config.TextColumn("Наш товар", max_chars=pairs_store.MAX_NAME),
+            "Конкурент": st.column_config.TextColumn("Конкурент", max_chars=pairs_store.MAX_NAME),
+        },
     )
-    row = options[picked]
-    key = (row.marketplace, row.our_asin, row.comp_asin)
 
-    links = st.columns(2)
-    links[0].markdown(f"[Наш товар на Amazon]({_asin_url(row.our_asin, row.marketplace)})")
-    links[1].markdown(f"[Конкурент на Amazon]({_asin_url(row.comp_asin, row.marketplace)})")
+    changes = []
+    for position, row in enumerate(shown.itertuples()):
+        our_now = str(edited["Наш товар"].iloc[position] or "")
+        comp_now = str(edited["Конкурент"].iloc[position] or "")
+        if our_now != str(row.our_product or "") or comp_now != str(row.competitor_name or ""):
+            changes.append(((row.marketplace, row.our_asin, row.comp_asin), our_now, comp_now))
 
-    our_product = st.text_input("Наш товар", value=str(getattr(row, "our_product", "") or ""),
-                                max_chars=pairs_store.MAX_NAME, key=f"pairs_edit_our_{picked}")
-    competitor_name = st.text_input("Конкурент", value=str(getattr(row, "competitor_name", "") or ""),
-                                    max_chars=pairs_store.MAX_NAME, key=f"pairs_edit_comp_{picked}")
     st.button(
-        "Сохранить названия", key="pairs_edit_btn",
-        on_click=_edit_callback, args=(connect, key, our_product, competitor_name, actor, role),
+        f"Сохранить изменения ({len(changes)})", key="pairs_edit_btn", disabled=not changes,
+        on_click=_edit_callback, args=(connect, changes, actor, role),
     )
+    if len(_matches(pairs, query)) > MAX_EDIT_ROWS:
+        st.caption(f"Показаны первые {MAX_EDIT_ROWS}: уточните поиск.")
 
 
 def _render_remove(connect, pairs: pd.DataFrame, actor: str, role: str) -> None:
