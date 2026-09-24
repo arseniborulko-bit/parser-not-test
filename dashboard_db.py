@@ -639,6 +639,27 @@ def _render_history_matrix(data: pd.DataFrame) -> None:
         st.caption(f"Показаны первые {MAX_MATRIX_ROWS} из {len(matrix)}: сузьте фильтры выше.")
 
 
+_ALL_DAYS = "Все дни"
+
+
+def _pick_day(data: pd.DataFrame) -> pd.DataFrame:
+    """Выбор конкретного дня: посмотреть срез за дату, не выискивая её в общей таблице.
+
+    Самые свежие даты сверху — чаще всего нужен последний сбор или соседний с ним."""
+    if data.empty or "snapshot_date" not in data:
+        return data
+    days = pd.to_datetime(data["snapshot_date"], errors="coerce").dropna()
+    available = sorted({moment.date() for moment in days}, reverse=True)
+    if not available:
+        return data
+    labels = {day.strftime("%d.%m.%Y"): day for day in available}
+    picked = st.selectbox("День", [_ALL_DAYS, *labels], key="history_day")
+    if picked == _ALL_DAYS:
+        return data
+    chosen = labels[picked]
+    return data[pd.to_datetime(data["snapshot_date"], errors="coerce").dt.date == chosen]
+
+
 def _table_or_note(data: pd.DataFrame, *, with_images: bool = False) -> None:
     """Пустой st.dataframe рисует английское "empty" — вместо этого объясняем словами."""
     if data.empty:
@@ -1074,7 +1095,7 @@ def main() -> None:
 
     with history_tab:
         _render_history_matrix(shown_history)
-        _table_or_note(shown_history)
+        _table_or_note(_pick_day(shown_history))
 
     with pairs_tab:
         pairs_ui.render_pairs_tab(_connect, pairs, actor, manage_role, _max_active())
