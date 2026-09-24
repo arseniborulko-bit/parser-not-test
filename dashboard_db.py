@@ -151,6 +151,9 @@ def _apply_design() -> None:
         .brand-mark { font-size: 2.6rem; line-height: 1; }
         .brand-title { font-size: 2.35rem; font-weight: 800; letter-spacing: -0.03em; color: #111827; margin: 0; line-height: 1.1; }
         .brand-subtitle { color: #64748b; font-size: .9rem; margin: .15rem 0 0; }
+        .bot-link { display: inline-block; margin: -.9rem 0 1.3rem; font-size: .88rem;
+                    color: #168ed0; text-decoration: none; font-weight: 600; }
+        .bot-link:hover { text-decoration: underline; }
         .status-box { background: #dbeafe; color: #2563eb; border-radius: 10px; padding: 1rem 1.1rem; }
         .status-box strong { color: #1d4ed8; }
         .metric-card { background: #ffffff; border: 1px solid #e5e7eb; border-radius: 15px; padding: 1rem 1.15rem; min-height: 120px; box-shadow: 0 1px 2px rgba(15,23,42,.025); }
@@ -489,6 +492,26 @@ def _present_table(data: pd.DataFrame, *, with_images: bool = False) -> tuple[pd
         result["Обновлено"] = result["Обновлено"].map(_format_kyiv_time)
     result = result.fillna("")
     return result, link_columns
+
+
+# Имя бота публичное (в отличие от токена) — его видно в самом Telegram. Секретом не является.
+# Переопределяется секретом TELEGRAM_BOT_USERNAME, если бота когда-нибудь заменят.
+DEFAULT_BOT_USERNAME = "BSR_Competitors_Trackerbot"
+
+
+def _bot_username() -> str:
+    return (_secret("TELEGRAM_BOT_USERNAME") or DEFAULT_BOT_USERNAME).strip().lstrip("@")
+
+
+def _render_bot_link() -> None:
+    username = _bot_username()
+    if not username:
+        return
+    st.markdown(
+        f'<a class="bot-link" href="https://t.me/{escape(username)}" target="_blank" '
+        f'rel="noopener">✈️ @{escape(username)}</a>',
+        unsafe_allow_html=True,
+    )
 
 
 _HOW_IT_WORKS = """
@@ -932,6 +955,7 @@ def main() -> None:
             '</div>',
             unsafe_allow_html=True,
         )
+        _render_bot_link()
     with right:
         _render_auth_bar(user, email, role)
         if role is None and not _management_open():
