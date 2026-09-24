@@ -153,9 +153,10 @@ def _apply_design() -> None:
         .brand-subtitle { color: #64748b; font-size: .9rem; margin: .15rem 0 0; }
         /* Streamlit красит ссылки своими правилами по [data-testid], поэтому цвет и отсутствие
         подчёркивания задаём принудительно, иначе получается чужая синяя ссылка с подчёркиванием. */
+        .bot-row { display: flex; justify-content: flex-end; }
         a.bot-link, .stMarkdown a.bot-link {
             display: inline-flex; align-items: center; gap: .4rem;
-            margin: .55rem .5rem 0 0; padding: .42rem .95rem;
+            margin: .55rem 0 0; padding: .42rem .95rem;
             background: #0f6ea8; border-radius: 999px;
             color: #ffffff !important; text-decoration: none !important;
             font-size: .86rem; font-weight: 650; line-height: 1.4;
@@ -517,8 +518,8 @@ def _bot_link_html() -> str:
     if not username:
         return ""
     return (
-        f'<a class="bot-link" href="https://t.me/{escape(username)}" target="_blank" '
-        f'rel="noopener">✈️ @{escape(username)}</a>'
+        f'<div class="bot-row"><a class="bot-link" href="https://t.me/{escape(username)}" '
+        f'target="_blank" rel="noopener">✈️ @{escape(username)}</a></div>'
     )
 
 

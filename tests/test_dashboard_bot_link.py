@@ -3,6 +3,8 @@
 Имя бота публичное и в коде лежать может; токен — нет, и рядом с этой ссылкой его быть не должно.
 """
 
+import re
+
 import pytest
 
 from test_dashboard_access import dash, run  # noqa: F401
@@ -44,6 +46,14 @@ def test_the_link_sits_right_under_the_status_line(dash):  # noqa: F811
     assert block.index('class="status-box"') < block.index('class="bot-link"'), (
         "кнопка должна идти после строки статуса"
     )
+
+
+def test_the_button_is_pushed_to_the_right_corner(dash):  # noqa: F811
+    at = run()
+    block = next(block.value for block in at.markdown if 'class="bot-row"' in block.value)
+    assert 'class="bot-row"' in block
+    css = next(block.value for block in at.markdown if "<style>" in block.value)
+    assert re.search(r"\.bot-row\s*\{[^}]*justify-content: flex-end", css)
 
 
 def test_streamlit_own_link_styling_is_overridden(dash):  # noqa: F811
