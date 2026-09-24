@@ -47,8 +47,17 @@ def test_one_set_of_filters_is_shared_by_both_tables(dash):  # noqa: F811
 def test_no_explanatory_notes_are_written_above_the_tabs(dash):  # noqa: F811
     """Владелец не хочет пояснительных подписей в интерфейсе: элементы должны говорить сами за себя."""
     text = " ".join(block.value for block in run().markdown)
-    for note in ("Фильтры ниже применяются", "Фильтруйте сохранённые данные", "Мониторинг конкурентов"):
+    for note in ("Фильтры ниже применяются", "Фильтруйте сохранённые данные", "Мониторинг конкурентов",
+                 "Сбор идёт раз в день"):
         assert note not in text, note
+
+
+def test_no_explanatory_captions_anywhere_on_the_page(dash):  # noqa: F811
+    """Пояснения живут в «Как это работает», а не подписями под элементами."""
+    at = run()
+    captions = " ".join(caption.value for caption in at.caption)
+    for note in ("Сбор идёт раз в день", "Фильтры ниже применяются"):
+        assert note not in captions, note
 
 
 FRAME = pd.DataFrame([

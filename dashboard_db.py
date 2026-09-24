@@ -1106,7 +1106,6 @@ def _render_schedule_tab(actor: str | None, role: str | None) -> None:
         chosen = st.time_input("Время сбора (по Киеву)", value=datetime(2000, 1, 1, hour, minute).time(), step=schedule_store.SLOT_MINUTES * 60, key="schedule_time")
         enabled = st.checkbox("Автосбор включён", value=schedule is not None, key="schedule_enabled")
         submitted = st.form_submit_button("Сохранить")
-    st.caption("Сбор идёт раз в день: если сегодня он уже прошёл успешно, новое время сработает завтра.")
     if submitted:
         try:
             schedule_store.save_schedule(_connect, chosen.hour, chosen.minute, enabled, actor_role=role, actor=actor or "?")
