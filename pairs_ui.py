@@ -2,13 +2,18 @@
 
 from __future__ import annotations
 
+import logging
+
 import pandas as pd
 import streamlit as st
 
 import access
+import asins_store
 import pairs_store
 from pairs_store import DOMAIN_BY_MARKET
 from schedule_store import TZ
+
+log = logging.getLogger(__name__)
 
 _ACTION_LABELS = {"add": "добавлена", "enable": "возвращена", "disable": "отключена"}
 # Иначе таблица пар — единственное место в дашборде с английскими заголовками из базы.
@@ -271,7 +276,104 @@ def _erase_callback(connect, pairs: pd.DataFrame, targets, actor: str, role: str
     st.session_state["pairs_flash"] = ("success", f"Отключено пар: {count}.")
 
 
+def _add_asins_callback(connect, market: str, text: str, kind: str, actor: str, role: str) -> None:
+    try:
+        result = asins_store.add_asins(connect, market, text, kind, actor_role=role, actor=actor)
+    except (*_ERRORS, asins_store.AsinStoreError) as exc:
+        st.session_state["pairs_flash"] = ("error", str(exc))
+        return
+    parts = []
+    if result["added"]:
+        parts.append(f"добавлено {result['added']}")
+    if result["restored"]:
+        parts.append(f"возвращено {result['restored']}")
+    if result["skipped"]:
+        parts.append(f"уже было {result['skipped']}")
+    st.session_state["pairs_flash"] = ("success", "ASIN: " + (", ".join(parts) or "без изменений"))
+
+
+def _drop_asins_callback(connect, keys, actor: str, role: str) -> None:
+    try:
+        count = asins_store.set_active(connect, keys, False, actor_role=role, actor=actor)
+    except (*_ERRORS, asins_store.AsinStoreError) as exc:
+        st.session_state["pairs_flash"] = ("error", str(exc))
+        return
+    st.session_state["pairs_flash"] = ("success", f"Убрано ASIN: {count}.")
+
+
+def _render_add_asin_form(connect, actor: str, role: str) -> None:
+    """Вписать ASIN прямо в справочник, без пары."""
+    columns = st.columns([2, 1, 1])
+    text = columns[0].text_input("Вписать ASIN или ссылки", key="asin_add_text",
+                                 placeholder="B0XXXXXXXX, ссылка на Amazon…")
+    market = columns[1].selectbox("Страна", pairs_store.MARKETS, key="asin_add_market")
+    kind = columns[2].selectbox(
+        "Это", asins_store.KINDS, key="asin_add_kind",
+        format_func=lambda value: asins_store.KIND_LABELS[value],
+    )
+    st.button("Вписать", key="asin_add_btn", disabled=not text.strip(),
+              on_click=_add_asins_callback, args=(connect, market, text, kind, actor, role))
+
+
+def _render_registry_from_store(connect, actor: str, role: str) -> bool:
+    """Справочник ASIN: вписать и убрать. Возвращает False, если миграции 008 ещё нет."""
+    try:
+        if not asins_store.registry_exists(connect):
+            return False
+        rows = asins_store.load_asins(connect)
+    except asins_store.AsinStoreError:
+        # Справочник — надстройка: если он недоступен, показываем тот же список, собранный из пар,
+        # вместо ошибки во вкладке. Сбой самой базы виден выше, на уровне всей страницы.
+        log.warning("Справочник ASIN недоступен, показываю список из пар")
+        return False
+
+    _render_add_asin_form(connect, actor, role)
+    if not rows:
+        st.info("В справочнике пока пусто.")
+        return True
+
+    registry = pd.DataFrame(rows)
+    query = st.text_input("ASIN или часть названия", key="asin_registry_search")
+    show_off = st.checkbox("Показывать убранные", key="asin_registry_show_off")
+    shown = _matches(registry, query)
+    if not show_off:
+        shown = shown[shown["active"]]
+    if shown.empty:
+        st.info("Ничего не найдено.")
+        return True
+    shown = shown.head(MAX_EDIT_ROWS).reset_index(drop=True)
+
+    table = pd.DataFrame({
+        "Страна": shown["marketplace"],
+        "ASIN": [_asin_url(a, m) for a, m in zip(shown["asin"], shown["marketplace"])],
+        "Название": shown["name"],
+        "Роль": [asins_store.KIND_LABELS.get(kind, kind) for kind in shown["kind"]],
+        "В работе": shown["active"],
+        "Убрать": False,
+    })
+    edited = st.data_editor(
+        table, key="asin_registry_grid", hide_index=True, use_container_width=True, height=400,
+        disabled=["Страна", "ASIN", "Название", "Роль", "В работе"],
+        column_config={
+            "ASIN": st.column_config.LinkColumn("ASIN", display_text=_ASIN_LINK_TEXT, width="small"),
+            "В работе": st.column_config.CheckboxColumn("В работе"),
+            "Убрать": st.column_config.CheckboxColumn("Убрать"),
+        },
+    )
+    marked = edited[edited["Убрать"]]
+    keys = [(shown["marketplace"].iloc[i], shown["asin"].iloc[i]) for i in marked.index]
+    st.button(f"Убрать отмеченные ({len(keys)})", key="asin_registry_drop", disabled=not keys,
+              on_click=_drop_asins_callback, args=(connect, keys, actor, role))
+    if len(_matches(registry, query)) > MAX_EDIT_ROWS:
+        st.caption(f"Показаны первые {MAX_EDIT_ROWS}: уточните поиск.")
+    return True
+
+
 def _render_registry(connect, pairs: pd.DataFrame, actor: str, role: str) -> None:
+    if _render_registry_from_store(connect, actor, role):
+        return
+    # Справочника в базе ещё нет (миграция 008 не применена) — показываем то же самое, собранное
+    # из пар: список и «стереть» работают, вписать отдельный ASIN пока некуда.
     registry = _asin_registry(pairs)
     if registry.empty:
         st.info("ASIN пока нет.")
