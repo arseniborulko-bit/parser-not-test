@@ -229,6 +229,100 @@ def _render_edit(connect, pairs: pd.DataFrame, actor: str, role: str) -> None:
         st.caption(f"Показаны первые {MAX_EDIT_ROWS}: уточните поиск.")
 
 
+def _asin_registry(pairs: pd.DataFrame) -> pd.DataFrame:
+    """Все ASIN одним списком: каждый ASIN один раз, с ролью и числом пар, в которых он участвует.
+
+    В нашей базе ASIN сам по себе не хранится — он существует только внутри пары. Поэтому список
+    собирается из пар, а «стереть» означает отключить все пары, где этот ASIN участвует."""
+    if pairs.empty:
+        return pd.DataFrame(columns=["marketplace", "asin", "name", "role", "pairs", "active_pairs"])
+    sides = pd.concat([
+        pd.DataFrame({"marketplace": pairs["marketplace"], "asin": pairs["our_asin"],
+                      "name": pairs["our_product"], "role": "наш", "active": pairs["active"]}),
+        pd.DataFrame({"marketplace": pairs["marketplace"], "asin": pairs["comp_asin"],
+                      "name": pairs["competitor_name"], "role": "конкурент", "active": pairs["active"]}),
+    ], ignore_index=True)
+    sides = sides[sides["asin"].astype(str).str.strip().ne("")]
+    grouped = sides.groupby(["marketplace", "asin"], as_index=False).agg(
+        name=("name", lambda values: next((str(v) for v in values if str(v or "").strip()), "")),
+        role=("role", "min"),
+        pairs=("asin", "size"),
+        active_pairs=("active", "sum"),
+    )
+    return grouped.sort_values(["marketplace", "asin"], ignore_index=True)
+
+
+def _erase_callback(connect, pairs: pd.DataFrame, targets, actor: str, role: str) -> None:
+    """«Стереть» ASIN — отключить все активные пары, где он участвует."""
+    chosen = {(market, asin) for market, asin in targets}
+    keys = [
+        (row.marketplace, row.our_asin, row.comp_asin)
+        for row in pairs.itertuples()
+        if row.active and ((row.marketplace, row.our_asin) in chosen or (row.marketplace, row.comp_asin) in chosen)
+    ]
+    if not keys:
+        st.session_state["pairs_flash"] = ("info", "Активных пар с этими ASIN нет.")
+        return
+    try:
+        count = pairs_store.set_pairs_active(connect, keys, False, actor_role=role, actor=actor)
+    except _ERRORS as exc:
+        st.session_state["pairs_flash"] = ("error", str(exc))
+        return
+    st.session_state["pairs_flash"] = ("success", f"Отключено пар: {count}.")
+
+
+def _render_registry(connect, pairs: pd.DataFrame, actor: str, role: str) -> None:
+    registry = _asin_registry(pairs)
+    if registry.empty:
+        st.info("ASIN пока нет.")
+        return
+
+    top = st.columns([3, 2])
+    query = top[0].text_input("ASIN или часть названия", key="pairs_registry_search")
+    only_active = top[1].checkbox("Только участвующие в сборе", value=True, key="pairs_registry_active")
+
+    shown = _matches(registry, query)
+    if only_active:
+        shown = shown[shown["active_pairs"] > 0]
+    if shown.empty:
+        st.info("Ничего не найдено.")
+        return
+    shown = shown.head(MAX_EDIT_ROWS).reset_index(drop=True)
+
+    table = pd.DataFrame({
+        "Страна": shown["marketplace"],
+        "ASIN": [_asin_url(a, m) for a, m in zip(shown["asin"], shown["marketplace"])],
+        "Название": shown["name"].fillna(""),
+        "Роль": shown["role"],
+        "Пар в сборе": shown["active_pairs"].astype(int),
+        "Стереть": False,
+    })
+    edited = st.data_editor(
+        table, key="pairs_registry_grid", hide_index=True, use_container_width=True, height=400,
+        disabled=["Страна", "ASIN", "Название", "Роль", "Пар в сборе"],
+        column_config={
+            "ASIN": st.column_config.LinkColumn("ASIN", display_text=_ASIN_LINK_TEXT, width="small"),
+            "Стереть": st.column_config.CheckboxColumn("Стереть"),
+        },
+    )
+    marked = edited[edited["Стереть"]]
+    targets = [(shown["marketplace"].iloc[i], shown["asin"].iloc[i]) for i in marked.index]
+    affected = int(shown.loc[marked.index, "active_pairs"].sum()) if len(marked) else 0
+
+    confirmed = True
+    if affected > _CONFIRM_ABOVE:
+        typed = st.text_input(f"Отключится {affected} пар. Введите СТЕРЕТЬ для подтверждения",
+                              key="pairs_registry_confirm")
+        confirmed = typed.strip().upper() == "СТЕРЕТЬ"
+    st.button(
+        f"Стереть отмеченные ({len(targets)})", key="pairs_registry_btn",
+        disabled=not targets or not confirmed,
+        on_click=_erase_callback, args=(connect, pairs, targets, actor, role),
+    )
+    if len(_matches(registry, query)) > MAX_EDIT_ROWS:
+        st.caption(f"Показаны первые {MAX_EDIT_ROWS}: уточните поиск.")
+
+
 def _render_remove(connect, pairs: pd.DataFrame, actor: str, role: str) -> None:
     active = pairs[pairs["active"]]
     if active.empty:
@@ -342,6 +436,8 @@ def render_pairs_tab(connect, pairs: pd.DataFrame, actor: str | None, role: str 
     st.caption("Изменения попадают в следующий сбор. Лист Competitors в Google Таблице парсер больше не читает.")
     with st.expander("➕ Добавить конкурентов", expanded=True):
         _render_add(connect, actor or "?", role, max_active)
+    with st.expander("📇 Все ASIN"):
+        _render_registry(connect, pairs, actor or "?", role)
     with st.expander("✏️ Исправить названия"):
         _render_edit(connect, pairs, actor or "?", role)
     with st.expander("🗑 Убрать пары"):
