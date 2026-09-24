@@ -30,6 +30,12 @@ def tables(at):
     return [frame.value for frame in at.dataframe]
 
 
+def retired_table(at):
+    """Именно таблица отключённых ASIN: колонка ASIN есть и у сводной таблицы «История»."""
+    return next(frame for frame in tables(at)
+                if "Данные до" in getattr(frame, "columns", []))
+
+
 def test_retired_asins_are_listed_with_a_count(with_retired):
     at = run()
     text = " ".join(block.value for block in at.markdown)
@@ -37,19 +43,14 @@ def test_retired_asins_are_listed_with_a_count(with_retired):
 
 
 def test_the_table_uses_russian_headers_and_shows_the_asins(with_retired):
-    at = run()
-    shown = [frame for frame in tables(at) if "ASIN" in getattr(frame, "columns", [])]
-    assert shown, "таблица отключённых ASIN не нарисована"
-    table = shown[0]
+    table = retired_table(run())
     assert list(table["ASIN"]) == ["B0C8NGXZDV", "B09QMDSVB2"]
     for label in ("Страна", "Товар", "Роль", "Данные до"):
         assert label in table.columns, label
 
 
 def test_a_date_is_shown_for_an_asin_that_was_collected_and_blank_for_one_that_never_was(with_retired):
-    at = run()
-    table = next(frame for frame in tables(at) if "ASIN" in getattr(frame, "columns", []))
-    assert list(table["Данные до"]) == ["01.09.2026", ""]
+    assert list(retired_table(run())["Данные до"]) == ["01.09.2026", ""]
 
 
 def heading_shown(at) -> bool:

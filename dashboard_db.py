@@ -582,6 +582,63 @@ def _render_retired_block() -> None:
     st.dataframe(table.fillna(""), use_container_width=True, hide_index=True, height=260)
 
 
+_MATRIX_METRICS = {"BSR": ("our_bsr", "comp_bsr"), "Цена": ("our_price", "comp_price")}
+# На боевых данных таблица выходит 683 строки на 39 дней — помещается целиком; предел нужен
+# только чтобы страница не встала, если история вырастет в разы.
+MAX_MATRIX_ROWS = 800
+
+
+def _history_matrix(data: pd.DataFrame, metric: str) -> pd.DataFrame:
+    """Таблица «ASIN × даты»: строка — ASIN на своём рынке, колонки — дни, в клетках значение.
+
+    Строим по ASIN, а не по парам: один и тот же ASIN на одном рынке даёт одинаковые цифры во
+    всех парах, где он участвует, поэтому по парам таблица была бы втрое больше без новых данных.
+    """
+    ours, theirs = _MATRIX_METRICS[metric]
+    if "snapshot_date" not in data:
+        return pd.DataFrame()
+    parts = []
+    for asin_column, value_column in (("our_asin", ours), ("comp_asin", theirs)):
+        if asin_column not in data or value_column not in data:
+            continue
+        parts.append(pd.DataFrame({
+            "ASIN": data[asin_column],
+            "Страна": data["marketplace"] if "marketplace" in data else "",
+            "Дата": pd.to_datetime(data["snapshot_date"], errors="coerce"),
+            "Значение": pd.to_numeric(data[value_column], errors="coerce"),
+        }))
+    if not parts:
+        return pd.DataFrame()
+    long = pd.concat(parts, ignore_index=True).dropna(subset=["Дата"])
+    long = long[long["ASIN"].astype(str).str.strip().ne("")]
+    long = long.dropna(subset=["Значение"])
+    if long.empty:
+        return pd.DataFrame()
+    # Один ASIN на одном рынке за один день — одно значение, дубли из разных пар схлопываем.
+    matrix = long.pivot_table(index=["ASIN", "Страна"], columns="Дата", values="Значение", aggfunc="last")
+    matrix = matrix.sort_index(axis=1)
+    matrix.columns = [column.strftime("%d.%m") for column in matrix.columns]
+    result = matrix.reset_index()
+    # Пустая клетка (день без данных) иначе рисуется видимым текстом "None" — см. _NUMERIC_LABELS.
+    for column in result.columns:
+        if column not in ("ASIN", "Страна"):
+            result[column] = result[column].map(_format_number_or_blank)
+    return result
+
+
+def _render_history_matrix(data: pd.DataFrame) -> None:
+    if data.empty or "snapshot_date" not in data:
+        return
+    metric = st.radio("Параметр", list(_MATRIX_METRICS), horizontal=True, key="history_matrix_metric")
+    matrix = _history_matrix(data, metric)
+    if matrix.empty:
+        return
+    shown = matrix.head(MAX_MATRIX_ROWS)
+    st.dataframe(shown, use_container_width=True, hide_index=True, height=420)
+    if len(matrix) > MAX_MATRIX_ROWS:
+        st.caption(f"Показаны первые {MAX_MATRIX_ROWS} из {len(matrix)}: сузьте фильтры выше.")
+
+
 def _table_or_note(data: pd.DataFrame, *, with_images: bool = False) -> None:
     """Пустой st.dataframe рисует английское "empty" — вместо этого объясняем словами."""
     if data.empty:
@@ -1016,6 +1073,7 @@ def main() -> None:
         _table_or_note(shown, with_images=True)
 
     with history_tab:
+        _render_history_matrix(shown_history)
         _table_or_note(shown_history)
 
     with pairs_tab:
