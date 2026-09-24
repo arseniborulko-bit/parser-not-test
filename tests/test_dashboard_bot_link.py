@@ -36,6 +36,24 @@ def test_no_link_is_drawn_when_there_is_no_bot(dash, monkeypatch):  # noqa: F811
     assert "t.me/" not in header(run())
 
 
+def test_the_link_sits_right_under_the_status_line(dash):  # noqa: F811
+    """Отдельным элементом Streamlit ставит перед ней свой отступ, и кнопка повисает сама по себе."""
+    # Именно разметка, а не блок <style>, где те же имена классов встречаются как правила.
+    block = next(block.value for block in run().markdown if 'class="status-box"' in block.value)
+    assert "t.me/" in block
+    assert block.index('class="status-box"') < block.index('class="bot-link"'), (
+        "кнопка должна идти после строки статуса"
+    )
+
+
+def test_streamlit_own_link_styling_is_overridden(dash):  # noqa: F811
+    """Без принудительного цвета и без снятия подчёркивания получается чужая синяя ссылка."""
+    css = next(block.value for block in run().markdown if "<style>" in block.value)
+    assert "a.bot-link" in css
+    assert "text-decoration: none !important" in css
+    assert "color: #ffffff !important" in css, "текст на залитой кнопке должен быть белым"
+
+
 def test_the_bot_token_is_not_anywhere_in_the_dashboard_source():
     """Имя бота — публичное, токен — нет: он живёт только в секретах и в .env."""
     with open(dash_module.__file__, encoding="utf-8") as handle:

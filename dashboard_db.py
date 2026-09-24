@@ -151,9 +151,16 @@ def _apply_design() -> None:
         .brand-mark { font-size: 2.6rem; line-height: 1; }
         .brand-title { font-size: 2.35rem; font-weight: 800; letter-spacing: -0.03em; color: #111827; margin: 0; line-height: 1.1; }
         .brand-subtitle { color: #64748b; font-size: .9rem; margin: .15rem 0 0; }
-        .bot-link { display: inline-block; margin: -.9rem 0 1.3rem; font-size: .88rem;
-                    color: #168ed0; text-decoration: none; font-weight: 600; }
-        .bot-link:hover { text-decoration: underline; }
+        /* Streamlit красит ссылки своими правилами по [data-testid], поэтому цвет и отсутствие
+        подчёркивания задаём принудительно, иначе получается чужая синяя ссылка с подчёркиванием. */
+        a.bot-link, .stMarkdown a.bot-link {
+            display: inline-flex; align-items: center; gap: .4rem;
+            margin: .55rem .5rem 0 0; padding: .42rem .95rem;
+            background: #0f6ea8; border-radius: 999px;
+            color: #ffffff !important; text-decoration: none !important;
+            font-size: .86rem; font-weight: 650; line-height: 1.4;
+        }
+        a.bot-link:hover, .stMarkdown a.bot-link:hover { background: #0b5988; }
         .status-box { background: #dbeafe; color: #2563eb; border-radius: 10px; padding: 1rem 1.1rem; }
         .status-box strong { color: #1d4ed8; }
         .metric-card { background: #ffffff; border: 1px solid #e5e7eb; border-radius: 15px; padding: 1rem 1.15rem; min-height: 120px; box-shadow: 0 1px 2px rgba(15,23,42,.025); }
@@ -503,14 +510,15 @@ def _bot_username() -> str:
     return (_secret("TELEGRAM_BOT_USERNAME") or DEFAULT_BOT_USERNAME).strip().lstrip("@")
 
 
-def _render_bot_link() -> None:
+def _bot_link_html() -> str:
+    """Внутри блока шапки, а не отдельным элементом: иначе между ними встаёт отступ Streamlit,
+    и ссылка повисает сама по себе."""
     username = _bot_username()
     if not username:
-        return
-    st.markdown(
+        return ""
+    return (
         f'<a class="bot-link" href="https://t.me/{escape(username)}" target="_blank" '
-        f'rel="noopener">✈️ @{escape(username)}</a>',
-        unsafe_allow_html=True,
+        f'rel="noopener">✈️ @{escape(username)}</a>'
     )
 
 
@@ -955,7 +963,6 @@ def main() -> None:
             '</div>',
             unsafe_allow_html=True,
         )
-        _render_bot_link()
     with right:
         _render_auth_bar(user, email, role)
         if role is None and not _management_open():
@@ -983,8 +990,11 @@ def main() -> None:
         dates = pd.to_datetime(current["snapshot_date"], errors="coerce")
         if dates.notna().any():
             latest_label = dates.max().strftime("%d.%m.%Y")
+    # Кнопка бота — в том же вызове, что и строка статуса: отдельным элементом Streamlit
+    # поставил бы перед ней свой отступ, и она повисла бы сама по себе.
     st.markdown(
-        f'<div class="status-box"><strong>Последний сбор в базе: {escape(latest_label)}</strong></div>',
+        f'<div class="status-box"><strong>Последний сбор в базе: {escape(latest_label)}</strong></div>'
+        f'{_bot_link_html()}',
         unsafe_allow_html=True,
     )
 
