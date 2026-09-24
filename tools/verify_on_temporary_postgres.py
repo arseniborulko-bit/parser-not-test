@@ -50,6 +50,7 @@ URI = server.get_uri()
 os.environ["DATABASE_URL"] = URI
 
 import access  # noqa: E402
+import asins_store  # noqa: E402
 import db_runs  # noqa: E402
 import pairs_store  # noqa: E402
 import schedule_store  # noqa: E402
@@ -58,7 +59,8 @@ NEW_SCHEMA = (PROJECT / "schema.sql").read_text(encoding="utf-8")
 MIGRATIONS = {n: (PROJECT / "migrations" / n).read_text(encoding="utf-8")
               for n in ("001_collection_admission.sql", "002_dashboard_users.sql", "003_pair_changes.sql",
                         "004_snapshot_images.sql", "005_run_scope.sql",
-                        "006_snapshot_marketplace_key.sql", "007_pair_changes_edit.sql")}
+                        "006_snapshot_marketplace_key.sql", "007_pair_changes_edit.sql",
+                        "008_asin_registry.sql")}
 
 
 def check(name: str, condition: object, extra: str = "") -> None:
@@ -564,6 +566,75 @@ def section_admission() -> None:
     check("за все проверки gate создана ровно одна запись", count() == 1)
 
 
+def section_asin_registry() -> None:
+    """Справочник ASIN (миграция 008): ASIN существует сам по себе, без пары."""
+    print("\n== справочник ASIN (миграция 008) ==")
+
+    # Схема без справочника: код обязан это распознать, а не упасть.
+    reset(migrations=False)
+    q("DROP TABLE IF EXISTS bsr_radar.asins;")
+    check("без миграции справочник честно считается отсутствующим",
+          asins_store.registry_exists(connect) is False)
+
+    # Перенос из пар: справочник должен сразу отражать то, что уже заведено.
+    q("""
+        INSERT INTO bsr_radar.competitor_pairs (marketplace, our_asin, our_product, comp_asin, competitor_name, active)
+        VALUES ('US', 'B0OURASIN1', 'Наш товар', 'B0COMPAAA1', 'Конкурент A', TRUE),
+               ('US', 'B0OURASIN1', 'Наш товар', 'B0COMPBBB2', 'Конкурент B', FALSE),
+               ('DE', 'B0OURASIN1', '',          'B0COMPCCC3', 'Конкурент C', TRUE);
+    """)
+    q(MIGRATIONS["008_asin_registry.sql"])
+    q(MIGRATIONS["008_asin_registry.sql"])
+    rows = q("SELECT marketplace, asin, name, kind, active FROM bsr_radar.asins ORDER BY marketplace, asin;")
+    check("миграция переносит ASIN из пар и безопасна при повторе", len(rows) == 5, str(len(rows)))
+    by_key = {(row[0], row[1]): row for row in rows}
+    check("наш ASIN помечен как наш", by_key[("US", "B0OURASIN1")][3] == "ours")
+    check("конкурент помечен как конкурент", by_key[("US", "B0COMPAAA1")][3] == "competitor")
+    check("подпись подтянулась из пары", by_key[("US", "B0OURASIN1")][2] == "Наш товар")
+    check("ASIN только из отключённой пары перенесён неактивным",
+          by_key[("US", "B0COMPBBB2")][4] is False)
+    check("тот же ASIN на другом рынке — отдельная строка", ("DE", "B0OURASIN1") in by_key)
+
+    # ASIN сам по себе, без всякой пары, — ради этого справочник и заводился.
+    added = asins_store.add_asins(connect, "US", "B0NEWNEW01 B0NEWNEW02", "competitor",
+                                  actor_role=access.ROLE_EDITOR, actor="Проверка")
+    # Без LIKE: знак процента psycopg2 принял бы за подстановку параметра.
+    check("ASIN добавляется без пары", added["added"] == 2 and
+          q("SELECT count(*) FROM bsr_radar.asins WHERE asin IN ('B0NEWNEW01', 'B0NEWNEW02');")[0][0] == 2)
+    check("пары при этом не появились",
+          q("SELECT count(*) FROM bsr_radar.competitor_pairs;")[0][0] == 3)
+
+    again = asins_store.add_asins(connect, "US", "B0NEWNEW01", "competitor",
+                                  actor_role=access.ROLE_EDITOR, actor="Проверка")
+    check("повторное добавление не плодит дубли",
+          again["added"] == 0 and q("SELECT count(*) FROM bsr_radar.asins WHERE asin = 'B0NEWNEW01';")[0][0] == 1)
+
+    removed = asins_store.set_active(connect, [("US", "B0NEWNEW01")], False,
+                                     actor_role=access.ROLE_EDITOR, actor="Проверка")
+    state = q("SELECT active FROM bsr_radar.asins WHERE marketplace='US' AND asin='B0NEWNEW01';")[0][0]
+    check("убранный ASIN не удаляется, а становится неактивным", removed == 1 and state is False)
+
+    back = asins_store.add_asins(connect, "US", "B0NEWNEW01", "competitor",
+                                 actor_role=access.ROLE_EDITOR, actor="Проверка")
+    check("добавление убранного ASIN возвращает его", back["restored"] == 1 and
+          q("SELECT active FROM bsr_radar.asins WHERE asin='B0NEWNEW01';")[0][0] is True)
+
+    asins_store.rename(connect, ("US", "B0NEWNEW02"), "Новая подпись",
+                       actor_role=access.ROLE_EDITOR, actor="Проверка")
+    check("подпись меняется, ключ остаётся",
+          q("SELECT name, asin FROM bsr_radar.asins WHERE asin='B0NEWNEW02';")[0] == ("Новая подпись", "B0NEWNEW02"))
+
+    try:
+        asins_store.add_asins(connect, "US", "B0NEWNEW03", "competitor", actor_role=None, actor="Чужой")
+        check("зритель не может править справочник", False)
+    except access.AccessDenied:
+        check("зритель не может править справочник",
+              q("SELECT count(*) FROM bsr_radar.asins WHERE asin='B0NEWNEW03';")[0][0] == 0)
+
+    check("справочник не влияет на то, что собирается: пары не тронуты",
+          q("SELECT count(*) FROM bsr_radar.competitor_pairs WHERE active;")[0][0] == 2)
+
+
 def section_pair_editing() -> None:
     """Правка названий уже заведённой пары (миграция 007 разрешает действие 'edit' в журнале)."""
     print("\n== правка названий пары ==")
@@ -691,6 +762,7 @@ try:
     section_admission()
     section_snapshot_marketplace_key()
     section_pair_editing()
+    section_asin_registry()
 finally:
     failed = [name for name, ok in checks if not ok]
     print(f"\nитого: {len(checks) - len(failed)} из {len(checks)} проверок прошли")
