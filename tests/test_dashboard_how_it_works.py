@@ -48,3 +48,22 @@ def test_it_explains_that_history_outlives_a_disabled_pair():
     text = dash_module._HOW_IT_WORKS
     assert "Больше не собираются" in text
     assert "не удаляются никогда" in text
+
+
+@pytest.mark.parametrize("fact", [
+    "ASIN × даты",             # сводная таблица в «Истории»
+    "выбор дня",               # срез за одну дату
+    "Все ASIN",                # общий список со ссылками
+    "Исправить названия",      # правка сеткой
+    "отметить несколько",      # множественный выбор стран
+])
+def test_the_text_covers_what_the_dashboard_actually_has_now(fact):
+    """Раздел устаревает молча: тут перечислено то, что появилось после его первой версии."""
+    assert fact in dash_module._HOW_IT_WORKS, fact
+
+
+def test_it_does_not_still_say_below_now_that_it_is_a_separate_tab(dash):  # noqa: F811
+    """Пока раздел лежал внутри «Сбор и управление», «ниже» было правдой. Теперь это другая вкладка."""
+    text = dash_module._HOW_IT_WORKS
+    assert "задаётся ниже" not in text
+    assert "видны ниже" not in text
