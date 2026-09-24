@@ -18,6 +18,7 @@ from html import escape
 from pathlib import Path
 from typing import Iterable
 
+import numpy as np
 import pandas as pd
 import psycopg2
 import streamlit as st
@@ -594,6 +595,12 @@ GitHub, а проверка решает, пора ли: своё расписа
 ними); «Исправить названия» — правка подписей сеткой, сразу по многим строкам. Сами ASIN и страна
 в паре не меняются: это ключ, по которому лежит история, и его смена означала бы другую пару.
 
+**Прогноз.** Показывает, куда идёт BSR каждого ASIN: сегодняшнее значение, типичное изменение за
+день и проекция на выбранный срок. Изменение считается как медиана дневных изменений, а не как
+прямая по всем точкам: BSR скачет, и один выброс иначе задавал бы весь тренд. Это экстраполяция, а
+не предсказание — она не знает про акции, сезон и новинки, поэтому рядом показано, на скольких
+замерах построена. ASIN, у которого меньше трёх замеров за окно, в прогноз не попадает.
+
 **Что не пропадает.** Отключённая пара не удаляется, снимки не удаляются никогда. Поэтому история
 по ней остаётся в «Истории», а сами ASIN видны на вкладке «Сбор и управление»,
 в списке «Больше не собираются».
@@ -686,6 +693,108 @@ def _render_history_matrix(data: pd.DataFrame) -> None:
     st.dataframe(shown, use_container_width=True, hide_index=True, height=420)
     if len(matrix) > MAX_MATRIX_ROWS:
         st.caption(f"Показаны первые {MAX_MATRIX_ROWS} из {len(matrix)}: сузьте фильтры выше.")
+
+
+_FORECAST_WINDOWS = {"7 дней": 7, "14 дней": 14, "30 дней": 30}
+_FORECAST_HORIZONS = {"7 дней": 7, "14 дней": 14, "30 дней": 30}
+# Меньше трёх замеров — это не тренд, а две точки и совпадение. Такой ASIN в прогноз не берём.
+MIN_FORECAST_POINTS = 3
+
+
+def _daily_series(data: pd.DataFrame, value_column: str, asin_column: str) -> pd.DataFrame:
+    """Значения по дням для одной стороны пары, приведённые к виду «ASIN, страна, день, число»."""
+    if asin_column not in data or value_column not in data or "snapshot_date" not in data:
+        return pd.DataFrame(columns=["ASIN", "Страна", "Дата", "Значение"])
+    return pd.DataFrame({
+        "ASIN": data[asin_column],
+        "Страна": data["marketplace"] if "marketplace" in data else "",
+        "Дата": pd.to_datetime(data["snapshot_date"], errors="coerce"),
+        "Значение": pd.to_numeric(data[value_column], errors="coerce"),
+    })
+
+
+def _trend(days: pd.Series, values: pd.Series) -> float:
+    """Типичное изменение BSR в день — медиана дневных изменений, а не прямая по всем точкам.
+
+    На боевых данных BSR скачет на сотни тысяч за сутки, и метод наименьших квадратов давал
+    наклоны вроде −180000 в день: проекция улетала в минус и упиралась в ноль почти у всех.
+    Медиана не даёт одному выбросу задать тренд. Дни делим на реальный разрыв, поэтому
+    пропущенный день не удваивает скорость.
+    """
+    gaps = days.diff().dt.days.astype(float)
+    changes = values.astype(float).diff()
+    daily = (changes / gaps).replace([np.inf, -np.inf], np.nan).dropna()
+    if daily.empty:
+        return 0.0
+    return float(daily.median())
+
+
+def _forecast_table(data: pd.DataFrame, window_days: int, horizon_days: int) -> pd.DataFrame:
+    """Куда идёт BSR каждого ASIN: сегодняшнее значение, изменение в день и простая проекция.
+
+    Это прямая экстраполяция тренда, а не модель: она не знает про сезон, акции и новинки.
+    Поэтому рядом всегда показывается, на скольких замерах она построена.
+    """
+    parts = [
+        _daily_series(data, "our_bsr", "our_asin"),
+        _daily_series(data, "comp_bsr", "comp_asin"),
+    ]
+    long = pd.concat([part for part in parts if not part.empty], ignore_index=True) if any(
+        not part.empty for part in parts) else pd.DataFrame()
+    if long.empty:
+        return pd.DataFrame()
+    long = long.dropna(subset=["Дата", "Значение"])
+    long = long[long["ASIN"].astype(str).str.strip().ne("")]
+    if long.empty:
+        return pd.DataFrame()
+
+    # Один ASIN на одном рынке за день — одно значение (он же повторяется в разных парах).
+    long = long.groupby(["ASIN", "Страна", "Дата"], as_index=False)["Значение"].last()
+    last_day = long["Дата"].max()
+    long = long[long["Дата"] > last_day - pd.Timedelta(days=window_days)]
+    if long.empty:
+        return pd.DataFrame()
+
+    rows = []
+    for (asin, market), group in long.groupby(["ASIN", "Страна"]):
+        group = group.sort_values("Дата")
+        if len(group) < MIN_FORECAST_POINTS:
+            continue
+        slope = _trend(group["Дата"], group["Значение"])
+        current = float(group["Значение"].iloc[-1])
+        projected = current + slope * horizon_days
+        rows.append({
+            "Страна": market,
+            "ASIN": asin,
+            "BSR сейчас": current,
+            "Изменение в день": slope,
+            f"Прогноз через {horizon_days} дн.": max(projected, 0.0),
+            "Замеров": len(group),
+            # BSR: чем меньше, тем лучше, поэтому падение наклона — это рост позиций.
+            "Тренд": "растём" if slope < 0 else ("падаем" if slope > 0 else "без движения"),
+        })
+    if not rows:
+        return pd.DataFrame()
+    return pd.DataFrame(rows).sort_values(["Изменение в день", "ASIN"], ignore_index=True)
+
+
+def _render_forecast(data: pd.DataFrame) -> None:
+    if data.empty or "snapshot_date" not in data:
+        st.info("Нет данных для прогноза.")
+        return
+    controls = st.columns(2)
+    window = controls[0].selectbox("Считать по", list(_FORECAST_WINDOWS), index=1, key="forecast_window")
+    horizon = controls[1].selectbox("Прогноз на", list(_FORECAST_HORIZONS), key="forecast_horizon")
+
+    table = _forecast_table(data, _FORECAST_WINDOWS[window], _FORECAST_HORIZONS[horizon])
+    if table.empty:
+        st.info(f"Недостаточно замеров: для прогноза нужно хотя бы {MIN_FORECAST_POINTS} дня с данными.")
+        return
+    shown = table.copy()
+    for column in ("BSR сейчас", f"Прогноз через {_FORECAST_HORIZONS[horizon]} дн."):
+        shown[column] = shown[column].map(lambda value: _format_number_or_blank(round(value)))
+    shown["Изменение в день"] = shown["Изменение в день"].map(lambda value: _format_signed_or_blank(round(value)))
+    st.dataframe(shown, use_container_width=True, hide_index=True, height=420)
 
 
 _ALL_DAYS = "Все дни"
@@ -1132,12 +1241,12 @@ def main() -> None:
 
     _render_overview(shown)
 
-    tab_titles = ["📋 Текущее состояние", "📅 История", "🥊 Пары конкурентов", "⚙ Сбор и управление",
-                  "ℹ️ Как это работает"]
+    tab_titles = ["📋 Текущее состояние", "📅 История", "📈 Прогноз", "🥊 Пары конкурентов",
+                  "⚙ Сбор и управление", "ℹ️ Как это работает"]
     if role == access.ROLE_ADMIN:
         tab_titles.append("👥 Пользователи")
     tabs = st.tabs(tab_titles)
-    current_tab, history_tab, pairs_tab, schedule_tab, how_tab = tabs[:5]
+    current_tab, history_tab, forecast_tab, pairs_tab, schedule_tab, how_tab = tabs[:6]
 
     with current_tab:
         _table_or_note(shown, with_images=True)
@@ -1145,6 +1254,9 @@ def main() -> None:
     with history_tab:
         _render_history_matrix(shown_history)
         _table_or_note(_pick_day(shown_history))
+
+    with forecast_tab:
+        _render_forecast(shown_history)
 
     with pairs_tab:
         pairs_ui.render_pairs_tab(_connect, pairs, actor, manage_role, _max_active())
@@ -1168,7 +1280,7 @@ def main() -> None:
         _render_how_it_works()
 
     if role == access.ROLE_ADMIN:
-        with tabs[5]:
+        with tabs[6]:
             _render_users_panel(email, role)
 
     download_left, download_right, _ = st.columns([1, 1, 4])

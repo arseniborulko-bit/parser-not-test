@@ -12,8 +12,8 @@ import access
 import schedule_store
 
 SCRIPT = "import dashboard_db\ndashboard_db.main()"
-PUBLIC_TABS = ["📋 Текущее состояние", "📅 История", "🥊 Пары конкурентов", "⚙ Сбор и управление",
-               "ℹ️ Как это работает"]
+PUBLIC_TABS = ["📋 Текущее состояние", "📅 История", "📈 Прогноз", "🥊 Пары конкурентов",
+               "⚙ Сбор и управление", "ℹ️ Как это работает"]
 ADMIN_TABS = PUBLIC_TABS + ["👥 Пользователи"]
 TEAM_PASSWORD = "correct-horse-battery"
 NOW = datetime(2026, 9, 21, 8, 0, tzinfo=schedule_store.TZ)
