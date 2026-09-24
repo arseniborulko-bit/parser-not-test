@@ -60,7 +60,7 @@ MIGRATIONS = {n: (PROJECT / "migrations" / n).read_text(encoding="utf-8")
               for n in ("001_collection_admission.sql", "002_dashboard_users.sql", "003_pair_changes.sql",
                         "004_snapshot_images.sql", "005_run_scope.sql",
                         "006_snapshot_marketplace_key.sql", "007_pair_changes_edit.sql",
-                        "008_asin_registry.sql")}
+                        "008_asin_registry.sql", "009_snapshot_rating_reviews.sql")}
 
 
 def check(name: str, condition: object, extra: str = "") -> None:
@@ -191,8 +191,12 @@ def section_schedule_and_users() -> None:
             check(label, True)
 
 
-def dashboard_sql(function_name: str) -> str:
-    """SQL из dashboard_db.py (первый аргумент pd.read_sql), чтобы проверять именно тот запрос, что в дашборде."""
+def dashboard_sql(function_name: str, extra: str = "") -> str:
+    """SQL из dashboard_db.py (первый аргумент pd.read_sql), чтобы проверять именно тот запрос, что в дашборде.
+
+    Запросы стали f-строками: необязательные столбцы (фото, рейтинг) подставляются по тому, что
+    реально есть в базе. Подставляем вместо этих вставок то, что передали в extra, — иначе
+    проверялся бы не тот запрос, который выполняет дашборд."""
     import ast
 
     tree = ast.parse((PROJECT / "dashboard_db.py").read_text(encoding="utf-8"))
@@ -200,7 +204,14 @@ def dashboard_sql(function_name: str) -> str:
         if isinstance(node, ast.FunctionDef) and node.name == function_name:
             for call in ast.walk(node):
                 if isinstance(call, ast.Call) and getattr(call.func, "attr", "") == "read_sql":
-                    return call.args[0].value
+                    argument = call.args[0]
+                    if isinstance(argument, ast.Constant):
+                        return argument.value
+                    if isinstance(argument, ast.JoinedStr):
+                        return "".join(
+                            part.value if isinstance(part, ast.Constant) else extra
+                            for part in argument.values
+                        )
     raise LookupError(function_name)
 
 
@@ -286,12 +297,22 @@ def section_pairs() -> None:
     check("«Текущее состояние»: только активные пары и только последний снимок каждой",
           got == [(ours, "B0COMPAAA1"), (ours, "B0COMPAAA2")] and {row[0].isoformat() for row in current} == {"2026-09-21"}, str(got))
 
+    # Необязательные столбцы дашборд подставляет по тому, что есть в базе, — передаём их явно.
+    photos = ", s.our_image_url, s.comp_image_url"
+    with_photos = dashboard_sql("load_current", photos)
     check("запрос «Текущего состояния» в дашборде читает фото (миграция 004)",
-          "our_image_url" in dashboard_sql("load_current") and "comp_image_url" in dashboard_sql("load_current"))
+          "our_image_url" in with_photos and "comp_image_url" in with_photos)
     q("UPDATE bsr_radar.snapshots SET our_image_url = 'https://x/our.jpg', comp_image_url = 'https://x/comp.jpg' "
       "WHERE comp_asin = 'B0COMPAAA1' AND snapshot_date = '2026-09-21';")
-    photo_row = next(row for row in q(dashboard_sql("load_current")) if row[8] == "B0COMPAAA1")
+    photo_row = next(row for row in q(with_photos) if row[8] == "B0COMPAAA1")
     check("фото читается из последнего снимка пары", photo_row[-2:] == ("https://x/our.jpg", "https://x/comp.jpg"))
+
+    ratings = ", s.our_rating, s.our_reviews_count, s.comp_rating, s.comp_reviews_count"
+    q("UPDATE bsr_radar.snapshots SET our_rating = 4.6, our_reviews_count = 0 "
+      "WHERE comp_asin = 'B0COMPAAA1' AND snapshot_date = '2026-09-21';")
+    rated = next(row for row in q(dashboard_sql("load_current", ratings)) if row[8] == "B0COMPAAA1")
+    check("рейтинг и отзывы доходят до «Текущего состояния», ноль остаётся нулём",
+          float(rated[-4]) == 4.6 and rated[-3] == 0, str(rated[-4:]))
     listing = {row[3]: row for row in q(dashboard_sql("load_competitor_pairs"))}
     check("список пар: пустое название подставляется из последнего снимка, заданное остаётся",
           listing["B0COMPAAA2"][4] == "Scraped A2" and listing["B0COMPAAA1"][4] == "Comp A1" and listing["B0COMPAAA1"][2] == "Our product")
@@ -566,6 +587,61 @@ def section_admission() -> None:
     check("за все проверки gate создана ровно одна запись", count() == 1)
 
 
+def section_rating_reviews() -> None:
+    """Миграция 009: рейтинг и отзывы. NULL — «нет данных», 0 отзывов — настоящий ноль."""
+    print("\n== рейтинг и отзывы (миграция 009) ==")
+
+    def columns() -> set:
+        return {row[0] for row in q(
+            "SELECT column_name FROM information_schema.columns WHERE table_schema='bsr_radar' "
+            "AND table_name='snapshots';")}
+
+    # Старая схема: снимки есть, новых столбцов нет — ровно как на боевой базе до миграции.
+    reset(migrations=False)
+    q("ALTER TABLE bsr_radar.snapshots DROP COLUMN our_rating, DROP COLUMN our_reviews_count, "
+      "DROP COLUMN comp_rating, DROP COLUMN comp_reviews_count;")
+    q("""
+        INSERT INTO bsr_radar.snapshots (snapshot_date, marketplace, our_asin, comp_asin, our_bsr)
+        VALUES ('2026-09-01', 'UK', 'B0OURASIN1', 'B0COMPAAA1', 1234);
+    """)
+    check("до миграции столбцов рейтинга нет", "our_rating" not in columns())
+
+    before = q("SELECT snapshot_date, marketplace, our_asin, comp_asin, our_bsr FROM bsr_radar.snapshots ORDER BY id;")
+    q(MIGRATIONS["009_snapshot_rating_reviews.sql"])
+    q(MIGRATIONS["009_snapshot_rating_reviews.sql"])
+    after = q("SELECT snapshot_date, marketplace, our_asin, comp_asin, our_bsr FROM bsr_radar.snapshots ORDER BY id;")
+    check("миграция 009 не трогает существующие строки и безопасна при повторе", before == after)
+    check("столбцы появились", {"our_rating", "our_reviews_count", "comp_rating", "comp_reviews_count"} <= columns())
+
+    old = q("SELECT our_rating, our_reviews_count FROM bsr_radar.snapshots WHERE snapshot_date='2026-09-01';")[0]
+    check("старая история осталась пустой, а не нулевой", old == (None, None), str(old))
+
+    # Ноль отзывов — настоящее значение и должен отличаться от отсутствия данных.
+    q("""
+        INSERT INTO bsr_radar.snapshots
+            (snapshot_date, marketplace, our_asin, comp_asin, our_rating, our_reviews_count)
+        VALUES ('2026-09-24', 'UK', 'B0OURASIN1', 'B0COMPAAA1', 4.6, 0);
+    """)
+    fresh = q("SELECT our_rating, our_reviews_count FROM bsr_radar.snapshots WHERE snapshot_date='2026-09-24';")[0]
+    check("ноль отзывов хранится как 0 и отличается от NULL",
+          fresh[1] == 0 and fresh[1] is not None and float(fresh[0]) == 4.6, str(fresh))
+
+    for bad, label in ((5.4, "рейтинг больше 5"), (-0.1, "отрицательный рейтинг")):
+        try:
+            q("INSERT INTO bsr_radar.snapshots (snapshot_date, marketplace, our_asin, comp_asin, our_rating) "
+              "VALUES ('2026-09-25', 'UK', 'B0OURASIN1', 'B0COMPAAA1', %s);", (bad,))
+            check(f"база не принимает {label}", False)
+        except Exception:  # noqa: BLE001
+            check(f"база не принимает {label}", True)
+
+    try:
+        q("INSERT INTO bsr_radar.snapshots (snapshot_date, marketplace, our_asin, comp_asin, our_reviews_count) "
+          "VALUES ('2026-09-26', 'UK', 'B0OURASIN1', 'B0COMPAAA1', -1);")
+        check("база не принимает отрицательное число отзывов", False)
+    except Exception:  # noqa: BLE001
+        check("база не принимает отрицательное число отзывов", True)
+
+
 def section_asin_registry() -> None:
     """Справочник ASIN (миграция 008): ASIN существует сам по себе, без пары."""
     print("\n== справочник ASIN (миграция 008) ==")
@@ -763,6 +839,7 @@ try:
     section_snapshot_marketplace_key()
     section_pair_editing()
     section_asin_registry()
+    section_rating_reviews()
 finally:
     failed = [name for name, ok in checks if not ok]
     print(f"\nитого: {len(checks) - len(failed)} из {len(checks)} проверок прошли")

@@ -171,6 +171,44 @@ def _snapshots_has_image_columns(conn) -> bool:
         return cur.fetchone()[0] == 2
 
 
+def _snapshots_has_rating_columns(conn) -> bool:
+    """Миграция 009 (рейтинг и отзывы) могла ещё не применяться — тогда синк пишет снимки без них,
+    а не падает целиком. Тот же приём, что для колонок фото."""
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT count(*) FROM information_schema.columns WHERE table_schema = 'bsr_radar' "
+            "AND table_name = 'snapshots' AND column_name IN "
+            "('our_rating', 'our_reviews_count', 'comp_rating', 'comp_reviews_count');"
+        )
+        return cur.fetchone()[0] == 4
+
+
+def _negative(value: str) -> bool:
+    """clean_number отбрасывает знак: из "-1" получается 1.0. Для этих метрик такое превращение
+    было бы неверным значением вместо честного «нет данных», поэтому минус ловим отдельно."""
+    return str(value or "").strip().startswith("-")
+
+
+def _rating(value: str):
+    """0–5 с одним знаком. Пусто, мусор и значения вне диапазона — None: «нет данных» не ноль."""
+    if _negative(value):
+        return None
+    number = clean_number(value)
+    if number is None or not 0 <= number <= 5:
+        return None
+    return round(number, 1)
+
+
+def _reviews(value: str):
+    """Целое неотрицательное. Ноль отзывов — настоящий ноль и сохраняется как 0."""
+    if _negative(value):
+        return None
+    number = clean_number(value)
+    if number is None or number < 0:
+        return None
+    return int(number)
+
+
 def _snapshots_key_has_marketplace(conn) -> bool:
     """Миграция 006 (страна в ключе снимков) могла ещё не применяться к боевой базе. Тогда ключ
     старый — (дата, наш ASIN, ASIN конкурента) — и ON CONFLICT обязан называть именно его, иначе
@@ -208,6 +246,7 @@ def sync_snapshots(spreadsheet: gspread.Spreadsheet, conn, sheet_title: str) -> 
         return 0
 
     has_images = _snapshots_has_image_columns(conn)
+    has_ratings = _snapshots_has_rating_columns(conn)
     # Ключ дедупликации обязан совпадать с ключом в базе. Если развести строки по стране, пока в
     # базе ключ без страны, то в одном execute_values окажутся две строки с одинаковым ключом и
     # Postgres откажет: "ON CONFLICT DO UPDATE command cannot affect row a second time".
@@ -246,7 +285,12 @@ def sync_snapshots(spreadsheet: gspread.Spreadsheet, conn, sheet_title: str) -> 
         ) + ((
             _cell(raw, headers.get("our_image_url")) or None,
             _cell(raw, headers.get("comp_image_url")) or None,
-        ) if has_images else ())
+        ) if has_images else ()) + ((
+            _rating(_cell(raw, headers.get("our_rating"))),
+            _reviews(_cell(raw, headers.get("our_reviews_count"))),
+            _rating(_cell(raw, headers.get("comp_rating"))),
+            _reviews(_cell(raw, headers.get("comp_reviews_count"))),
+        ) if has_ratings else ())
 
     rows = list(deduped.values())
     if not rows:
@@ -254,6 +298,11 @@ def sync_snapshots(spreadsheet: gspread.Spreadsheet, conn, sheet_title: str) -> 
 
     image_columns = ", our_image_url, comp_image_url" if has_images else ""
     image_updates = "our_image_url = EXCLUDED.our_image_url, comp_image_url = EXCLUDED.comp_image_url," if has_images else ""
+    rating_columns = ", our_rating, our_reviews_count, comp_rating, comp_reviews_count" if has_ratings else ""
+    rating_updates = (
+        "our_rating = EXCLUDED.our_rating, our_reviews_count = EXCLUDED.our_reviews_count, "
+        "comp_rating = EXCLUDED.comp_rating, comp_reviews_count = EXCLUDED.comp_reviews_count,"
+    ) if has_ratings else ""
     conflict_target = ("(snapshot_date, marketplace, our_asin, comp_asin)" if key_has_marketplace
                        else "(snapshot_date, our_asin, comp_asin)")
     with conn.cursor() as cur:
@@ -263,7 +312,7 @@ def sync_snapshots(spreadsheet: gspread.Spreadsheet, conn, sheet_title: str) -> 
             INSERT INTO bsr_radar.snapshots
                 (snapshot_date, marketplace, currency, our_asin, our_product, our_price,
                  our_bsr, our_bsr_delta_24h, comp_asin, competitor_name, comp_price,
-                 comp_bsr, comp_bsr_delta_24h, comp_stock, price_diff_pct{image_columns})
+                 comp_bsr, comp_bsr_delta_24h, comp_stock, price_diff_pct{image_columns}{rating_columns})
             VALUES %s
             ON CONFLICT {conflict_target} DO UPDATE SET
                 marketplace = EXCLUDED.marketplace,
@@ -279,6 +328,7 @@ def sync_snapshots(spreadsheet: gspread.Spreadsheet, conn, sheet_title: str) -> 
                 comp_stock = EXCLUDED.comp_stock,
                 price_diff_pct = EXCLUDED.price_diff_pct,
                 {image_updates}
+                {rating_updates}
                 updated_at = now()
             """,
             rows,

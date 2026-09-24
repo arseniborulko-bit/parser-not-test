@@ -198,66 +198,80 @@ def _apply_design() -> None:
         st.markdown(_CHROME_CSS, unsafe_allow_html=True)
 
 
+# Необязательные столбцы снимков: появляются миграциями и могут отсутствовать на боевой базе.
+# Спрашиваем базу, какие из них есть, вместо «попробуй запрос, а если упал — попробуй короче»:
+# иначе отсутствие рейтинга (миграция 009) утащило бы за собой и фото (миграция 004).
+_OPTIONAL_SNAPSHOT_COLUMNS = (
+    "our_image_url", "comp_image_url",
+    "our_rating", "our_reviews_count", "comp_rating", "comp_reviews_count",
+)
+
+
+def _present_snapshot_columns(conn) -> list[str]:
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_schema = 'bsr_radar' AND table_name = 'snapshots' "
+            "AND column_name = ANY(%s);",
+            (list(_OPTIONAL_SNAPSHOT_COLUMNS),),
+        )
+        return [row[0] for row in cur.fetchall()]
+
+
+def _with_missing_optional_columns(data: pd.DataFrame, present: list[str]) -> pd.DataFrame:
+    """Колонки, которых в базе ещё нет, добавляем пустыми: интерфейс не должен о них знать."""
+    for column in _OPTIONAL_SNAPSHOT_COLUMNS:
+        if column not in present:
+            data[column] = "" if column.endswith("_url") else pd.NA
+    return data
+
+
 @st.cache_data(ttl=60, show_spinner=False)
 def load_snapshots() -> pd.DataFrame:
     conn = psycopg2.connect(_database_url())
     try:
-        return pd.read_sql(
-            """
+        present = _present_snapshot_columns(conn)
+        extra = "".join(f", {column}" for column in present)
+        data = pd.read_sql(
+            f"""
             SELECT snapshot_date, marketplace, currency, our_asin, our_product, our_price,
                    our_bsr, our_bsr_delta_24h, comp_asin, competitor_name, comp_price,
-                   comp_bsr, comp_bsr_delta_24h, comp_stock, price_diff_pct, updated_at
+                   comp_bsr, comp_bsr_delta_24h, comp_stock, price_diff_pct, updated_at{extra}
             FROM bsr_radar.snapshots
             ORDER BY snapshot_date DESC
             """,
             conn,
         )
+        return _with_missing_optional_columns(data, present)
     finally:
         conn.close()
 
 
 @st.cache_data(ttl=60, show_spinner=False)
 def load_current() -> pd.DataFrame:
-    """Последний снимок каждой АКТИВНОЙ пары (our_asin, comp_asin): убранная пара из текущего состояния исчезает.
-    our_image_url/comp_image_url — необязательные столбцы (миграция 004); если их в базе ещё нет, запрос
-    повторяется без них, а колонки в результате получаются пустыми, вместо того чтобы ломать всю вкладку."""
+    """Последний снимок каждой АКТИВНОЙ пары на каждом рынке: убранная пара отсюда исчезает.
+
+    Необязательные столбцы (фото — миграция 004, рейтинг и отзывы — 009) могут отсутствовать:
+    спрашиваем базу, какие есть, и недостающие добавляем пустыми."""
     conn = psycopg2.connect(_database_url())
     try:
-        try:
-            return pd.read_sql(
-                """
-                SELECT DISTINCT ON (s.marketplace, s.our_asin, s.comp_asin)
-                       s.snapshot_date, s.marketplace, s.currency, s.our_asin, s.our_product, s.our_price,
-                       s.our_bsr, s.our_bsr_delta_24h, s.comp_asin, s.competitor_name, s.comp_price,
-                       s.comp_bsr, s.comp_bsr_delta_24h, s.comp_stock, s.price_diff_pct, s.updated_at,
-                       s.our_image_url, s.comp_image_url
-                FROM bsr_radar.snapshots s
-                JOIN bsr_radar.competitor_pairs p
-                  ON p.our_asin = s.our_asin AND p.comp_asin = s.comp_asin
-                 AND p.marketplace = s.marketplace AND p.active
-                ORDER BY s.marketplace, s.our_asin, s.comp_asin, s.snapshot_date DESC
-                """,
-                conn,
-            )
-        except psycopg2.errors.UndefinedColumn:
-            conn.rollback()
-            data = pd.read_sql(
-                """
-                SELECT DISTINCT ON (s.marketplace, s.our_asin, s.comp_asin)
-                       s.snapshot_date, s.marketplace, s.currency, s.our_asin, s.our_product, s.our_price,
-                       s.our_bsr, s.our_bsr_delta_24h, s.comp_asin, s.competitor_name, s.comp_price,
-                       s.comp_bsr, s.comp_bsr_delta_24h, s.comp_stock, s.price_diff_pct, s.updated_at
-                FROM bsr_radar.snapshots s
-                JOIN bsr_radar.competitor_pairs p
-                  ON p.our_asin = s.our_asin AND p.comp_asin = s.comp_asin
-                 AND p.marketplace = s.marketplace AND p.active
-                ORDER BY s.marketplace, s.our_asin, s.comp_asin, s.snapshot_date DESC
-                """,
-                conn,
-            )
-            data["our_image_url"] = ""
-            data["comp_image_url"] = ""
-            return data
+        present = _present_snapshot_columns(conn)
+        extra = "".join(f", s.{column}" for column in present)
+        data = pd.read_sql(
+            f"""
+            SELECT DISTINCT ON (s.marketplace, s.our_asin, s.comp_asin)
+                   s.snapshot_date, s.marketplace, s.currency, s.our_asin, s.our_product, s.our_price,
+                   s.our_bsr, s.our_bsr_delta_24h, s.comp_asin, s.competitor_name, s.comp_price,
+                   s.comp_bsr, s.comp_bsr_delta_24h, s.comp_stock, s.price_diff_pct, s.updated_at{extra}
+            FROM bsr_radar.snapshots s
+            JOIN bsr_radar.competitor_pairs p
+              ON p.our_asin = s.our_asin AND p.comp_asin = s.comp_asin
+             AND p.marketplace = s.marketplace AND p.active
+            ORDER BY s.marketplace, s.our_asin, s.comp_asin, s.snapshot_date DESC
+            """,
+            conn,
+        )
+        return _with_missing_optional_columns(data, present)
     finally:
         conn.close()
 
@@ -425,13 +439,19 @@ _COLUMN_LABELS = {
     "competitor_name": "Конкурент", "comp_asin": "ASIN конкурента", "comp_bsr": "BSR конкурента",
     "comp_price": "Цена конкурента", "comp_bsr_delta_24h": "Δ BSR конкурента",
     "price_diff_pct": "Разница цен, %", "comp_stock": "Наличие",
+    "our_rating": "Рейтинг наш", "our_reviews_count": "Отзывов наш",
+    "comp_rating": "Рейтинг конкурента", "comp_reviews_count": "Отзывов конкурента",
 }
 _IMAGE_URL_LABELS = {"our_image_url": "Фото наш (ссылка)", "comp_image_url": "Фото конкурента (ссылка)"}
 # Числовые столбцы (могут быть NaN из базы). Их нельзя чистить через fillna("") вместе с текстовыми —
 # смесь float и "" в одном столбце валит сериализацию в Arrow (см. коммит с разбором). Вместо этого
 # приводим к строке целиком: пусто для NaN, аккуратный текст для числа.
 _NUMERIC_LABELS = ("Цена наша", "BSR наш", "Δ BSR наш", "Цена конкурента", "BSR конкурента",
-                   "Δ BSR конкурента", "Разница цен, %")
+                   "Δ BSR конкурента", "Разница цен, %",
+                   "Рейтинг наш", "Отзывов наш", "Рейтинг конкурента", "Отзывов конкурента")
+# Рейтинг показываем с одной цифрой после запятой; отсутствие данных остаётся пустым,
+# а ноль отзывов — нулём: это разные вещи (см. migrations/009).
+_RATING_LABELS = ("Рейтинг наш", "Рейтинг конкурента")
 
 
 # Столбцы, где знак и есть смысл: «кто дешевле» и «BSR стал лучше или хуже». Без явного «+»
@@ -452,6 +472,13 @@ def _format_signed_or_blank(value: object) -> str:
     if not text or not pd.api.types.is_number(value) or pd.isna(value):
         return text
     return f"+{text}" if float(value) > 0 else text  # минус и ноль рисуются сами
+
+
+def _format_rating_or_blank(value: object) -> str:
+    """Рейтинг — одна цифра после запятой. Пусто остаётся пустым: «нет данных» не ноль."""
+    if pd.isna(value) or not pd.api.types.is_number(value):
+        return "" if pd.isna(value) else str(value)
+    return f"{float(value):.1f}"
 
 
 def _format_kyiv_time(value: object) -> str:
@@ -493,7 +520,12 @@ def _present_table(data: pd.DataFrame, *, with_images: bool = False) -> tuple[pd
     # строку отдельно (см. _NUMERIC_LABELS), остальные (текстовые, уже без чисел) — просто fillna.
     for label in _NUMERIC_LABELS:
         if label in result.columns:
-            formatter = _format_signed_or_blank if label in _SIGNED_LABELS else _format_number_or_blank
+            if label in _SIGNED_LABELS:
+                formatter = _format_signed_or_blank
+            elif label in _RATING_LABELS:
+                formatter = _format_rating_or_blank
+            else:
+                formatter = _format_number_or_blank
             result[label] = result[label].map(formatter)
     if "Обновлено" in result.columns:
         # Всё остальное в дашборде — по Киеву; столбец из базы приходил как UTC со смещением.

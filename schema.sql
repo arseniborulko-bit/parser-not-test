@@ -33,7 +33,19 @@ CREATE TABLE IF NOT EXISTS bsr_radar.snapshots (
     price_diff_pct NUMERIC,
     our_image_url TEXT,
     comp_image_url TEXT,
+    -- Рейтинг и число отзывов приходят в том же ответе провайдера, что BSR и цена.
+    -- NULL = данных нет; 0 отзывов — настоящий ноль, это разные вещи (см. migrations/009).
+    our_rating NUMERIC(2, 1),
+    our_reviews_count INTEGER,
+    comp_rating NUMERIC(2, 1),
+    comp_reviews_count INTEGER,
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CONSTRAINT snapshots_rating_range_check CHECK (
+        (our_rating IS NULL OR (our_rating >= 0 AND our_rating <= 5))
+        AND (comp_rating IS NULL OR (comp_rating >= 0 AND comp_rating <= 5))
+        AND (our_reviews_count IS NULL OR our_reviews_count >= 0)
+        AND (comp_reviews_count IS NULL OR comp_reviews_count >= 0)
+    ),
     -- Страна обязана быть в ключе: одна и та же пара ASIN может отслеживаться на нескольких
     -- рынках, и без страны такие строки затирали бы друг друга (см. migrations/006).
     CONSTRAINT snapshots_day_market_pair_key UNIQUE (snapshot_date, marketplace, our_asin, comp_asin)

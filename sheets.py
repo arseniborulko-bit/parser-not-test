@@ -514,6 +514,7 @@ def _refresh_current_sheet_from_matrix(
             "comp_bsr", "comp_price", "price_diff_pct",
             "comp_bsr_delta_24h", "comp_stock", "updated_at",
             "our_image_url", "comp_image_url",
+            "our_rating", "our_reviews_count", "comp_rating", "comp_reviews_count",
         ):
             if field in columns:
                 row[columns[field]] = ""
@@ -533,12 +534,20 @@ def _refresh_current_sheet_from_matrix(
                 )
             if "our_image_url" in columns:
                 row[columns["our_image_url"]] = our_product.get("image_url") or ""
+            # Рейтинг и число отзывов приходят в том же ответе провайдера, что BSR и цена.
+            # "Not Found" от парсера — это отсутствие данных, а не ноль: пишем пусто.
+            if "our_rating" in columns:
+                row[columns["our_rating"]] = _metric_or_blank(our_product.get("stars"))
+            if "our_reviews_count" in columns:
+                row[columns["our_reviews_count"]] = _metric_or_blank(our_product.get("reviews"))
         elif our_asin in failed_asins_set and our_asin:
             for field in (
                 "our_product",
                 "our_bsr",
                 "our_price",
                 "our_bsr_delta_24h",
+                "our_rating",
+                "our_reviews_count",
             ):
                 if field in columns:
                     row[columns[field]] = "@"
@@ -546,7 +555,8 @@ def _refresh_current_sheet_from_matrix(
             # Нашу сторону в этом запуске не проверяли вовсе (не в products_by_asin и не
             # среди неудачных) — например, частичный сбор только по конкурентам/по рынку.
             # Сохраняем последнее известное состояние, а не затираем его пустыми значениями.
-            for field in ("our_product", "our_bsr", "our_price", "our_bsr_delta_24h", "our_image_url"):
+            for field in ("our_product", "our_bsr", "our_price", "our_bsr_delta_24h", "our_image_url",
+                          "our_rating", "our_reviews_count"):
                 if field in columns and previous_pair_values.get(field):
                     row[columns[field]] = previous_pair_values[field]
 
@@ -567,6 +577,10 @@ def _refresh_current_sheet_from_matrix(
                 )
             if "comp_image_url" in columns:
                 row[columns["comp_image_url"]] = comp_product.get("image_url") or ""
+            if "comp_rating" in columns:
+                row[columns["comp_rating"]] = _metric_or_blank(comp_product.get("stars"))
+            if "comp_reviews_count" in columns:
+                row[columns["comp_reviews_count"]] = _metric_or_blank(comp_product.get("reviews"))
         elif comp_asin in failed_asins_set and comp_asin:
             for field in (
                 "competitor",
@@ -575,6 +589,8 @@ def _refresh_current_sheet_from_matrix(
                 "price_diff_pct",
                 "comp_bsr_delta_24h",
                 "comp_stock",
+                "comp_rating",
+                "comp_reviews_count",
             ):
                 if field in columns:
                     row[columns[field]] = "@"
@@ -583,7 +599,8 @@ def _refresh_current_sheet_from_matrix(
                 row[columns["updated_at"]] = ""
         elif comp_asin and previous_pair_values:
             # Сторону конкурента в этом запуске не проверяли — сохраняем последнее известное состояние.
-            for field in ("competitor", "comp_bsr", "comp_price", "comp_bsr_delta_24h", "comp_stock", "comp_image_url"):
+            for field in ("competitor", "comp_bsr", "comp_price", "comp_bsr_delta_24h", "comp_stock",
+                          "comp_image_url", "comp_rating", "comp_reviews_count"):
                 if field in columns and previous_pair_values.get(field):
                     row[columns[field]] = previous_pair_values[field]
 
@@ -798,9 +815,23 @@ def mark_failed_asins_in_competitors(
             logger.warning(f"Ошибка применения формата к листу Competitors: {exc}")
 
 
+def _metric_or_blank(value: object) -> object:
+    """Рейтинг и число отзывов: отсутствие данных — пусто, а не ноль.
+
+    Парсер кладёт "Not Found", когда показателя на карточке не нашлось; ноль отзывов при этом
+    настоящий ноль и должен сохраниться как 0. Спутать их нельзя: пустая ячейка означает «нет
+    данных», а 0 — «отзывов нет».
+    """
+    if value in (None, "", "Not Found"):
+        return ""
+    return value
+
+
 _PRESERVABLE_FIELDS = (
     "our_product", "our_bsr", "our_price", "our_bsr_delta_24h", "our_image_url",
+    "our_rating", "our_reviews_count",
     "competitor", "comp_bsr", "comp_price", "comp_bsr_delta_24h", "comp_stock", "comp_image_url",
+    "comp_rating", "comp_reviews_count",
 )
 
 
