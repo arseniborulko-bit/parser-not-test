@@ -292,6 +292,21 @@ def _add_asins_callback(connect, market: str, text: str, kind: str, actor: str, 
     st.session_state["pairs_flash"] = ("success", "ASIN: " + (", ".join(parts) or "без изменений"))
 
 
+def _save_registry_callback(connect, changes, actor: str, role: str) -> None:
+    """Сохраняет правки названий и исходных ссылок за одно нажатие."""
+    saved = 0
+    try:
+        for key, name, source_url in changes:
+            saved += asins_store.rename(connect, key, name, actor_role=role, actor=actor,
+                                        source_url=source_url)
+    except (*_ERRORS, asins_store.AsinStoreError) as exc:
+        st.session_state["pairs_flash"] = (
+            "error", f"Сохранено строк: {saved}, дальше ошибка — {exc}" if saved else str(exc),
+        )
+        return
+    st.session_state["pairs_flash"] = ("success", f"Сохранено строк: {saved}.")
+
+
 def _drop_asins_callback(connect, keys, actor: str, role: str) -> None:
     try:
         count = asins_store.set_active(connect, keys, False, actor_role=role, actor=actor)
@@ -343,9 +358,14 @@ def _render_registry_from_store(connect, actor: str, role: str) -> bool:
         return True
     shown = shown.head(MAX_EDIT_ROWS).reset_index(drop=True)
 
+    # Исходная ссылка, как её вписали: собранная из ASIN теряет параметры и вариант товара.
+    # Если ссылки нет, показываем собранную — чтобы товар всё равно открывался.
+    sources = [url or _asin_url(a, m)
+               for url, a, m in zip(shown["source_url"], shown["asin"], shown["marketplace"])]
     table = pd.DataFrame({
         "Страна": shown["marketplace"],
-        "ASIN": [_asin_url(a, m) for a, m in zip(shown["asin"], shown["marketplace"])],
+        "ASIN": shown["asin"],
+        "Ссылка": sources,
         "Название": shown["name"],
         "Роль": [asins_store.KIND_LABELS.get(kind, kind) for kind in shown["kind"]],
         "В работе": shown["active"],
@@ -353,17 +373,39 @@ def _render_registry_from_store(connect, actor: str, role: str) -> bool:
     })
     edited = st.data_editor(
         table, key="asin_registry_grid", hide_index=True, use_container_width=True, height=400,
-        disabled=["Страна", "ASIN", "Название", "Роль", "В работе"],
+        disabled=["Страна", "ASIN", "Роль", "В работе"],
         column_config={
-            "ASIN": st.column_config.LinkColumn("ASIN", display_text=_ASIN_LINK_TEXT, width="small"),
+            "Ссылка": st.column_config.LinkColumn("Ссылка", display_text="открыть", width="small"),
+            "Название": st.column_config.TextColumn("Название", max_chars=pairs_store.MAX_NAME),
             "В работе": st.column_config.CheckboxColumn("В работе"),
             "Убрать": st.column_config.CheckboxColumn("Убрать"),
         },
     )
+
+    changes = []
+    for position in range(len(shown)):
+        name_now = str(edited["Название"].iloc[position] or "")
+        url_now = str(edited["Ссылка"].iloc[position] or "")
+        was_url = str(shown["source_url"].iloc[position] or "")
+        # Подставленную из ASIN ссылку за правку не считаем: пользователь её не трогал.
+        url_changed = url_now != (was_url or sources[position])
+        if name_now != str(shown["name"].iloc[position] or "") or url_changed:
+            changes.append((
+                (shown["marketplace"].iloc[position], shown["asin"].iloc[position]),
+                name_now,
+                url_now if url_changed else None,
+            ))
+
+    buttons = st.columns(2)
     marked = edited[edited["Убрать"]]
     keys = [(shown["marketplace"].iloc[i], shown["asin"].iloc[i]) for i in marked.index]
-    st.button(f"Убрать отмеченные ({len(keys)})", key="asin_registry_drop", disabled=not keys,
-              on_click=_drop_asins_callback, args=(connect, keys, actor, role))
+    with buttons[0]:
+        st.button(f"Сохранить изменения ({len(changes)})", key="asin_registry_save",
+                  disabled=not changes, on_click=_save_registry_callback,
+                  args=(connect, changes, actor, role))
+    with buttons[1]:
+        st.button(f"Убрать отмеченные ({len(keys)})", key="asin_registry_drop", disabled=not keys,
+                  on_click=_drop_asins_callback, args=(connect, keys, actor, role))
     if len(_matches(registry, query)) > MAX_EDIT_ROWS:
         st.caption(f"Показаны первые {MAX_EDIT_ROWS}: уточните поиск.")
     return True
