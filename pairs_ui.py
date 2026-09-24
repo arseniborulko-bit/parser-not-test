@@ -7,10 +7,16 @@ import streamlit as st
 
 import access
 import pairs_store
+from pairs_store import DOMAIN_BY_MARKET
 from schedule_store import TZ
 
 _ACTION_LABELS = {"add": "добавлена", "enable": "возвращена", "disable": "отключена"}
 # Иначе таблица пар — единственное место в дашборде с английскими заголовками из базы.
+_ASIN_LINK_TEXT = r"https://www\.amazon\.[^/]+/dp/([A-Z0-9]{10})"
+_LINK_COLUMNS = {
+    "our_asin": st.column_config.LinkColumn("Наш ASIN", display_text=_ASIN_LINK_TEXT, width="small"),
+    "comp_asin": st.column_config.LinkColumn("ASIN конкурента", display_text=_ASIN_LINK_TEXT, width="small"),
+}
 _PAIR_COLUMNS = {
     "marketplace": "Страна", "our_asin": "Наш ASIN", "our_product": "Наш товар",
     "comp_asin": "ASIN конкурента", "competitor_name": "Конкурент", "active": "Активна",
@@ -130,6 +136,66 @@ def _render_add(connect, actor: str, role: str, max_active: int) -> None:
     )
 
 
+def _asin_url(asin: object, marketplace: object) -> str:
+    domain = DOMAIN_BY_MARKET.get(str(marketplace).strip().upper(), "com")
+    asin = str(asin or "").strip()
+    return f"https://www.amazon.{domain}/dp/{asin}" if asin else ""
+
+
+def _with_links(frame: pd.DataFrame) -> pd.DataFrame:
+    """Те же ASIN, но кликабельные: карточку товара видно, не копируя ASIN руками."""
+    result = frame.copy()
+    for column in ("our_asin", "comp_asin"):
+        if column in result:
+            result[column] = [_asin_url(asin, market)
+                              for asin, market in zip(result[column], result.get("marketplace", ""))]
+    return result
+
+
+def _edit_callback(connect, key, our_product: str, competitor_name: str, actor: str, role: str) -> None:
+    try:
+        changed = pairs_store.edit_pair_names(
+            connect, key, our_product, competitor_name, actor_role=role, actor=actor,
+        )
+    except _ERRORS as exc:
+        st.session_state["pairs_flash"] = ("error", str(exc))
+        return
+    st.session_state["pairs_flash"] = (
+        ("success", "Названия обновлены.") if changed else ("info", "Названия и так такие — менять нечего.")
+    )
+
+
+def _render_edit(connect, pairs: pd.DataFrame, actor: str, role: str) -> None:
+    """Правка уже заведённой пары. Меняются только подписи: ключ пары (рынок и оба ASIN) —
+    это ключ снимков, и его смена означала бы другую пару, без прежней истории."""
+    if pairs.empty:
+        st.info("Пар пока нет.")
+        return
+    options = list(pairs.itertuples())
+    picked = st.selectbox(
+        "Пара", range(len(options)), key="pairs_edit_pick",
+        format_func=lambda i: (
+            f"{options[i].marketplace} · {options[i].our_asin} ↔ {options[i].comp_asin}"
+            f"{'' if options[i].active else ' (отключена)'}"
+        ),
+    )
+    row = options[picked]
+    key = (row.marketplace, row.our_asin, row.comp_asin)
+
+    links = st.columns(2)
+    links[0].markdown(f"[Наш товар на Amazon]({_asin_url(row.our_asin, row.marketplace)})")
+    links[1].markdown(f"[Конкурент на Amazon]({_asin_url(row.comp_asin, row.marketplace)})")
+
+    our_product = st.text_input("Наш товар", value=str(getattr(row, "our_product", "") or ""),
+                                max_chars=pairs_store.MAX_NAME, key=f"pairs_edit_our_{picked}")
+    competitor_name = st.text_input("Конкурент", value=str(getattr(row, "competitor_name", "") or ""),
+                                    max_chars=pairs_store.MAX_NAME, key=f"pairs_edit_comp_{picked}")
+    st.button(
+        "Сохранить названия", key="pairs_edit_btn",
+        on_click=_edit_callback, args=(connect, key, our_product, competitor_name, actor, role),
+    )
+
+
 def _render_remove(connect, pairs: pd.DataFrame, actor: str, role: str) -> None:
     active = pairs[pairs["active"]]
     if active.empty:
@@ -234,8 +300,8 @@ def render_pairs_tab(connect, pairs: pd.DataFrame, actor: str | None, role: str 
         # Пустой st.dataframe рисует английское "empty" — для владельца это выглядит как сбой.
         st.info("Ничего не найдено: попробуйте изменить поиск или переключить «Показать».")
     else:
-        st.dataframe(found, use_container_width=True, hide_index=True, height=350,
-                     column_config=_PAIR_COLUMNS)
+        st.dataframe(_with_links(found), use_container_width=True, hide_index=True, height=350,
+                     column_config=_PAIR_COLUMNS | _LINK_COLUMNS)
 
     if not access.has_role(role, access.ROLE_EDITOR):
         st.caption("Чтобы добавлять и убирать пары, откройте «🔒 Управление» вверху страницы.")
@@ -243,6 +309,8 @@ def render_pairs_tab(connect, pairs: pd.DataFrame, actor: str | None, role: str 
     st.caption("Изменения попадают в следующий сбор. Лист Competitors в Google Таблице парсер больше не читает.")
     with st.expander("➕ Добавить конкурентов", expanded=True):
         _render_add(connect, actor or "?", role, max_active)
+    with st.expander("✏️ Исправить названия"):
+        _render_edit(connect, pairs, actor or "?", role)
     with st.expander("🗑 Убрать пары"):
         _render_remove(connect, pairs, actor or "?", role)
     with st.expander("↩ Вернуть отключённые"):

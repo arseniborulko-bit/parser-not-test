@@ -58,7 +58,7 @@ NEW_SCHEMA = (PROJECT / "schema.sql").read_text(encoding="utf-8")
 MIGRATIONS = {n: (PROJECT / "migrations" / n).read_text(encoding="utf-8")
               for n in ("001_collection_admission.sql", "002_dashboard_users.sql", "003_pair_changes.sql",
                         "004_snapshot_images.sql", "005_run_scope.sql",
-                        "006_snapshot_marketplace_key.sql")}
+                        "006_snapshot_marketplace_key.sql", "007_pair_changes_edit.sql")}
 
 
 def check(name: str, condition: object, extra: str = "") -> None:
@@ -564,6 +564,67 @@ def section_admission() -> None:
     check("за все проверки gate создана ровно одна запись", count() == 1)
 
 
+def section_pair_editing() -> None:
+    """Правка названий уже заведённой пары (миграция 007 разрешает действие 'edit' в журнале)."""
+    print("\n== правка названий пары ==")
+    reset()
+    q("""
+        INSERT INTO bsr_radar.competitor_pairs (marketplace, our_asin, our_product, comp_asin, competitor_name, active)
+        VALUES ('US', 'B0OURASIN1', 'Старое наше', 'B0COMPAAA1', 'Старый конкурент', TRUE);
+    """)
+    key = ("US", "B0OURASIN1", "B0COMPAAA1")
+
+    changed = pairs_store.edit_pair_names(connect, key, "Новое наше", "Новый конкурент",
+                                          actor_role=access.ROLE_EDITOR, actor="Проверка")
+    names = q("SELECT our_product, competitor_name FROM bsr_radar.competitor_pairs;")[0]
+    check("правка меняет обе подписи", changed == 1 and names == ("Новое наше", "Новый конкурент"), str(names))
+
+    again = pairs_store.edit_pair_names(connect, key, "Новое наше", "Новый конкурент",
+                                        actor_role=access.ROLE_EDITOR, actor="Проверка")
+    check("повторная правка теми же значениями ничего не меняет", again == 0)
+
+    actions = q("SELECT action, actor FROM bsr_radar.pair_changes ORDER BY id;")
+    check("в журнал попала ровно одна запись 'edit'",
+          actions == [("edit", "Проверка")], str(actions))
+
+    key_after = q("SELECT marketplace, our_asin, comp_asin, active FROM bsr_radar.competitor_pairs;")[0]
+    check("ключ пары и признак активности не тронуты", key_after == ("US", "B0OURASIN1", "B0COMPAAA1", True))
+
+    try:
+        pairs_store.edit_pair_names(connect, key, "Х", "Х", actor_role=None, actor="Чужой")
+        check("зритель не может править", False)
+    except access.AccessDenied:
+        check("зритель не может править", q("SELECT our_product FROM bsr_radar.competitor_pairs;")[0][0] == "Новое наше")
+
+    # Миграция 007 на «старом» журнале: без неё действие 'edit' нарушило бы ограничение.
+    # Записи 'edit' сначала убираем — иначе старое ограничение просто не создастся.
+    q("DELETE FROM bsr_radar.pair_changes WHERE action = 'edit';")
+    q("ALTER TABLE bsr_radar.pair_changes DROP CONSTRAINT IF EXISTS pair_changes_action_check;")
+    q("ALTER TABLE bsr_radar.pair_changes ADD CONSTRAINT pair_changes_action_check "
+      "CHECK (action IN ('add', 'enable', 'disable'));")
+    try:
+        pairs_store.edit_pair_names(connect, key, "До миграции", "До миграции",
+                                    actor_role=access.ROLE_EDITOR, actor="Проверка")
+        check("на старом журнале правка отклоняется, а не пишется мимо ограничения", False)
+    except Exception:  # noqa: BLE001
+        check("на старом журнале правка отклоняется, а не пишется мимо ограничения",
+              q("SELECT our_product FROM bsr_radar.competitor_pairs;")[0][0] == "Новое наше")
+
+    q(MIGRATIONS["007_pair_changes_edit.sql"])
+    q(MIGRATIONS["007_pair_changes_edit.sql"])
+    after = pairs_store.edit_pair_names(connect, key, "После миграции", "После миграции",
+                                        actor_role=access.ROLE_EDITOR, actor="Проверка")
+    check("после миграции 007 правка проходит (повтор миграции безопасен)",
+          after == 1 and q("SELECT our_product FROM bsr_radar.competitor_pairs;")[0][0] == "После миграции")
+
+    # Журнала может не быть вовсе: на боевой базе миграция 003 не применялась.
+    q("DROP TABLE bsr_radar.pair_changes;")
+    without = pairs_store.edit_pair_names(connect, key, "Без журнала", "Без журнала",
+                                          actor_role=access.ROLE_EDITOR, actor="Проверка")
+    check("без журнала правка всё равно применяется",
+          without == 1 and q("SELECT our_product FROM bsr_radar.competitor_pairs;")[0][0] == "Без журнала")
+
+
 def section_snapshot_marketplace_key() -> None:
     """Миграция 006: страна в ключе снимков. На боевой базе 25 пар ASIN отслеживаются сразу
     на нескольких рынках и до этой миграции схлопывались в одну строку за день."""
@@ -629,6 +690,7 @@ try:
     section_run_control()
     section_admission()
     section_snapshot_marketplace_key()
+    section_pair_editing()
 finally:
     failed = [name for name, ok in checks if not ok]
     print(f"\nитого: {len(checks) - len(failed)} из {len(checks)} проверок прошли")

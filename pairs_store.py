@@ -308,6 +308,59 @@ def set_pairs_active(connect: Connect, keys: Sequence[Tuple[str, str, str]], act
     return len(rows)
 
 
+_EDIT_SQL = """
+WITH changed AS (
+    UPDATE bsr_radar.competitor_pairs AS p
+    SET our_product = %s, competitor_name = %s
+    WHERE p.marketplace = %s AND p.our_asin = %s AND p.comp_asin = %s
+      AND (p.our_product IS DISTINCT FROM %s OR p.competitor_name IS DISTINCT FROM %s)
+    RETURNING p.marketplace, p.our_asin, p.comp_asin
+)
+INSERT INTO bsr_radar.pair_changes (actor, action, marketplace, our_asin, comp_asin)
+SELECT %s, 'edit', marketplace, our_asin, comp_asin FROM changed
+RETURNING 1;
+"""
+
+_EDIT_NO_JOURNAL_SQL = """
+UPDATE bsr_radar.competitor_pairs AS p
+SET our_product = %s, competitor_name = %s
+WHERE p.marketplace = %s AND p.our_asin = %s AND p.comp_asin = %s
+  AND (p.our_product IS DISTINCT FROM %s OR p.competitor_name IS DISTINCT FROM %s)
+RETURNING 1;
+"""
+
+MAX_NAME = 200
+
+
+def edit_pair_names(connect: Connect, key: Tuple[str, str, str], our_product: object,
+                    competitor_name: object, *, actor_role: Optional[str], actor: str) -> int:
+    """Меняет названия товара и конкурента у уже заведённой пары.
+
+    Ключ пары (рынок, наш ASIN, ASIN конкурента) НЕ меняется: он же является ключом снимков,
+    и смена любой его части — это другая пара, у которой не будет прежней истории. Поэтому
+    здесь правятся только подписи; сменить сам ASIN можно, отключив пару и заведя новую.
+    """
+    access.require_role(actor_role, access.ROLE_EDITOR)
+    market, our, comp = (str(part or "").strip() for part in key)
+    if market not in DOMAIN_BY_MARKET or not _ASIN_RE.fullmatch(our) or not _ASIN_RE.fullmatch(comp):
+        raise ValueError("Некорректный ключ пары.")
+    names = []
+    for value in (our_product, competitor_name):
+        text = " ".join(str(value or "").split())
+        if len(text) > MAX_NAME:
+            raise ValueError(f"Название длиннее {MAX_NAME} символов.")
+        names.append(text)
+    our_name, comp_name = names
+    params = (our_name, comp_name, market, our, comp, our_name, comp_name)
+    if journal_exists(connect):
+        rows = _run(connect, _EDIT_SQL, (*params, actor), fetch=True)
+    else:
+        log.warning("Журнал пар не подключён (нет таблицы pair_changes): правка (%s) применена без записи в журнал", actor)
+        rows = _run(connect, _EDIT_NO_JOURNAL_SQL, params, fetch=True)
+    log.info("Пары (%s): правка названий, затронуто %d; %s %s/%s", actor, len(rows), market, our, comp)
+    return len(rows)
+
+
 def recent_changes(connect: Connect, limit: int = 30) -> List[dict]:
     rows = _run(
         connect,

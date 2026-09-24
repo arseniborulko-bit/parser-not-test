@@ -91,7 +91,15 @@ def test_search_filters_the_pairs_table(pairs_env):
     at = run()
     at.text_input(key="pairs_search").input("competitor 1")
     at.run(timeout=30)
-    assert list(pairs_table(at)["comp_asin"]) == ["B0COMP0001"]
+    # В таблице теперь ссылки на Amazon, поэтому сверяем ASIN внутри адреса, а не саму ячейку.
+    assert list(pairs_table(at)["comp_asin"]) == ["https://www.amazon.com/dp/B0COMP0001"]
+
+
+def test_the_pairs_table_links_to_amazon(pairs_env):
+    """Список ASIN должен открывать карточку товара, а не заставлять копировать ASIN руками."""
+    table = pairs_table(run())
+    assert all(str(value).startswith("https://www.amazon.") for value in table["our_asin"])
+    assert all("/dp/" in str(value) for value in table["comp_asin"])
 
 
 def test_management_sections_appear_after_unlock(pairs_env):
