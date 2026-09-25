@@ -140,11 +140,12 @@ def test_no_pairs_means_no_toggle_pick(monkeypatch):
 
 
 def test_the_single_toggle_button_sits_in_the_same_row_as_the_bulk_buttons():
-    """Три кнопки — одна выбранная пара и обе массовые — в одном st.columns(3), не в двух рядах."""
+    """Три кнопки — одна выбранная пара и обе массовые — в одном ряду, прижаты вправо и друг
+    к другу пустой колонкой слева и gap="small" (владелец, 25.09.2026)."""
     import inspect
 
     source = inspect.getsource(pairs_ui._render_pairs_grid)
-    assert "st.columns(3)" in source
+    assert 'gap="small"' in source
     assert "_render_single_pair_pick" in source
 
 

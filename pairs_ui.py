@@ -478,10 +478,12 @@ def _render_pairs_grid(connect, pairs: pd.DataFrame, actor: str, role: str, key_
 
     picked_pair = _render_single_pair_pick(shown, key_prefix)
 
-    bulk = st.columns(3)
+    # Пустая колонка слева отодвигает все три кнопки вправо, gap="small" держит их вплотную
+    # друг к другу (владелец, 25.09.2026: «переместить в право ... вплотную друг к другу»).
+    bulk = st.columns([4, 1.1, 2.1, 2.6], gap="small")
     active_keys = [(row.marketplace, row.our_asin, row.comp_asin) for row in shown.itertuples() if row.active]
     inactive_keys = [(row.marketplace, row.our_asin, row.comp_asin) for row in shown.itertuples() if not row.active]
-    with bulk[0]:
+    with bulk[1]:
         if picked_pair is not None:
             pick_market, pick_our_asin, pick_comp_asin, pick_active = picked_pair
             st.button(
@@ -489,13 +491,13 @@ def _render_pairs_grid(connect, pairs: pd.DataFrame, actor: str, role: str, key_
                 on_click=_toggle_callback,
                 args=(connect, [(pick_market, pick_our_asin, pick_comp_asin)], not pick_active, actor, role, key_prefix),
             )
-    with bulk[1]:
+    with bulk[2]:
         st.button(
             f"Включить все показанные ({len(inactive_keys)})", key=f"{key_prefix}_grid_enable_all",
             disabled=not inactive_keys,
             on_click=_toggle_callback, args=(connect, inactive_keys, True, actor, role, key_prefix),
         )
-    with bulk[2]:
+    with bulk[3]:
         st.button(
             f"Выключить все показанные ({len(active_keys)})", key=f"{key_prefix}_grid_disable_all",
             disabled=not active_keys,
