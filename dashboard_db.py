@@ -1102,14 +1102,23 @@ def _runs_table(runs: list[dict], show_errors: bool) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def _render_schedule_tab(actor: str | None, role: str | None) -> None:
+def _render_recent_runs(overview: schedule_store.Overview, can_edit: bool) -> None:
+    """Таблица последних запусков — в самом низу вкладки «Сбор и управление», после всего
+    остального: это журнал для проверки, а не то, что нужно видеть первым."""
+    if not overview.runs:
+        return
+    st.markdown('<p class="section-note">Последние запуски</p>', unsafe_allow_html=True)
+    st.dataframe(_runs_table(overview.runs, show_errors=can_edit), use_container_width=True, hide_index=True)
+
+
+def _render_schedule_tab(actor: str | None, role: str | None) -> schedule_store.Overview | None:
     _show_flash("schedule_flash")
     now = _now()
     try:
         overview = schedule_store.load_overview(_connect, now)
     except schedule_store.ScheduleStoreError as exc:
         st.error(str(exc))
-        return
+        return None
 
     schedule = overview.schedule
     if schedule is None:
@@ -1123,13 +1132,9 @@ def _render_schedule_tab(actor: str | None, role: str | None) -> None:
         st.warning("Сейчас идёт сбор данных.")
 
     can_edit = access.has_role(role, access.ROLE_EDITOR)
-    if overview.runs:
-        st.markdown('<p class="section-note">Последние запуски</p>', unsafe_allow_html=True)
-        st.dataframe(_runs_table(overview.runs, show_errors=can_edit), use_container_width=True, hide_index=True)
-
     if not can_edit:
         st.caption("Чтобы менять время, откройте «🔒 Управление» вверху страницы.")
-        return
+        return overview
 
     hour, minute = schedule_store.to_slot(schedule.hour, schedule.minute) if schedule else (9, 0)
     with st.form("schedule_form"):
@@ -1145,6 +1150,7 @@ def _render_schedule_tab(actor: str | None, role: str | None) -> None:
             text = f"Сохранено: автосбор включён, {chosen:%H:%M} (Киев)." if enabled else "Сохранено: автосбор выключен."
             _set_flash("schedule_flash", "success", text)
             st.rerun()
+    return overview
 
 
 def _render_auth_bar(user: dict, email: str | None, role: str | None) -> None:
@@ -1299,11 +1305,13 @@ def main() -> None:
                 _secret("GITHUB_DISPATCH_TOKEN"), _secret("GITHUB_REPO") or github_dispatch.DEFAULT_REPO, can_edit,
             )
             st.markdown('<p class="section-title">Автосбор</p>', unsafe_allow_html=True)
-            _render_schedule_tab(actor, manage_role)
+            overview = _render_schedule_tab(actor, manage_role)
         with right:
             collect_ui.render_spot_check(_secret("SCRAPINGDOG_TOKEN"), can_edit)
         _render_retired_block()
         collect_ui.render_refresh_button()
+        if overview is not None:
+            _render_recent_runs(overview, can_edit)
 
     with how_tab:
         _render_how_it_works()
