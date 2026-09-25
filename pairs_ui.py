@@ -427,27 +427,21 @@ def _pair_toggle_options(shown: pd.DataFrame) -> dict[str, tuple[str, str, str, 
     return options
 
 
-def _render_single_pair_toggle(connect, shown: pd.DataFrame, actor: str, role: str, key_prefix: str) -> None:
-    """Выбрать пару по ссылке ASIN конкурента и переключить одной кнопкой (владелец, 25.09.2026:
-    «мы выбираем ссылку асина ... и затем нажимаем кнопку»)."""
+def _render_single_pair_pick(shown: pd.DataFrame, key_prefix: str) -> tuple[str, str, str, bool] | None:
+    """Выбрать пару по ссылке ASIN конкурента — саму кнопку переключения рисует вызывающий код,
+    в одном ряду с массовыми кнопками (владелец, 25.09.2026: «сделай так чтобы они были возле
+    друг друга»)."""
     options = _pair_toggle_options(shown)
     if not options:
-        return
+        return None
     picked = st.selectbox("ASIN конкурента", list(options), key=f"{key_prefix}_grid_toggle_pick")
     market, our_asin, comp_asin, active = options[picked]
-    row = st.columns([3, 1])
-    with row[0]:
-        st.markdown(
-            f'<div class="section-note">Ссылка: '
-            f'<a href="{escape(_asin_url(comp_asin, market))}" target="_blank">{escape(comp_asin)}</a></div>',
-            unsafe_allow_html=True,
-        )
-    with row[1]:
-        st.button(
-            "Отключить" if active else "Включить", key=f"{key_prefix}_grid_toggle_btn",
-            on_click=_toggle_callback,
-            args=(connect, [(market, our_asin, comp_asin)], not active, actor, role, key_prefix),
-        )
+    st.markdown(
+        f'<div class="section-note">Ссылка: '
+        f'<a href="{escape(_asin_url(comp_asin, market))}" target="_blank">{escape(comp_asin)}</a></div>',
+        unsafe_allow_html=True,
+    )
+    return market, our_asin, comp_asin, active
 
 
 def _render_pairs_grid(connect, pairs: pd.DataFrame, actor: str, role: str, key_prefix: str = "pairs") -> None:
@@ -482,18 +476,26 @@ def _render_pairs_grid(connect, pairs: pd.DataFrame, actor: str, role: str, key_
     shown = shown.reset_index(drop=True)
     st.caption(f"Показано {len(shown)}.")
 
-    _render_single_pair_toggle(connect, shown, actor, role, key_prefix)
+    picked_pair = _render_single_pair_pick(shown, key_prefix)
 
-    bulk = st.columns(2)
+    bulk = st.columns(3)
     active_keys = [(row.marketplace, row.our_asin, row.comp_asin) for row in shown.itertuples() if row.active]
     inactive_keys = [(row.marketplace, row.our_asin, row.comp_asin) for row in shown.itertuples() if not row.active]
     with bulk[0]:
+        if picked_pair is not None:
+            pick_market, pick_our_asin, pick_comp_asin, pick_active = picked_pair
+            st.button(
+                "Отключить" if pick_active else "Включить", key=f"{key_prefix}_grid_toggle_btn",
+                on_click=_toggle_callback,
+                args=(connect, [(pick_market, pick_our_asin, pick_comp_asin)], not pick_active, actor, role, key_prefix),
+            )
+    with bulk[1]:
         st.button(
             f"Включить все показанные ({len(inactive_keys)})", key=f"{key_prefix}_grid_enable_all",
             disabled=not inactive_keys,
             on_click=_toggle_callback, args=(connect, inactive_keys, True, actor, role, key_prefix),
         )
-    with bulk[1]:
+    with bulk[2]:
         st.button(
             f"Выключить все показанные ({len(active_keys)})", key=f"{key_prefix}_grid_disable_all",
             disabled=not active_keys,

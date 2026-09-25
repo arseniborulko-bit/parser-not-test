@@ -110,62 +110,42 @@ def test_several_products_keep_both_asin_columns():
     assert "Наш ASIN" in config and "Наш товар" in config
 
 
-class FakeColumn:
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *args):
-        return False
-
-
 def test_pair_toggle_options_label_shows_market_competitor_and_status():
     options = pairs_ui._pair_toggle_options(PAIRS)
     assert options["US · B0COMPAAA1 — Конкурент (включена)"] == ("US", "B0OURASIN1", "B0COMPAAA1", True)
     assert options["UK · B0COMPBBB2 — Конкурент (выключена)"] == ("UK", "B0OURASIN2", "B0COMPBBB2", False)
 
 
-def test_single_toggle_button_flips_the_state_of_the_picked_pair(monkeypatch):
-    """Владелец: «выбираем ссылку асина ... и нажимаем кнопку» — одна пара, один клик, без
-    сетки и без набора «УБРАТЬ» (это не массовое действие)."""
+def test_single_pair_pick_returns_the_selected_pair_and_its_state(monkeypatch):
+    """Выбор — отдельно от кнопки: саму кнопку теперь рисует _render_pairs_grid, в одном ряду
+    с массовыми кнопками (владелец, 25.09.2026: «сделай так чтобы они были возле друг друга»)."""
     monkeypatch.setattr(pairs_ui.st, "selectbox", lambda label, options, key=None: options[0])
     monkeypatch.setattr(pairs_ui.st, "markdown", lambda *a, **k: None)
-    monkeypatch.setattr(pairs_ui.st, "columns", lambda spec: (FakeColumn(), FakeColumn()))
-    calls = []
-
-    def fake_button(label, key=None, on_click=None, args=()):
-        calls.append({"label": label, "args": args})
-        return False
-
-    monkeypatch.setattr(pairs_ui.st, "button", fake_button)
 
     active_only = PAIRS[PAIRS["active"]]
-    pairs_ui._render_single_pair_toggle(None, active_only, "Тест", "editor", "collect")
-
-    assert calls[0]["label"] == "Отключить"  # выбранная (первая) пара сейчас активна
-    assert calls[0]["args"] == (None, [("US", "B0OURASIN1", "B0COMPAAA1")], False, "Тест", "editor", "collect")
-
-
-def test_single_toggle_offers_to_re_enable_an_inactive_pair(monkeypatch):
-    monkeypatch.setattr(pairs_ui.st, "selectbox", lambda label, options, key=None: options[0])
-    monkeypatch.setattr(pairs_ui.st, "markdown", lambda *a, **k: None)
-    monkeypatch.setattr(pairs_ui.st, "columns", lambda spec: (FakeColumn(), FakeColumn()))
-    calls = []
-    monkeypatch.setattr(pairs_ui.st, "button",
-                        lambda label, key=None, on_click=None, args=(): calls.append((label, args)))
+    picked = pairs_ui._render_single_pair_pick(active_only, "collect")
+    assert picked == ("US", "B0OURASIN1", "B0COMPAAA1", True)
 
     inactive_only = PAIRS[~PAIRS["active"]]
-    pairs_ui._render_single_pair_toggle(None, inactive_only, "Тест", "editor", "collect")
-
-    label, args = calls[0]
-    assert label == "Включить"
-    assert args[2] is True  # active_now=True — включаем обратно
+    picked = pairs_ui._render_single_pair_pick(inactive_only, "collect")
+    assert picked == ("UK", "B0OURASIN2", "B0COMPBBB2", False)
 
 
-def test_no_pairs_means_no_toggle_control(monkeypatch):
+def test_no_pairs_means_no_toggle_pick(monkeypatch):
     calls = []
     monkeypatch.setattr(pairs_ui.st, "selectbox", lambda *a, **k: calls.append(1))
-    pairs_ui._render_single_pair_toggle(None, PAIRS.iloc[0:0], "Тест", "editor", "collect")
-    assert calls == []  # пустой список — контрол не рисуется вовсе
+    picked = pairs_ui._render_single_pair_pick(PAIRS.iloc[0:0], "collect")
+    assert picked is None
+    assert calls == []  # пустой список — селектор не рисуется вовсе
+
+
+def test_the_single_toggle_button_sits_in_the_same_row_as_the_bulk_buttons():
+    """Три кнопки — одна выбранная пара и обе массовые — в одном st.columns(3), не в двух рядах."""
+    import inspect
+
+    source = inspect.getsource(pairs_ui._render_pairs_grid)
+    assert "st.columns(3)" in source
+    assert "_render_single_pair_pick" in source
 
 
 def test_a_large_disable_batch_needs_no_typed_confirmation():
