@@ -194,21 +194,82 @@ def _active_asin_links_by_market(pairs: pd.DataFrame) -> dict[str, list[tuple[st
     return result
 
 
-def render_active_asin_links(pairs: pd.DataFrame) -> None:
-    """Плоский список ссылок на все ASIN, которые сейчас в работе, по маркетплейсам — без
-    таблицы и без правки, только чтобы быстро открыть карточку товара (владелец, 25.09.2026)."""
+def _links_text(items: list[tuple[str, str]]) -> str:
+    return "\n".join(url for _, url in items)
+
+
+def _resave_links_callback(connect, market: str, keys: list[tuple[str, str, str]], actor: str, role: str,
+                           key_prefix: str = "pairs") -> None:
+    """Строки, которых не стало в тексте, — это ASIN, которые владелец решил убрать из работы:
+    отключает все их пары в этой стране (мягко, active=False — как и везде в проекте)."""
+    try:
+        changed = pairs_store.set_pairs_active(connect, keys, False, actor_role=role, actor=actor)
+    except _ERRORS as exc:
+        _flash("error", str(exc), key_prefix)
+        return
+    st.cache_data.clear()
+    _flash("success", f"{market}: отключено пар — {changed}.", key_prefix)
+
+
+def _render_links_editor(connect, pairs: pd.DataFrame, market: str, items: list[tuple[str, str]],
+                         actor: str, role: str, key_prefix: str) -> None:
+    # Отдельный флеш-ключ (не голый key_prefix): render_pairs_management уже показывает свой флеш
+    # под тем же key_prefix выше на этой же вкладке — общий ключ означал бы, что сообщение об
+    # отключении пары через список ссылок показывалось бы в сетке пар, а не здесь, в экспандере.
+    flash_prefix = f"{key_prefix}_links"
+    text_key = f"{key_prefix}_links_{market}"
+    st.caption(f"{market} — {len(items)}: по одной ссылке в строке. Чтобы убрать ASIN из работы — "
+               "сотрите его строку и нажмите «Пересохранить список» (новые строки форма не добавляет, "
+               "для этого есть «Добавить пару»).")
+    edited_text = st.text_area(f"Ссылки — {market}", value=_links_text(items), key=text_key,
+                               height=220, label_visibility="collapsed")
+    remaining = {item.asin for item in pairs_store.parse_asin_batch(edited_text).items}
+    removed = {asin for asin, _ in items} - remaining
+
+    keys_to_disable: list[tuple[str, str, str]] = []
+    if removed:
+        subset = pairs[(pairs["marketplace"] == market) & pairs["active"]]
+        keys_to_disable = [
+            (row.marketplace, row.our_asin, row.comp_asin) for row in subset.itertuples()
+            if row.our_asin in removed or row.comp_asin in removed
+        ]
+
+    confirmed = True
+    if len(keys_to_disable) > _CONFIRM_ABOVE:
+        typed = st.text_input(
+            f"Отключится пар: {len(keys_to_disable)}. Введите УБРАТЬ для подтверждения",
+            key=f"{text_key}_confirm",
+        )
+        confirmed = typed.strip().upper() == "УБРАТЬ"
+    st.button(
+        f"Пересохранить список — {market} ({len(keys_to_disable)})", key=f"{text_key}_save",
+        disabled=not keys_to_disable or not confirmed,
+        on_click=_resave_links_callback, args=(connect, market, keys_to_disable, actor, role, flash_prefix),
+    )
+
+
+def render_active_asin_links(connect, pairs: pd.DataFrame, actor: str | None, role: str | None,
+                             can_edit: bool, key_prefix: str = "pairs") -> None:
+    """Ссылки на все ASIN, которые сейчас в работе, по маркетплейсам. У кого есть права редактора —
+    список правится текстом (стереть строку и «Пересохранить»); у остальных — только чтение
+    (владелец, 25.09.2026: сперва просто список ссылок, потом — «удалить, сотерев из текста»)."""
     by_market = _active_asin_links_by_market(pairs)
     total = sum(len(group) for group in by_market.values())
     if not by_market:
         st.info("Активных пар пока нет.")
         return
     with st.expander(f"🔗 Ссылки на все ASIN в работе ({total})"):
+        if can_edit:
+            _show_flash(f"{key_prefix}_links")
         for market, items in by_market.items():
-            links = " · ".join(f'<a href="{escape(url)}" target="_blank">{escape(asin)}</a>' for asin, url in items)
-            st.markdown(
-                f'<div class="section-note"><b>{escape(market)}</b> ({len(items)}): {links}</div>',
-                unsafe_allow_html=True,
-            )
+            if can_edit:
+                _render_links_editor(connect, pairs, market, items, actor or "?", role, key_prefix)
+            else:
+                links = " · ".join(f'<a href="{escape(url)}" target="_blank">{escape(asin)}</a>' for asin, url in items)
+                st.markdown(
+                    f'<div class="section-note"><b>{escape(market)}</b> ({len(items)}): {links}</div>',
+                    unsafe_allow_html=True,
+                )
 
 
 MAX_EDIT_ROWS = 200
