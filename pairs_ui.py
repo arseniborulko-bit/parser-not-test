@@ -428,6 +428,40 @@ def _pairs_grid_table(shown: pd.DataFrame, collapse_our_side: bool) -> tuple[pd.
     return table, ["Страна", "Наш ASIN", "ASIN конкурента"], column_config
 
 
+def _pair_toggle_options(shown: pd.DataFrame) -> dict[str, tuple[str, str, str, bool]]:
+    """Подпись → (страна, наш ASIN, ASIN конкурента, активна сейчас) — для переключения одной
+    пары одним кликом, без сетки и без набора «УБРАТЬ» (это не массовое действие)."""
+    options: dict[str, tuple[str, str, str, bool]] = {}
+    for row in shown.itertuples():
+        status = "включена" if row.active else "выключена"
+        label = f"{row.marketplace} · {row.comp_asin} — {row.competitor_name or row.comp_asin} ({status})"
+        options[label] = (row.marketplace, row.our_asin, row.comp_asin, bool(row.active))
+    return options
+
+
+def _render_single_pair_toggle(connect, shown: pd.DataFrame, actor: str, role: str, key_prefix: str) -> None:
+    """Выбрать пару по ссылке ASIN конкурента и переключить одной кнопкой (владелец, 25.09.2026:
+    «мы выбираем ссылку асина ... и затем нажимаем кнопку»)."""
+    options = _pair_toggle_options(shown)
+    if not options:
+        return
+    picked = st.selectbox("ASIN конкурента", list(options), key=f"{key_prefix}_grid_toggle_pick")
+    market, our_asin, comp_asin, active = options[picked]
+    row = st.columns([3, 1])
+    with row[0]:
+        st.markdown(
+            f'<div class="section-note">Ссылка: '
+            f'<a href="{escape(_asin_url(comp_asin, market))}" target="_blank">{escape(comp_asin)}</a></div>',
+            unsafe_allow_html=True,
+        )
+    with row[1]:
+        st.button(
+            "Отключить" if active else "Включить", key=f"{key_prefix}_grid_toggle_btn",
+            on_click=_toggle_callback,
+            args=(connect, [(market, our_asin, comp_asin)], not active, actor, role, key_prefix),
+        )
+
+
 def _render_pairs_grid(connect, pairs: pd.DataFrame, actor: str, role: str, key_prefix: str = "pairs") -> None:
     """Одна таблица на добавление, правку и отключение: страна, свой товар и поиск сверху,
     название и активность правятся прямо в сетке, сохранение — одной кнопкой на все изменённые
@@ -459,6 +493,8 @@ def _render_pairs_grid(connect, pairs: pd.DataFrame, actor: str, role: str, key_
         return
     shown = shown.reset_index(drop=True)
     st.caption(f"Показано {len(shown)}.")
+
+    _render_single_pair_toggle(connect, shown, actor, role, key_prefix)
 
     bulk = st.columns(2)
     active_keys = [(row.marketplace, row.our_asin, row.comp_asin) for row in shown.itertuples() if row.active]
