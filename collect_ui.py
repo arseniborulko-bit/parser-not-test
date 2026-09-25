@@ -69,30 +69,22 @@ def _scope_status(preview: Callable[[str], Optional[str]], token: str, can_edit:
 
 def _scope_button(connect, token: str, repo: str, can_edit: bool, cooling: bool, scope: str, label: str, key: str,
                   reason: Optional[str], error: Optional[str], *, primary: bool = False) -> None:
+    # Решение владельца 25.09.2026: одна кнопка, а не отдельная вторая «Собрать ещё раз» рядом.
+    # Если обычный допуск закрыт причиной политики (не ошибкой, не отсутствием токена/прав, не
+    # кулдауном) — та же кнопка остаётся активной и при нажатии сама пробует со force=True.
+    # Незавершённый сбор и «время ещё не наступило» force всё равно не снимает — тогда живой
+    # admission_preview при нажатии честно откажет, а не соврёт, что сработало.
+    blocked_by_infra = not can_edit or not token or cooling or error is not None
+    force = reason is not None and not blocked_by_infra
     st.button(
         label, key=key, use_container_width=True, type="primary" if primary else "secondary",
-        disabled=not can_edit or not token or cooling or reason is not None or error is not None,
-        on_click=_run_callback, args=(connect, token, repo, can_edit, scope),
+        disabled=blocked_by_infra,
+        on_click=_run_callback, args=(connect, token, repo, can_edit, scope, force),
     )
     if error:
         # Настоящая ошибка (например, база недоступна) — это не пояснение к политике блокировки,
-        # а диагностика проблемы; такие сообщения владелец просил оставить, в отличие от «Сегодня
-        # уже был успешный сбор» и подобных причин, объясняющих обычную, штатную блокировку.
+        # а диагностика проблемы; такие сообщения владелец просил оставить.
         st.caption(f"⚠️ {error}")
-        return
-    if not reason:
-        return
-    if not (can_edit and token and not cooling):
-        return
-    # Решение владельца 25.09.2026: «уже был сбор сегодня» и дневной лимит попыток можно обойти
-    # вручную, без отдельного подтверждения — владелец явно попросил убрать чекбокс, потому что
-    # то, что это платный повторный сбор, и так понятно любому, кто жмёт эту кнопку.
-    # Незавершённый сбор и «время ещё не наступило» force не снимает — кнопка всё равно вызывает
-    # тот же живой admission_preview, поэтому в таком случае честно откажет, а не соврёт, что сработало.
-    st.button(
-        "Собрать ещё раз, несмотря на ограничение", key=f"{key}_force",
-        on_click=_run_callback, args=(connect, token, repo, can_edit, scope, True),
-    )
 
 
 def render_run_block(connect, pairs: pd.DataFrame, preview: Callable[[str], Optional[str]], token: str, repo: str,

@@ -72,11 +72,12 @@ def test_a_free_moment_enables_the_button(collect_env):
     assert not run_button(at).disabled
 
 
-def test_a_closed_gate_disables_the_button_without_explaining_why(monkeypatch, dash, collect_env):  # noqa: F811
-    """Владелец не хочет пояснительных подписей: кнопка просто неактивна, без текста причины."""
+def test_a_closed_gate_keeps_the_button_active_and_does_not_explain_why(monkeypatch, dash, collect_env):  # noqa: F811
+    """Владелец не хочет пояснительных подписей — и не хочет отдельной второй кнопки: та же
+    кнопка остаётся активной и при нажатии сама пробует со force=True (этап 10)."""
     monkeypatch.setattr(dash, "_admission_preview_cached", lambda scope="all": BLOCKED)
     at = run()
-    assert run_button(at).disabled
+    assert not run_button(at).disabled
     assert BLOCKED not in captions(at)
 
 
@@ -122,43 +123,47 @@ def test_the_partial_scope_buttons_show_their_own_counts_and_dispatch_their_own_
     assert collect_env["dispatches"] == [(GITHUB_TOKEN, DEFAULT_REPO, "ours", False)]
 
 
-def test_a_scope_blocked_today_does_not_disable_the_other_scopes(monkeypatch, dash, collect_env):  # noqa: F811
+def test_a_scope_blocked_today_stays_independent_of_the_other_scopes(monkeypatch, dash, collect_env):  # noqa: F811
+    """Каждая кнопка активна независимо; какую из них force-пробовать при клике — решается
+    отдельно для каждой области, по её собственной (закэшированной) причине блокировки."""
     monkeypatch.setattr(dash, "_admission_preview_cached", lambda scope="all": BLOCKED if scope == "all" else None)
+    collect_env["gate_by_scope"]["all"] = BLOCKED
+    collect_env["gate_by_scope"][("all", True)] = None
+    collect_env["gate_by_scope"]["ours"] = None
     at = run()
-    assert run_button(at).disabled
+    assert not run_button(at).disabled
     assert not run_button(at, "collect_run_ours").disabled
-    assert not run_button(at, "collect_run_competitors").disabled
+
+    run_button(at, "collect_run_ours").click()
+    at = at.run(timeout=30)
+    assert collect_env["dispatches"][-1] == (GITHUB_TOKEN, DEFAULT_REPO, "ours", False), (
+        "не заблокированная область не должна пробовать force"
+    )
 
 
-def test_no_force_override_appears_when_the_button_is_not_blocked(collect_env):
-    at = run()
-    assert not [b for b in at.button if b.key == "collect_run_force"]
-
-
-def test_the_force_override_appears_when_blocked_and_works_in_one_click(monkeypatch, dash, collect_env):  # noqa: F811
-    """Решение владельца 25.09.2026: «уже был сбор сегодня» можно обойти вручную, одним кликом —
-    без отдельного подтверждения, это платный повторный сбор и так понятно без объяснений."""
+def test_a_blocked_button_tries_force_in_one_click_no_separate_button(monkeypatch, dash, collect_env):  # noqa: F811
+    """Решение владельца 25.09.2026: «уже был сбор сегодня» обходится той же кнопкой, одним кликом —
+    без отдельной второй кнопки и без подтверждения, это платный повторный сбор и так понятно."""
     monkeypatch.setattr(dash, "_admission_preview_cached", lambda scope="all": BLOCKED if scope == "all" else None)
     collect_env["gate_by_scope"]["all"] = BLOCKED
     collect_env["gate_by_scope"][("all", True)] = None  # force снимает именно этот блок
     at = run()
-    assert run_button(at).disabled
+    assert not run_button(at).disabled
     assert BLOCKED not in captions(at), "владелец не хочет пояснительных подписей"
-    force_button = [b for b in at.button if b.key == "collect_run_force"][0]
-    assert not force_button.disabled
-    force_button.click()
+    run_button(at).click()
     at = at.run(timeout=30)
     assert collect_env["dispatches"] == [(GITHUB_TOKEN, DEFAULT_REPO, "all", True)]
     assert any("Повторный запуск отправлен в GitHub" in s.value for s in at.success)
 
 
-def test_the_force_button_does_the_real_check_live_not_the_stale_caption(monkeypatch, dash, collect_env):  # noqa: F811
-    """Подпись под кнопкой могла устареть за 20 секунд кэша; решение принимает живой вызов."""
+def test_a_blocked_button_does_the_real_check_live_not_the_stale_caption(monkeypatch, dash, collect_env):  # noqa: F811
+    """Подпись под кнопкой могла устареть за 20 секунд кэша; решение принимает живой вызов —
+    если force всё равно не снимает причину (например, гонку), кнопка честно откажет."""
     monkeypatch.setattr(dash, "_admission_preview_cached", lambda scope="all": BLOCKED if scope == "all" else None)
     collect_env["gate_by_scope"]["all"] = BLOCKED
     collect_env["gate_by_scope"][("all", True)] = "Есть незавершённая попытка — сбор заблокирован."
     at = run()
-    [b for b in at.button if b.key == "collect_run_force"][0].click()
+    run_button(at).click()
     at = at.run(timeout=30)
     assert collect_env["dispatches"] == []
     assert any("Не запускаю" in w.value and "незавершённая" in w.value for w in at.warning)
