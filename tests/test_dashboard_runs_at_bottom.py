@@ -69,4 +69,7 @@ def test_the_pair_grid_on_the_collect_tab_shows_editable_rows(dash, monkeypatch)
     at = unlock(run())
     grids = [d.value for d in at.dataframe if "Активна" in getattr(d.value, "columns", [])]
     assert grids, "сетка правки пар не нарисована"
-    assert list(grids[0]["Наш ASIN"]) or True  # хотя бы не падает на пустых данных фикстуры
+    # Фикстура даёт один наш товар — строка сетки схлопывается до одного ASIN конкурента
+    # (owner: «чтобы на одной строчке был один асин»), «Наш ASIN» уходит в заголовок над таблицей.
+    assert "ASIN конкурента" in grids[0].columns
+    assert "Наш ASIN" not in grids[0].columns

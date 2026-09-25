@@ -84,12 +84,30 @@ def test_a_failure_partway_reports_what_was_already_saved(monkeypatch, recorder)
 
 def test_the_asin_columns_in_the_grid_are_links_and_are_not_editable():
     """Ключ пары не редактируется: сменить ASIN здесь означало бы другую пару без истории."""
-    import inspect
+    for collapse in (False, True):
+        _, disabled, config = pairs_ui._pairs_grid_table(PAIRS, collapse)
+        assert "ASIN конкурента" in disabled
+        assert isinstance(config["ASIN конкурента"], type(pairs_ui.st.column_config.LinkColumn("x")))
+        assert isinstance(config["Активна"], type(pairs_ui.st.column_config.CheckboxColumn("x")))
 
-    source = inspect.getsource(pairs_ui._render_pairs_grid)
-    assert 'disabled=["Страна", "Наш ASIN", "ASIN конкурента"]' in source
-    assert "LinkColumn" in source
-    assert '"Активна": st.column_config.CheckboxColumn' in source
+
+def test_a_single_product_shows_one_row_per_competitor_asin():
+    """Владелец: «чтобы на одной строчке был один асин» — раньше строка показывала пару ASIN
+    (наш + конкурента), при одном нашем товаре это дублирование убираем."""
+    one_product = PAIRS[PAIRS["our_asin"] == "B0OURASIN1"]
+    assert pairs_ui._pairs_grid_is_single_product(one_product) is True
+    table, disabled, config = pairs_ui._pairs_grid_table(one_product, True)
+    assert list(table.columns) == ["Страна", "ASIN конкурента", "Конкурент", "Активна"]
+    assert disabled == ["Страна", "ASIN конкурента"]
+    assert "Наш ASIN" not in config and "Наш товар" not in config
+
+
+def test_several_products_keep_both_asin_columns():
+    assert pairs_ui._pairs_grid_is_single_product(PAIRS) is False
+    table, disabled, config = pairs_ui._pairs_grid_table(PAIRS, False)
+    assert list(table.columns) == ["Страна", "Наш ASIN", "Наш товар", "ASIN конкурента", "Конкурент", "Активна"]
+    assert disabled == ["Страна", "Наш ASIN", "ASIN конкурента"]
+    assert "Наш ASIN" in config and "Наш товар" in config
 
 
 def test_a_large_disable_batch_needs_confirmation():

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from html import escape
 
 import pandas as pd
 import streamlit as st
@@ -273,6 +274,54 @@ def _our_product_options(pairs: pd.DataFrame) -> dict[str, str]:
     return {asin: f"{asin} · {str(name or '')[:60]}" for asin, name in products.items()}
 
 
+def _pairs_grid_is_single_product(shown: pd.DataFrame) -> bool:
+    """Один наш ASIN на весь показанный список — обычно после выбора конкретного товара
+    в фильтре «Наш товар», но срабатывает и если к этому же сводит сам поиск."""
+    if shown.empty:
+        return False
+    return len(shown[["marketplace", "our_asin"]].drop_duplicates()) == 1
+
+
+def _pairs_grid_table(shown: pd.DataFrame, collapse_our_side: bool) -> tuple[pd.DataFrame, list[str], dict]:
+    """Строит таблицу, список нередактируемых колонок и column_config для сетки правки пар.
+
+    При одном нашем товаре «Наш ASIN»/«Наш товар» выносятся в заголовок над таблицей (их пишет
+    вызывающий код) и не повторяются в каждой строке — тогда строка сетки соответствует ровно
+    одному ASIN (конкурента), как и попросил владелец 25.09.2026."""
+    common = {
+        "Страна": shown["marketplace"],
+        "ASIN конкурента": [_asin_url(a, m) for a, m in zip(shown["comp_asin"], shown["marketplace"])],
+        "Конкурент": shown["competitor_name"].fillna(""),
+        "Активна": shown["active"],
+    }
+    column_config = {
+        "ASIN конкурента": st.column_config.LinkColumn("ASIN конкурента", display_text=_ASIN_LINK_TEXT, width="small"),
+        "Конкурент": st.column_config.TextColumn("Конкурент", max_chars=pairs_store.MAX_NAME),
+        "Активна": st.column_config.CheckboxColumn("Активна"),
+    }
+    if collapse_our_side:
+        table = pd.DataFrame({
+            "Страна": common["Страна"], "ASIN конкурента": common["ASIN конкурента"],
+            "Конкурент": common["Конкурент"], "Активна": common["Активна"],
+        })
+        return table, ["Страна", "ASIN конкурента"], column_config
+
+    table = pd.DataFrame({
+        "Страна": common["Страна"],
+        "Наш ASIN": [_asin_url(a, m) for a, m in zip(shown["our_asin"], shown["marketplace"])],
+        "Наш товар": shown["our_product"].fillna(""),
+        "ASIN конкурента": common["ASIN конкурента"],
+        "Конкурент": common["Конкурент"],
+        "Активна": common["Активна"],
+    })
+    column_config = {
+        **column_config,
+        "Наш ASIN": st.column_config.LinkColumn("Наш ASIN", display_text=_ASIN_LINK_TEXT, width="small"),
+        "Наш товар": st.column_config.TextColumn("Наш товар", max_chars=pairs_store.MAX_NAME),
+    }
+    return table, ["Страна", "Наш ASIN", "ASIN конкурента"], column_config
+
+
 def _render_pairs_grid(connect, pairs: pd.DataFrame, actor: str, role: str, key_prefix: str = "pairs") -> None:
     """Одна таблица на добавление, правку и отключение: страна, свой товар и поиск сверху,
     название и активность правятся прямо в сетке, сохранение — одной кнопкой на все изменённые
@@ -328,31 +377,30 @@ def _render_pairs_grid(connect, pairs: pd.DataFrame, actor: str, role: str, key_
             on_click=_toggle_callback, args=(connect, active_keys, False, actor, role, key_prefix),
         )
 
-    table = pd.DataFrame({
-        "Страна": shown["marketplace"],
-        "Наш ASIN": [_asin_url(a, m) for a, m in zip(shown["our_asin"], shown["marketplace"])],
-        "Наш товар": shown["our_product"].fillna(""),
-        "ASIN конкурента": [_asin_url(a, m) for a, m in zip(shown["comp_asin"], shown["marketplace"])],
-        "Конкурент": shown["competitor_name"].fillna(""),
-        "Активна": shown["active"],
-    })
+    collapse_our_side = _pairs_grid_is_single_product(shown)
+    if collapse_our_side:
+        first = shown.iloc[0]
+        st.markdown(
+            '<div class="section-note">Наш товар: '
+            f'<a href="{escape(_asin_url(first["our_asin"], first["marketplace"]))}" target="_blank">'
+            f'{escape(str(first["our_asin"]))}</a> · {escape(str(first["our_product"] or ""))} · '
+            f'{escape(str(first["marketplace"]))}</div>',
+            unsafe_allow_html=True,
+        )
+    table, disabled_columns, column_config = _pairs_grid_table(shown, collapse_our_side)
+    # Разный key для двух форм таблицы: иначе Streamlit пытается наложить старые правки на новый
+    # набор колонок при переключении фильтра «Наш товар» между «Все» и конкретным товаром.
+    editor_key = f"{key_prefix}_grid_editor_{'single' if collapse_our_side else 'pair'}"
     edited = st.data_editor(
-        table, key=f"{key_prefix}_grid_editor", hide_index=True, use_container_width=True, height=420,
-        disabled=["Страна", "Наш ASIN", "ASIN конкурента"],
-        column_config={
-            "Наш ASIN": st.column_config.LinkColumn("Наш ASIN", display_text=_ASIN_LINK_TEXT, width="small"),
-            "ASIN конкурента": st.column_config.LinkColumn("ASIN конкурента", display_text=_ASIN_LINK_TEXT, width="small"),
-            "Наш товар": st.column_config.TextColumn("Наш товар", max_chars=pairs_store.MAX_NAME),
-            "Конкурент": st.column_config.TextColumn("Конкурент", max_chars=pairs_store.MAX_NAME),
-            "Активна": st.column_config.CheckboxColumn("Активна"),
-        },
+        table, key=editor_key, hide_index=True, use_container_width=True, height=420,
+        disabled=disabled_columns, column_config=column_config,
     )
 
     name_changes = []
     active_changes: dict[bool, list] = {True: [], False: []}
     for position, row in enumerate(shown.itertuples()):
         key = (row.marketplace, row.our_asin, row.comp_asin)
-        our_now = str(edited["Наш товар"].iloc[position] or "")
+        our_now = str(edited["Наш товар"].iloc[position] or "") if not collapse_our_side else str(row.our_product or "")
         comp_now = str(edited["Конкурент"].iloc[position] or "")
         if our_now != str(row.our_product or "") or comp_now != str(row.competitor_name or ""):
             name_changes.append((key, our_now, comp_now))
