@@ -516,6 +516,119 @@ def _render_pairs_grid(connect, pairs: pd.DataFrame, actor: str, role: str, key_
     )
 
 
+def _manage_text_from_pairs(pairs: pd.DataFrame) -> tuple[str, str, dict[tuple[str, str], set[str]]]:
+    """Активные пары как текст в двух полях — та же форма, что и «Добавить новые», только уже
+    заполненная: «Наш товар» — по одной ссылке на строку, «Конкуренты» — та же строка индексом,
+    ссылки через запятую (владелец, 25.09.2026: «тот же интерфейс... только с заполненными
+    полями»). Возвращает и исходное состояние {(страна, наш ASIN): {ASIN конкурента, ...}} — для
+    сравнения при сохранении: то, что пропало из текста, отключается."""
+    if pairs.empty or "active" not in pairs:
+        return "", "", {}
+    active = pairs[pairs["active"]]
+    if active.empty:
+        return "", "", {}
+    original: dict[tuple[str, str], set[str]] = {}
+    our_lines: list[str] = []
+    comp_lines: list[str] = []
+    for (market, our_asin), group in active.groupby(["marketplace", "our_asin"], sort=True):
+        comps = list(group["comp_asin"])
+        our_lines.append(_asin_url(our_asin, market))
+        comp_lines.append(", ".join(_asin_url(c, market) for c in comps))
+        original[(market, our_asin)] = set(comps)
+    return "\n".join(our_lines), "\n".join(comp_lines), original
+
+
+def _parse_manage_text(our_text: str, competitors_text: str) -> dict[tuple[str, str], set[str]]:
+    """Тот же разбор построчно, что и make_plans, но только чтобы получить набор ключей для
+    сравнения с исходным состоянием — без обращения к базе."""
+    our_lines = [line.strip() for line in (our_text or "").splitlines() if line.strip()]
+    comp_lines = (competitors_text or "").splitlines()
+    result: dict[tuple[str, str], set[str]] = {}
+    for i, our_line in enumerate(our_lines):
+        our_batch = pairs_store.parse_asin_batch(our_line, require_link=True)
+        if len(our_batch.items) != 1:
+            continue
+        our_item = our_batch.items[0]
+        comp_line = comp_lines[i] if i < len(comp_lines) else ""
+        comps = {item.asin for item in pairs_store.parse_asin_batch(comp_line, require_link=True).items}
+        result.setdefault((our_item.market, our_item.asin), set()).update(comps)
+    return result
+
+
+def _manage_callback(connect, actor: str, role: str, max_active: int, key_prefix: str) -> None:
+    our_key, comps_key = f"{key_prefix}_manage_our", f"{key_prefix}_manage_comps"
+    original_key = f"{key_prefix}_manage_original"
+    state = st.session_state
+    our_text, comp_text = state.get(our_key, ""), state.get(comps_key, "")
+    edited = _parse_manage_text(our_text, comp_text)
+
+    to_disable: list[tuple[str, str, str]] = []
+    for (market, our_asin), comps in state.get(original_key, {}).items():
+        for comp_asin in comps - edited.get((market, our_asin), set()):
+            to_disable.append((market, our_asin, comp_asin))
+
+    try:
+        disabled = pairs_store.set_pairs_active(connect, to_disable, False, actor_role=role, actor=actor) \
+            if to_disable else 0
+        added = enabled = 0
+        for plan in pairs_store.make_plans(connect, our_text, comp_text, max_active=max_active):
+            if plan.can_apply:
+                result = pairs_store.apply_plan(connect, plan, actor_role=role, actor=actor)
+                added += result["add"]
+                enabled += result["enable"]
+    except _ERRORS as exc:
+        _flash("error", str(exc), key_prefix)
+        return
+    st.cache_data.clear()
+    state.pop(original_key, None)  # следующий рендер соберёт текст заново из свежих пар
+    parts = []
+    if added:
+        parts.append(f"добавлено {added}")
+    if enabled:
+        parts.append(f"возвращено {enabled}")
+    if disabled:
+        parts.append(f"отключено {disabled}")
+    _flash("success", "Готово: " + ", ".join(parts) + "." if parts else "Ничего не изменилось.", key_prefix)
+
+
+def _render_manage_as_text(connect, pairs: pd.DataFrame, actor: str, role: str, max_active: int,
+                           key_prefix: str) -> None:
+    """«Управлять существующими» — та же форма, что и «Добавить новые», только уже заполненная
+    текущими парами: можно посмотреть, отредактировать (стереть строку или ссылку — при
+    сохранении это отключит пару; дописать — добавит) и сохранить одной кнопкой (владелец,
+    25.09.2026: «не нужен отдельный экран, таблица... тот же интерфейс, что и для Добавить
+    новые, только с заполненными полями»)."""
+    our_key, comps_key = f"{key_prefix}_manage_our", f"{key_prefix}_manage_comps"
+    original_key = f"{key_prefix}_manage_original"
+    if original_key not in st.session_state:
+        our_text, comp_text, original = _manage_text_from_pairs(pairs)
+        st.session_state[original_key] = original
+        st.session_state.setdefault(our_key, our_text)
+        st.session_state.setdefault(comps_key, comp_text)
+
+    st.markdown(
+        '<div class="field-label">Наш товар <span class="field-badge">можно пачкой</span></div>',
+        unsafe_allow_html=True,
+    )
+    st.text_area("Наш товар", key=our_key, height=240, label_visibility="collapsed")
+    _render_recognized_caption(st.session_state.get(our_key, ""), "Одна ссылка или несколько — по одной в строке.")
+
+    st.markdown(
+        '<div class="field-label">Конкуренты <span class="field-badge">можно пачкой</span></div>',
+        unsafe_allow_html=True,
+    )
+    st.text_area("Конкуренты", key=comps_key, height=300, label_visibility="collapsed")
+    _render_recognized_caption(
+        st.session_state.get(comps_key, ""),
+        "Одна строка на товар (в том же порядке) — конкуренты через запятую.",
+    )
+
+    st.button(
+        "Сохранить", type="primary", key=f"{key_prefix}_manage_save",
+        on_click=_manage_callback, args=(connect, actor, role, max_active, key_prefix),
+    )
+
+
 _ADD_MODE = "➕ Добавить новые"
 
 
@@ -527,7 +640,11 @@ def render_pairs_management(connect, pairs: pd.DataFrame, actor: str | None, rol
 
     st.segmented_control, а не st.tabs: второй st.tabs на странице путает at.tabs в тестах
     (плоский список — там, где ждут только шесть вкладок верхнего уровня) и, в отличие от
-    сегментов, рисует ОБЕ панели в разметке всегда, просто прячет неактивную CSS."""
+    сегментов, рисует ОБЕ панели в разметке всегда, просто прячет неактивную CSS.
+
+    «Управлять существующими» показывает ТУ ЖЕ форму, что и «Добавить новые» — просто заполненную
+    текущими данными (_render_manage_as_text), а не отдельную таблицу/сетку (владелец, 25.09.2026:
+    «не нужен отдельный экран, таблица... тот же интерфейс»)."""
     _show_flash(key_prefix)
     manage_mode = f"☰ Управлять существующими ({len(pairs)})"
     picked = st.segmented_control(
@@ -535,7 +652,7 @@ def render_pairs_management(connect, pairs: pd.DataFrame, actor: str | None, rol
         key=f"{key_prefix}_pairs_mode", label_visibility="collapsed",
     )
     if picked == manage_mode:
-        _render_pairs_grid(connect, pairs, actor or "?", role, key_prefix)
+        _render_manage_as_text(connect, pairs, actor or "?", role, max_active, key_prefix)
     else:
         _render_add(connect, actor or "?", role, max_active, key_prefix)
 

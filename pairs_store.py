@@ -210,32 +210,32 @@ def make_plan(connect: Connect, our_text: object, competitors_text: object, *,
 
 def make_plans(connect: Connect, our_text: object, competitors_text: object, *,
                max_active: int = DEFAULT_MAX_ACTIVE) -> List[Plan]:
-    """Как make_plan, но «наш товар» может быть не одной ссылкой, а несколькими (по одной в
-    строке или через запятую) — конкуренты из competitors_text применяются к каждой из них
-    (владелец, 25.09.2026: «Наш товар» тоже «можно несколько»). Один план на одну ссылку;
-    список из одного плана с ошибкой — если ни одной ссылки не распознано.
+    """Как make_plan, но «наш товар» может быть не одной ссылкой, а несколькими — по одной на
+    строку (владелец, 25.09.2026, с примером от начальника: «одна строка на товар, конкуренты
+    через запятую»).
+
+    Один товар (одна строка в «Наш товар») — конкуренты воспринимаются как раньше, общим списком
+    (можно и по одному в строке, и через запятую — ничего не меняется для самого частого случая).
+    Несколько товаров (2+ строки) — конкуренты построчно: строка i в «Конкуренты» — это (через
+    запятую) конкуренты строки i в «Наш товар». Строка без своей строки конкурентов получает план
+    с ошибкой «вставьте ссылки конкурентов» (make_plan это уже умеет) — как и нераспознанная строка
+    товара: она получает свой план с ошибкой, а не блокирует остальные строки.
 
     Лимит max_active проверяется в каждом плане по отдельности, от одного и того же текущего
     active_now: при добавлении сразу нескольких «наших» товаров у самого края лимита это может
-    пропустить пару пар, которые в сумме лимит превысили бы. Случай редкий (нужно быть в пределах
-    десятка от лимита и добавлять несколько «наших» ссылок разом), а сам лимит — не точный биллинг,
-    а защита от разгона, поэтому усложнять ради него не стали."""
-    ours = parse_asin_batch(our_text, require_link=True)
-    if not ours.items or ours.invalid:
+    пропустить пару пар, которые в сумме лимит превысили бы. Случай редкий, а сам лимит — не точный
+    биллинг, а защита от разгона, поэтому усложнять ради него не стали."""
+    our_lines = [line.strip() for line in str(our_text or "").splitlines() if line.strip()]
+    if not our_lines:
         plan = Plan()
-        if ours.invalid:
-            # Хотя бы одна строка похожа на попытку, но не ссылка — показываем, какие именно
-            # (через plan.invalid, тот же блок «Не распознано», что и для конкурентов), а не только
-            # общее «нужна ссылка», которое сбивает с толку, если рабочие ссылки среди них уже есть.
-            plan.invalid = list(ours.invalid)
-            plan.errors.append(f"Наш товар: не распознано {len(ours.invalid)} (нужна ссылка на страницу Amazon для каждой строки).")
-        else:
-            plan.errors.append("Наш товар: нужна хотя бы одна ссылка на страницу Amazon.")
+        plan.errors.append("Наш товар: нужна хотя бы одна ссылка на страницу Amazon.")
         return [plan]
+    if len(our_lines) == 1:
+        return [make_plan(connect, our_lines[0], competitors_text, max_active=max_active)]
+    comp_lines = str(competitors_text or "").splitlines()
     return [
-        make_plan(connect, f"https://www.amazon.{DOMAIN_BY_MARKET[item.market]}/dp/{item.asin}",
-                 competitors_text, max_active=max_active)
-        for item in ours.items
+        make_plan(connect, our_line, comp_lines[i] if i < len(comp_lines) else "", max_active=max_active)
+        for i, our_line in enumerate(our_lines)
     ]
 
 

@@ -91,13 +91,16 @@ def test_pair_management_appears_on_the_collect_tab_without_crashing(dash, monke
     assert not any(widget.label == "Показывать убранные" for widget in at.checkbox)
 
 
-def test_the_pair_grid_on_the_collect_tab_shows_editable_rows(dash, monkeypatch):  # noqa: F811
+def test_manage_mode_prefills_the_same_fields_as_add_mode(dash, monkeypatch):  # noqa: F811
+    """«Управлять существующими» — та же форма, что и «Добавить новые», просто уже заполненная
+    текущими парами (владелец, 25.09.2026: «тот же интерфейс... только с заполненными полями»),
+    а не отдельная таблица/сетка."""
     monkeypatch.setenv("TEAM_PASSWORD", TEAM_PASSWORD)
     at = unlock(run())
     _select_manage_mode(at)
-    grids = [d.value for d in at.dataframe if "Активна" in getattr(d.value, "columns", [])]
-    assert grids, "сетка правки пар не нарисована"
-    # Фикстура даёт один наш товар — строка сетки схлопывается до одного ASIN конкурента
-    # (owner: «чтобы на одной строчке был один асин»), «Наш ASIN» уходит в заголовок над таблицей.
-    assert "ASIN конкурента" in grids[0].columns
-    assert "Наш ASIN" not in grids[0].columns
+    assert not at.exception
+    our_field = [t for t in at.text_area if t.key == "collect_manage_our"][0]
+    comp_field = [t for t in at.text_area if t.key == "collect_manage_comps"][0]
+    assert our_field.value == "https://www.amazon.com/dp/B000000001"
+    assert comp_field.value == "https://www.amazon.com/dp/B000000002"
+    assert [b for b in at.button if b.key == "collect_manage_save"]

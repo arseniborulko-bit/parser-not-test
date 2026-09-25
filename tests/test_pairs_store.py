@@ -283,19 +283,29 @@ def test_driver_errors_are_wrapped_without_leaking_their_text(db):
     assert "hunter2" not in str(info.value) and "secret" not in str(info.value)
 
 
-def test_make_plans_builds_one_plan_per_our_link():
-    """Владелец: «Наш товар» тоже «можно несколько» — конкуренты применяются к каждой ссылке
-    отдельным планом (25.09.2026)."""
+def test_make_plans_builds_one_plan_per_our_link_one_per_line():
+    """Владелец, с примером от начальника: несколько товаров — по одной ссылке на строку, а
+    конкуренты — построчно, своя строка на каждый товар (25.09.2026)."""
     results = (
         plan_db(known=[("US", "Our A")], statuses=[], collected=[]).results +
         plan_db(known=[("US", "Our D")], statuses=[], collected=[]).results
     )
     db = FakeDb(results=results)
-    plans = pairs_store.make_plans(db.connect, f"{link(A)} {link(D)}", link(B))
+    plans = pairs_store.make_plans(db.connect, f"{link(A)}\n{link(D)}", f"{link(B)}\n{link(C)}")
     assert len(plans) == 2
     assert (plans[0].our_asin, plans[0].market, plans[0].our_product) == (A, "US", "Our A")
     assert (plans[1].our_asin, plans[1].market, plans[1].our_product) == (D, "US", "Our D")
-    assert plans[0].to_add == [B] and plans[1].to_add == [B]
+    # своя строка конкурентов у каждого товара — не общий список на всех (не «каждый с каждым»)
+    assert plans[0].to_add == [B] and plans[1].to_add == [C]
+
+
+def test_make_plans_one_our_line_still_takes_the_old_flat_competitor_list():
+    """Один товар — конкуренты по-прежнему можно вперемешку (по строкам или через запятую),
+    как и раньше: построчное сопоставление включается только при 2+ строках товара."""
+    db = plan_db(known=[("US", "Our A")], statuses=[], collected=[])
+    plans = pairs_store.make_plans(db.connect, link(A), f"{link(B)}\n{link(C)}, {link(D)}")
+    assert len(plans) == 1
+    assert sorted(plans[0].to_add) == sorted([B, C, D])
 
 
 def test_make_plans_with_no_valid_links_returns_one_error_plan():
@@ -305,17 +315,14 @@ def test_make_plans_with_no_valid_links_returns_one_error_plan():
     assert not plans[0].can_apply and "ссылка" in plans[0].errors[0].lower()
 
 
-def test_make_plans_with_a_mix_of_valid_and_invalid_our_links_reports_which_failed():
-    """Раньше сообщение было общим «нужна хотя бы одна ссылка», даже если рабочие ссылки среди
-    них уже были, — сбивало с толку. Теперь видно, сколько строк не распознано и какие именно."""
-    db = FakeDb()
-    plans = pairs_store.make_plans(db.connect, f"{link(A)} not-a-link", link(B))
-    assert len(plans) == 1
-    assert not plans[0].can_apply
-    assert "не распознано 1" in plans[0].errors[0].lower()
-    assert plans[0].invalid == ["not-a-link"]
-    assert db.connects == 0
-    assert db.connects == 0
+def test_make_plans_an_invalid_our_line_gets_its_own_error_plan_others_still_work():
+    """Нераспознанная строка товара не блокирует остальные — у неё свой план с ошибкой, ровно
+    как make_plan уже делает для одной ссылки (25.09.2026: построчная обработка сама это даёт)."""
+    db = FakeDb(results=plan_db(known=[("US", "Our A")], statuses=[], collected=[]).results)
+    plans = pairs_store.make_plans(db.connect, f"{link(A)}\nnot-a-link", f"{link(B)}\n{link(C)}")
+    assert len(plans) == 2
+    assert plans[0].can_apply and plans[0].to_add == [B]
+    assert not plans[1].can_apply and "ссылка" in plans[1].errors[0].lower()
 
 
 def ready_plan(**overrides):

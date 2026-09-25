@@ -161,12 +161,14 @@ def test_a_large_disable_batch_needs_no_typed_confirmation():
     assert not hasattr(pairs_ui, "_confirm_bulk")
 
 
-def test_render_pairs_management_covers_both_add_and_grid():
+def test_render_pairs_management_covers_both_add_and_manage():
+    """«Управлять существующими» показывает ту же форму, что и «Добавить новые», просто
+    заполненную (владелец, 25.09.2026), а не отдельную сетку/таблицу."""
     import inspect
 
     source = inspect.getsource(pairs_ui.render_pairs_management)
     assert "_render_add" in source
-    assert "_render_pairs_grid" in source
+    assert "_render_manage_as_text" in source
 
 
 def test_flash_messages_use_a_prefixed_key_so_they_show_on_the_right_tab(recorder):
