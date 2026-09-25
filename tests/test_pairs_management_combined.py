@@ -108,6 +108,34 @@ def test_render_pairs_management_covers_both_add_and_grid():
     assert "_render_pairs_grid" in source
 
 
+def test_flash_messages_use_a_prefixed_key_so_they_show_on_the_right_tab(recorder):
+    """Реальный баг: сообщения об успехе/ошибке использовали общий ключ pairs_flash, который
+    показывается только на «Пары конкурентов» — действия на «Сбор и управление» проходили молча.
+    Действие с key_prefix="collect" не должно попадать под "pairs_flash"."""
+    pairs_ui._save_pairs_grid_callback(
+        None,
+        [(("US", "B0OURASIN1", "B0COMPAAA1"), "Новое имя", "Конкурент")],
+        {True: [], False: []},
+        "Тест", "editor", key_prefix="collect",
+    )
+    assert "collect_flash" in recorder.state
+    assert "pairs_flash" not in recorder.state
+
+
+def test_the_collect_tab_actually_displays_its_own_flash(recorder, monkeypatch):
+    """render_pairs_management обязан показать сообщение своей вкладки, а не оставить его висеть
+    в session_state до следующего прогона «Пары конкурентов»."""
+    recorder.state["collect_flash"] = ("success", "Готово: добавлено 2.")
+    shown = []
+    monkeypatch.setattr(pairs_ui.st, "success", lambda msg: shown.append(msg))
+    monkeypatch.setattr(pairs_ui.st, "markdown", lambda *a, **k: None)
+    monkeypatch.setattr(pairs_ui, "_render_add", lambda *a: None)
+    monkeypatch.setattr(pairs_ui, "_render_pairs_grid", lambda *a: None)
+    pairs_ui.render_pairs_management(None, PAIRS, "Тест", "editor", 1000, key_prefix="collect")
+    assert shown == ["Готово: добавлено 2."]
+    assert "collect_flash" not in recorder.state
+
+
 def test_widget_keys_differ_by_prefix_so_two_tabs_do_not_clash():
     """Список показывается и на «Пары конкурентов», и на «Сбор и управление» одновременно —
     без разных префиксов Streamlit падает с StreamlitDuplicateElementKey (было найдено на живом сайте)."""

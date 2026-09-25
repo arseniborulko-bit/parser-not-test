@@ -34,8 +34,19 @@ _CONFIRM_ABOVE = 25
 _ERRORS = (ValueError, access.AccessDenied, pairs_store.PairsStoreError)
 
 
-def _flash(kind: str, message: str) -> None:
-    st.session_state["pairs_flash"] = (kind, message)
+def _flash(kind: str, message: str, key_prefix: str = "pairs") -> None:
+    st.session_state[f"{key_prefix}_flash"] = (kind, message)
+
+
+def _show_flash(key_prefix: str = "pairs") -> None:
+    """Показывает и сразу убирает отложенное сообщение — под тем же key_prefix, что и у виджетов,
+    которые его вызвали. Список пар показывается на двух вкладках сразу («Пары конкурентов» и
+    «Сбор и управление»); без разделения по key_prefix сообщение с одной вкладки показывалось бы
+    на другой (та рисуется раньше в скрипте и забирала бы общий ключ первой) — или вовсе не на той,
+    что сейчас открыта у пользователя."""
+    flash = st.session_state.pop(f"{key_prefix}_flash", None)
+    if flash:
+        getattr(st, flash[0])(flash[1])
 
 
 def _matches(frame: pd.DataFrame, query: str) -> pd.DataFrame:
@@ -67,7 +78,7 @@ def _add_callback(connect, actor: str, role: str, max_active: int, key_prefix: s
         )
         result = pairs_store.apply_plan(connect, plan, actor_role=role, actor=actor)
     except _ERRORS as exc:
-        _flash("error", str(exc))
+        _flash("error", str(exc), key_prefix)
         return
     st.cache_data.clear()
     state[comps_key] = ""
@@ -76,18 +87,18 @@ def _add_callback(connect, actor: str, role: str, max_active: int, key_prefix: s
         parts.append(f"добавлено {result['add']}")
     if result["enable"]:
         parts.append(f"возвращено {result['enable']}")
-    _flash("success", "Готово: " + ", ".join(parts) + ". Пары попадут в ближайший сбор." if parts else "Ничего не изменилось.")
+    _flash("success", "Готово: " + ", ".join(parts) + ". Пары попадут в ближайший сбор." if parts else "Ничего не изменилось.", key_prefix)
 
 
-def _toggle_callback(connect, keys, active: bool, actor: str, role: str) -> None:
+def _toggle_callback(connect, keys, active: bool, actor: str, role: str, key_prefix: str = "pairs") -> None:
     try:
         changed = pairs_store.set_pairs_active(connect, keys, active, actor_role=role, actor=actor)
     except _ERRORS as exc:
-        _flash("error", str(exc))
+        _flash("error", str(exc), key_prefix)
         return
     st.cache_data.clear()
     verb = "возвращено" if active else "отключено"
-    _flash("success", f"Готово: {verb} {changed}. " + ("Пары попадут в ближайший сбор." if active else "В следующем сборе их уже не будет."))
+    _flash("success", f"Готово: {verb} {changed}. " + ("Пары попадут в ближайший сбор." if active else "В следующем сборе их уже не будет."), key_prefix)
 
 
 def _render_plan(plan: pairs_store.Plan) -> None:
@@ -237,7 +248,8 @@ def _render_edit(connect, pairs: pd.DataFrame, actor: str, role: str) -> None:
         st.caption(f"Показаны первые {MAX_EDIT_ROWS}: уточните поиск.")
 
 
-def _save_pairs_grid_callback(connect, name_changes, active_changes: dict[bool, list], actor: str, role: str) -> None:
+def _save_pairs_grid_callback(connect, name_changes, active_changes: dict[bool, list], actor: str, role: str,
+                              key_prefix: str = "pairs") -> None:
     """Сохраняет и правки названий, и включения/отключения — за одно нажатие «Сохранить изменения»."""
     saved_names = 0
     saved_active = 0
@@ -251,15 +263,23 @@ def _save_pairs_grid_callback(connect, name_changes, active_changes: dict[bool, 
                 saved_active += pairs_store.set_pairs_active(connect, keys, active_value, actor_role=role, actor=actor)
     except _ERRORS as exc:
         saved = saved_names + saved_active
-        _flash("error", f"Сохранено строк: {saved}, дальше ошибка — {exc}" if saved else str(exc))
+        _flash("error", f"Сохранено строк: {saved}, дальше ошибка — {exc}" if saved else str(exc), key_prefix)
         return
     st.cache_data.clear()
-    _flash("success", f"Сохранено: названий {saved_names}, статусов {saved_active}.")
+    _flash("success", f"Сохранено: названий {saved_names}, статусов {saved_active}.", key_prefix)
+
+
+def _our_product_options(pairs: pd.DataFrame) -> dict[str, str]:
+    """Наш ASIN -> подпись для выпадающего списка. Название берём у первой попавшейся пары
+    этого товара — у одного нашего ASIN оно всегда одно и то же."""
+    products = pairs.drop_duplicates("our_asin").set_index("our_asin")["our_product"]
+    return {asin: f"{asin} · {str(name or '')[:60]}" for asin, name in products.items()}
 
 
 def _render_pairs_grid(connect, pairs: pd.DataFrame, actor: str, role: str, key_prefix: str = "pairs") -> None:
-    """Одна таблица на добавление, правку и отключение: страна и поиск сверху, название и
-    активность правятся прямо в сетке, сохранение — одной кнопкой на все изменённые строки.
+    """Одна таблица на добавление, правку и отключение: страна, свой товар и поиск сверху,
+    название и активность правятся прямо в сетке, сохранение — одной кнопкой на все изменённые
+    строки. Рядом — быстрое включение/отключение всех показанных пар без правки по одной.
 
     Ключ пары (страна и оба ASIN) не редактируется: это же ключ снимков, и его смена означала бы
     другую пару, без прежней истории. Поэтому ASIN здесь — ссылка, а не поле ввода; чтобы сменить
@@ -268,17 +288,51 @@ def _render_pairs_grid(connect, pairs: pd.DataFrame, actor: str, role: str, key_
         st.info("Пар пока нет.")
         return
 
-    top = st.columns([2, 3])
+    top = st.columns([2, 2, 3])
     market = top[0].selectbox("Страна", ["Все", *sorted(pairs["marketplace"].dropna().unique())],
                               key=f"{key_prefix}_grid_market")
-    query = top[1].text_input("ASIN или часть названия", key=f"{key_prefix}_grid_search")
+    product_options = _our_product_options(pairs)
+    our_pick = top[1].selectbox(
+        "Наш товар", ["Все", *sorted(product_options)], key=f"{key_prefix}_grid_our",
+        format_func=lambda value: "Все" if value == "Все" else product_options[value],
+    )
+    query = top[2].text_input("ASIN или часть названия", key=f"{key_prefix}_grid_search")
 
     shown = pairs if market == "Все" else pairs[pairs["marketplace"] == market]
+    if our_pick != "Все":
+        shown = shown[shown["our_asin"] == our_pick]
     shown = _matches(shown, query)
     if shown.empty:
         st.info("Ничего не найдено.")
         return
+    total_found = len(shown)
     shown = shown.head(MAX_EDIT_ROWS).reset_index(drop=True)
+    st.caption(f"Показано {len(shown)} из {total_found}."
+              + (f" Уточните страну, товар или поиск — показаны первые {MAX_EDIT_ROWS}."
+                 if total_found > MAX_EDIT_ROWS else ""))
+
+    bulk = st.columns(2)
+    active_keys = [(row.marketplace, row.our_asin, row.comp_asin) for row in shown.itertuples() if row.active]
+    inactive_keys = [(row.marketplace, row.our_asin, row.comp_asin) for row in shown.itertuples() if not row.active]
+    with bulk[0]:
+        st.button(
+            f"Включить все показанные ({len(inactive_keys)})", key=f"{key_prefix}_grid_enable_all",
+            disabled=not inactive_keys,
+            on_click=_toggle_callback, args=(connect, inactive_keys, True, actor, role, key_prefix),
+        )
+    with bulk[1]:
+        bulk_confirmed = True
+        if len(active_keys) > _CONFIRM_ABOVE:
+            bulk_typed = st.text_input(
+                f"Выключится {len(active_keys)} пар. Введите УБРАТЬ для подтверждения",
+                key=f"{key_prefix}_grid_disable_all_confirm",
+            )
+            bulk_confirmed = bulk_typed.strip().upper() == "УБРАТЬ"
+        st.button(
+            f"Выключить все показанные ({len(active_keys)})", key=f"{key_prefix}_grid_disable_all",
+            disabled=not active_keys or not bulk_confirmed,
+            on_click=_toggle_callback, args=(connect, active_keys, False, actor, role, key_prefix),
+        )
 
     table = pd.DataFrame({
         "Страна": shown["marketplace"],
@@ -323,16 +377,15 @@ def _render_pairs_grid(connect, pairs: pd.DataFrame, actor: str, role: str, key_
     st.button(
         f"Сохранить изменения ({total})", key=f"{key_prefix}_grid_save",
         disabled=not total or not confirmed,
-        on_click=_save_pairs_grid_callback, args=(connect, name_changes, active_changes, actor, role),
+        on_click=_save_pairs_grid_callback, args=(connect, name_changes, active_changes, actor, role, key_prefix),
     )
-    if len(shown) >= MAX_EDIT_ROWS:
-        st.caption(f"Показаны первые {MAX_EDIT_ROWS}: уточните страну или поиск.")
 
 
 def render_pairs_management(connect, pairs: pd.DataFrame, actor: str | None, role: str | None,
                             max_active: int, key_prefix: str = "pairs") -> None:
     """Добавление и правка пар — публичная точка входа для других вкладок дашборда (например,
     «Сбор и управление»), не только для вкладки «Пары конкурентов»."""
+    _show_flash(key_prefix)
     st.markdown('<p class="section-title">Добавить пару</p>', unsafe_allow_html=True)
     _render_add(connect, actor or "?", role, max_active, key_prefix)
     st.markdown('<p class="section-title">Пары — правка и отключение</p>', unsafe_allow_html=True)
@@ -362,7 +415,7 @@ def _asin_registry(pairs: pd.DataFrame) -> pd.DataFrame:
     return grouped.sort_values(["marketplace", "asin"], ignore_index=True)
 
 
-def _erase_callback(connect, pairs: pd.DataFrame, targets, actor: str, role: str) -> None:
+def _erase_callback(connect, pairs: pd.DataFrame, targets, actor: str, role: str, key_prefix: str = "pairs") -> None:
     """«Стереть» ASIN — отключить все активные пары, где он участвует."""
     chosen = {(market, asin) for market, asin in targets}
     keys = [
@@ -371,21 +424,21 @@ def _erase_callback(connect, pairs: pd.DataFrame, targets, actor: str, role: str
         if row.active and ((row.marketplace, row.our_asin) in chosen or (row.marketplace, row.comp_asin) in chosen)
     ]
     if not keys:
-        st.session_state["pairs_flash"] = ("info", "Активных пар с этими ASIN нет.")
+        _flash("info", "Активных пар с этими ASIN нет.", key_prefix)
         return
     try:
         count = pairs_store.set_pairs_active(connect, keys, False, actor_role=role, actor=actor)
     except _ERRORS as exc:
-        st.session_state["pairs_flash"] = ("error", str(exc))
+        _flash("error", str(exc), key_prefix)
         return
-    st.session_state["pairs_flash"] = ("success", f"Отключено пар: {count}.")
+    _flash("success", f"Отключено пар: {count}.", key_prefix)
 
 
-def _add_asins_callback(connect, market: str, text: str, kind: str, actor: str, role: str) -> None:
+def _add_asins_callback(connect, market: str, text: str, kind: str, actor: str, role: str, key_prefix: str = "pairs") -> None:
     try:
         result = asins_store.add_asins(connect, market, text, kind, actor_role=role, actor=actor)
     except (*_ERRORS, asins_store.AsinStoreError) as exc:
-        st.session_state["pairs_flash"] = ("error", str(exc))
+        _flash("error", str(exc), key_prefix)
         return
     parts = []
     if result["added"]:
@@ -394,10 +447,10 @@ def _add_asins_callback(connect, market: str, text: str, kind: str, actor: str, 
         parts.append(f"возвращено {result['restored']}")
     if result["skipped"]:
         parts.append(f"уже было {result['skipped']}")
-    st.session_state["pairs_flash"] = ("success", "ASIN: " + (", ".join(parts) or "без изменений"))
+    _flash("success", "ASIN: " + (", ".join(parts) or "без изменений"), key_prefix)
 
 
-def _save_registry_callback(connect, changes, actor: str, role: str) -> None:
+def _save_registry_callback(connect, changes, actor: str, role: str, key_prefix: str = "pairs") -> None:
     """Сохраняет правки названий и исходных ссылок за одно нажатие."""
     saved = 0
     try:
@@ -405,20 +458,18 @@ def _save_registry_callback(connect, changes, actor: str, role: str) -> None:
             saved += asins_store.rename(connect, key, name, actor_role=role, actor=actor,
                                         source_url=source_url)
     except (*_ERRORS, asins_store.AsinStoreError) as exc:
-        st.session_state["pairs_flash"] = (
-            "error", f"Сохранено строк: {saved}, дальше ошибка — {exc}" if saved else str(exc),
-        )
+        _flash("error", f"Сохранено строк: {saved}, дальше ошибка — {exc}" if saved else str(exc), key_prefix)
         return
-    st.session_state["pairs_flash"] = ("success", f"Сохранено строк: {saved}.")
+    _flash("success", f"Сохранено строк: {saved}.", key_prefix)
 
 
-def _drop_asins_callback(connect, keys, actor: str, role: str) -> None:
+def _drop_asins_callback(connect, keys, actor: str, role: str, key_prefix: str = "pairs") -> None:
     try:
         count = asins_store.set_active(connect, keys, False, actor_role=role, actor=actor)
     except (*_ERRORS, asins_store.AsinStoreError) as exc:
-        st.session_state["pairs_flash"] = ("error", str(exc))
+        _flash("error", str(exc), key_prefix)
         return
-    st.session_state["pairs_flash"] = ("success", f"Убрано ASIN: {count}.")
+    _flash("success", f"Убрано ASIN: {count}.", key_prefix)
 
 
 def _render_add_asin_form(connect, actor: str, role: str, key_prefix: str = "pairs") -> None:
@@ -432,7 +483,7 @@ def _render_add_asin_form(connect, actor: str, role: str, key_prefix: str = "pai
         format_func=lambda value: asins_store.KIND_LABELS[value],
     )
     st.button("Вписать", key=f"{key_prefix}_asin_add_btn", disabled=not text.strip(),
-              on_click=_add_asins_callback, args=(connect, market, text, kind, actor, role))
+              on_click=_add_asins_callback, args=(connect, market, text, kind, actor, role, key_prefix))
 
 
 def _render_registry_from_store(connect, actor: str, role: str, key_prefix: str = "pairs") -> bool:
@@ -513,10 +564,10 @@ def _render_registry_from_store(connect, actor: str, role: str, key_prefix: str 
     with buttons[0]:
         st.button(f"Сохранить изменения ({len(changes)})", key=f"{key_prefix}_asin_registry_save",
                   disabled=not changes, on_click=_save_registry_callback,
-                  args=(connect, changes, actor, role))
+                  args=(connect, changes, actor, role, key_prefix))
     with buttons[1]:
         st.button(f"Убрать отмеченные ({len(keys)})", key=f"{key_prefix}_asin_registry_drop", disabled=not keys,
-                  on_click=_drop_asins_callback, args=(connect, keys, actor, role))
+                  on_click=_drop_asins_callback, args=(connect, keys, actor, role, key_prefix))
     if len(_matches(registry, query)) > MAX_EDIT_ROWS:
         st.caption(f"Показаны первые {MAX_EDIT_ROWS}: уточните поиск.")
     return True
@@ -572,7 +623,7 @@ def _render_registry(connect, pairs: pd.DataFrame, actor: str, role: str, key_pr
     st.button(
         f"Стереть отмеченные ({len(targets)})", key=f"{key_prefix}_registry_btn",
         disabled=not targets or not confirmed,
-        on_click=_erase_callback, args=(connect, pairs, targets, actor, role),
+        on_click=_erase_callback, args=(connect, pairs, targets, actor, role, key_prefix),
     )
     if len(_matches(registry, query)) > MAX_EDIT_ROWS:
         st.caption(f"Показаны первые {MAX_EDIT_ROWS}: уточните поиск.")
@@ -670,13 +721,12 @@ def render_asin_registry(connect, pairs: pd.DataFrame, actor: str | None, role: 
 
     key_prefix обязателен, если список показывается на нескольких вкладках одной страницы сразу:
     у виджетов должны быть разные ключи, иначе Streamlit откажет на дублирующемся key."""
+    _show_flash(key_prefix)  # безопасно вызвать дважды за прогон: если уже показан — тихо ничего не делает
     _render_registry(connect, pairs, actor or "?", role, key_prefix)
 
 
 def render_pairs_tab(connect, pairs: pd.DataFrame, actor: str | None, role: str | None, max_active: int) -> None:
-    flash = st.session_state.pop("pairs_flash", None)
-    if flash:
-        getattr(st, flash[0])(flash[1])
+    _show_flash("pairs")
     _summary(pairs)
 
     left, right = st.columns([1, 2])
