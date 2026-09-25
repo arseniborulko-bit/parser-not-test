@@ -75,11 +75,13 @@ def _scope_button(connect, token: str, repo: str, can_edit: bool, cooling: bool,
         on_click=_run_callback, args=(connect, token, repo, can_edit, scope),
     )
     if error:
+        # Настоящая ошибка (например, база недоступна) — это не пояснение к политике блокировки,
+        # а диагностика проблемы; такие сообщения владелец просил оставить, в отличие от «Сегодня
+        # уже был успешный сбор» и подобных причин, объясняющих обычную, штатную блокировку.
         st.caption(f"⚠️ {error}")
         return
     if not reason:
         return
-    st.caption(reason)
     if not (can_edit and token and not cooling):
         return
     # Решение владельца 25.09.2026: «уже был сбор сегодня» и дневной лимит попыток можно обойти
@@ -126,13 +128,8 @@ def render_run_block(connect, pairs: pd.DataFrame, preview: Callable[[str], Opti
 
     if not can_edit:
         st.caption("Чтобы запускать сбор, откройте «🔒 Управление» вверху страницы.")
-    elif not token:
-        pass
     elif cooling:
         st.caption(f"Запуск отправлен {int(since)} с назад: сбор начнётся в течение минуты.")
-    else:
-        st.caption("Сбор идёт на серверах GitHub около 10–20 минут, вкладку можно закрыть. "
-                  "Второй успешный сбор за день (в своей области — всё/наши/конкуренты) не запустится: это защита от лишних трат.")
 
 
 def render_spot_check(token: str, can_edit: bool) -> None:

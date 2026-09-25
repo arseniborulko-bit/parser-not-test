@@ -70,14 +70,14 @@ def test_without_a_github_token_the_button_is_off_and_nothing_is_explained(monke
 def test_a_free_moment_enables_the_button(collect_env):
     at = run()
     assert not run_button(at).disabled
-    assert "Второй успешный сбор за день" in captions(at) and "не запустится" in captions(at)
 
 
-def test_a_closed_gate_disables_the_button_and_shows_its_reason(monkeypatch, dash, collect_env):  # noqa: F811
+def test_a_closed_gate_disables_the_button_without_explaining_why(monkeypatch, dash, collect_env):  # noqa: F811
+    """Владелец не хочет пояснительных подписей: кнопка просто неактивна, без текста причины."""
     monkeypatch.setattr(dash, "_admission_preview_cached", lambda scope="all": BLOCKED)
     at = run()
     assert run_button(at).disabled
-    assert BLOCKED in captions(at)
+    assert BLOCKED not in captions(at)
 
 
 def test_a_failing_preview_disables_the_button_with_a_warning(monkeypatch, dash, collect_env):  # noqa: F811
@@ -142,7 +142,7 @@ def test_the_force_override_appears_when_blocked_but_stays_off_until_confirmed(m
     monkeypatch.setattr(dash, "_admission_preview_cached", lambda scope="all": BLOCKED if scope == "all" else None)
     at = run()
     assert run_button(at).disabled
-    assert BLOCKED in captions(at)
+    assert BLOCKED not in captions(at), "владелец не хочет пояснительных подписей"
     force_button = [b for b in at.button if b.key == "collect_run_force"][0]
     assert force_button.disabled, "без подтверждения кнопка обхода должна быть неактивна"
     assert collect_env["dispatches"] == []
