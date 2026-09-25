@@ -164,15 +164,25 @@ def _render_plans(plans: list[pairs_store.Plan]) -> None:
 
 def _render_add(connect, actor: str, role: str, max_active: int, key_prefix: str = "pairs") -> None:
     our_key, comps_key = f"{key_prefix}_our", f"{key_prefix}_comps"
+    st.markdown(
+        '<div class="field-label">Наш товар <span class="field-badge">можно пачкой</span></div>',
+        unsafe_allow_html=True,
+    )
     st.text_area(
-        "Наш товар (ссылки на Amazon, по одной в строке или через запятую — можно несколько)",
-        key=our_key, height=80,
+        "Наш товар", key=our_key, height=80, label_visibility="collapsed",
         placeholder="https://www.amazon.de/dp/B0XXXXXXX1\nhttps://www.amazon.com/dp/B0YYYYYYY",
     )
+    st.caption("Одна ссылка или несколько — по одной в строке.")
+
+    st.markdown(
+        '<div class="field-label">Конкуренты <span class="field-badge">можно пачкой</span></div>',
+        unsafe_allow_html=True,
+    )
     st.text_area(
-        "Конкуренты (ссылки на Amazon, по одной в строке или через запятую)", key=comps_key, height=110,
+        "Конкуренты", key=comps_key, height=110, label_visibility="collapsed",
         placeholder="https://www.amazon.de/dp/B0XXXXXXX1\nhttps://www.amazon.de/dp/B0XXXXXXX2",
     )
+    st.caption("Одна ссылка или несколько — по одной в строке или через запятую.")
     plans: list[pairs_store.Plan] = []
     if st.session_state.get(our_key, "").strip() or st.session_state.get(comps_key, "").strip():
         try:

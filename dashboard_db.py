@@ -178,6 +178,12 @@ def _apply_design() -> None:
         .metric-detail { color: #64748b; font-size: .74rem; line-height: 1.3; }
         .section-title { font-size: 1.55rem; font-weight: 750; margin: 1.75rem 0 .2rem; }
         .section-note { color: #64748b; font-size: .86rem; margin-bottom: .6rem; }
+        .field-label { font-weight: 650; color: #111827; font-size: .95rem; margin-bottom: .35rem; }
+        .field-badge {
+            display: inline-block; background: #e0f2fe; color: #0369a1; font-size: .72rem;
+            font-weight: 650; padding: .12rem .55rem; border-radius: 999px; margin-left: .5rem;
+            vertical-align: middle;
+        }
         /* Вкладки выбираются по role: в новых версиях Streamlit это уже не <button> и не baseweb. */
         div[data-testid="stTabs"] [role="tablist"] { gap: 3px; border-bottom: 1px solid #dfe3ea; }
         /* Только сами заголовки вкладок. Раньше здесь был ещё и просто "button", из-за чего
