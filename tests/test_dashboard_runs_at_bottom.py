@@ -1,17 +1,17 @@
-"""Порядок блоков во вкладке «Сбор и управление»: «Все ASIN» — первым, «Время сбора» — перед
+"""Порядок блоков во вкладке «Сбор и управление»: управление парами, «Время сбора» — перед
 «Запустить сбор», «Последние запуски» — в самом низу, после всего остального."""
 
 from test_dashboard_access import TEAM_PASSWORD, dash, run, unlock  # noqa: F401
 
 
-def test_recent_runs_come_after_the_asin_registry(dash, monkeypatch):  # noqa: F811
+def test_recent_runs_come_after_pair_management(dash, monkeypatch):  # noqa: F811
     monkeypatch.setenv("TEAM_PASSWORD", TEAM_PASSWORD)
     at = unlock(run())
     text = " ".join(block.value for block in at.markdown)
     assert "Последние запуски" in text
-    assert "Все ASIN" in text
-    assert text.index("Все ASIN") < text.index("Последние запуски"), (
-        "таблица запусков должна идти ПОСЛЕ списка ASIN"
+    assert "Пары — правка и отключение" in text
+    assert text.index("Пары — правка и отключение") < text.index("Последние запуски"), (
+        "таблица запусков должна идти ПОСЛЕ управления парами"
     )
 
 
@@ -31,25 +31,21 @@ def test_the_schedule_time_field_comes_before_start_collection(dash, monkeypatch
     assert text.index("Автосбор") < text.index("Запустить сбор")
 
 
-def test_the_asin_registry_comes_before_autocollect(dash, monkeypatch):  # noqa: F811
-    """Владелец хочет видеть список ASIN раньше «Автосбор»."""
+def test_pair_management_comes_before_autocollect(dash, monkeypatch):  # noqa: F811
+    """Управление парами остаётся перед «Автосбор» после удаления списка ASIN."""
     monkeypatch.setenv("TEAM_PASSWORD", TEAM_PASSWORD)
     at = unlock(run())
     text = " ".join(block.value for block in at.markdown)
-    assert "Все ASIN" in text and "Автосбор" in text
-    assert text.index("Все ASIN") < text.index("Автосбор")
+    assert "Пары — правка и отключение" in text and "Автосбор" in text
+    assert text.index("Пары — правка и отключение") < text.index("Автосбор")
 
 
 def test_the_asin_registry_is_hidden_from_viewers_without_edit_rights(monkeypatch, dash):  # noqa: F811
-    """Список редактируется прямо там же (вписать/убрать/переименовать), поэтому, как и «Пары
-    конкурентов», показывается только тем, у кого открыто «Управление» — не всем подряд.
-
-    Ищем именно заголовок раздела, а не любое упоминание фразы «Все ASIN» — она есть и в тексте
-    «Как это работает», который виден всем."""
+    """Удалённый список ASIN не показывается и в режиме просмотра."""
     monkeypatch.setenv("TEAM_PASSWORD", TEAM_PASSWORD)
     at = run()
     text = " ".join(block.value for block in at.markdown)
-    assert 'class="section-title">Все ASIN' not in text
+    assert "Все ASIN" not in text
 
 
 def test_pair_management_appears_on_the_collect_tab_without_crashing(dash, monkeypatch):  # noqa: F811
@@ -62,9 +58,10 @@ def test_pair_management_appears_on_the_collect_tab_without_crashing(dash, monke
     text = " ".join(block.value for block in at.markdown)
     assert "Добавить пару" in text
     assert "Пары — правка и отключение" in text
-    assert text.index("Добавить пару") < text.index("Все ASIN"), (
-        "форма пар должна идти раньше списка ASIN на той же вкладке"
-    )
+    assert "Все ASIN" not in text
+    assert not any("Все ASIN" in expander.label for expander in at.expander)
+    assert not any(widget.label == "Вписать ASIN или ссылки" for widget in at.text_input)
+    assert not any(widget.label == "Показывать убранные" for widget in at.checkbox)
 
 
 def test_the_pair_grid_on_the_collect_tab_shows_editable_rows(dash, monkeypatch):  # noqa: F811

@@ -706,17 +706,6 @@ def _render_log(connect) -> None:
     )
 
 
-def render_asin_registry(connect, pairs: pd.DataFrame, actor: str | None, role: str | None,
-                         key_prefix: str = "pairs") -> None:
-    """Список всех ASIN со ссылками, названием и правкой — публичная точка входа для других вкладок
-    дашборда (например, «Сбор и управление»), не только для вкладки «Пары конкурентов».
-
-    key_prefix обязателен, если список показывается на нескольких вкладках одной страницы сразу:
-    у виджетов должны быть разные ключи, иначе Streamlit откажет на дублирующемся key."""
-    _show_flash(key_prefix)  # безопасно вызвать дважды за прогон: если уже показан — тихо ничего не делает
-    _render_registry(connect, pairs, actor or "?", role, key_prefix)
-
-
 def render_pairs_tab(connect, pairs: pd.DataFrame, actor: str | None, role: str | None, max_active: int) -> None:
     _show_flash("pairs")
     _summary(pairs)
@@ -743,8 +732,6 @@ def render_pairs_tab(connect, pairs: pd.DataFrame, actor: str | None, role: str 
     st.caption("Изменения попадают в следующий сбор. Лист Competitors в Google Таблице парсер больше не читает.")
     with st.expander("➕ Добавить конкурентов", expanded=True):
         _render_add(connect, actor or "?", role, max_active)
-    with st.expander("📇 Все ASIN"):
-        _render_registry(connect, pairs, actor or "?", role)
     with st.expander("✏️ Исправить названия"):
         _render_edit(connect, pairs, actor or "?", role)
     with st.expander("🗑 Убрать пары"):
