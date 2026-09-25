@@ -80,8 +80,12 @@ class Plan:
         return not self.errors and self.changes > 0
 
 
-def parse_asin_batch(text: object) -> ParsedBatch:
-    """Достаёт ASIN из вставленного текста: чистые ASIN, ссылки Amazon, ASIN:РЫНОК. Повторы отбрасываются."""
+def parse_asin_batch(text: object, *, require_link: bool = False) -> ParsedBatch:
+    """Достаёт ASIN из вставленного текста: чистые ASIN, ссылки Amazon, ASIN:РЫНОК. Повторы отбрасываются.
+
+    require_link=True: голый ASIN и «ASIN:РЫНОК» считаются нераспознанными — принимаются только
+    настоящие ссылки Amazon (использует форма «Добавить пару»: страна должна быть видна из самой
+    ссылки, владелец, 25.09.2026)."""
     batch = ParsedBatch()
     if not isinstance(text, str):
         return batch
@@ -91,7 +95,8 @@ def parse_asin_batch(text: object) -> ParsedBatch:
         if not token:
             continue
         market: Optional[str] = None
-        if "amazon." in token.lower():
+        is_link = "amazon." in token.lower()
+        if is_link:
             host = _HOST_RE.search(token)
             market = MARKET_BY_DOMAIN.get(host.group(1).lower()) if host else None
             if market is None:
@@ -108,6 +113,9 @@ def parse_asin_batch(text: object) -> ParsedBatch:
         if not match:
             batch.invalid.append(raw)
             continue
+        if require_link and not is_link:
+            batch.invalid.append(raw)
+            continue
         asin = match.group(1).upper()
         if asin in seen:
             batch.repeats += 1
@@ -121,24 +129,29 @@ def _run(connect: Connect, sql: str, params: tuple = (), *, fetch: bool = False)
     return dbutil.run_sql(connect, sql, params, fetch=fetch, error=PairsStoreError, what=_WHAT)
 
 
-def make_plan(connect: Connect, our_text: object, market_choice: Optional[str], competitors_text: object, *,
+def make_plan(connect: Connect, our_text: object, competitors_text: object, *,
               max_active: int = DEFAULT_MAX_ACTIVE) -> Plan:
-    """Что случится при добавлении: новые, возвращаемые, уже существующие, ошибки. Ничего не записывает."""
+    """Что случится при добавлении: новые, возвращаемые, уже существующие, ошибки. Ничего не записывает.
+
+    И «наш товар», и конкуренты принимаются только ссылкой на Amazon (require_link=True) — страна
+    видна из самой ссылки, поэтому её не нужно ни выбирать вручную, ни угадывать по истории
+    (владелец, 25.09.2026: «мы добавляем только по ссылке, а не по ASIN»)."""
     plan = Plan()
-    ours = parse_asin_batch(our_text)
+    ours = parse_asin_batch(our_text, require_link=True)
     if len(ours.items) != 1 or ours.invalid:
-        plan.errors.append("Наш товар: нужен ровно один ASIN (B0XXXXXXXX) или ссылка на него.")
+        plan.errors.append("Наш товар: нужна ровно одна ссылка на страницу Amazon.")
         return plan
     our = ours.items[0]
     plan.our_asin = our.asin
+    market = our.market  # ссылка обязательна (require_link=True) — страна всегда известна
 
-    comps = parse_asin_batch(competitors_text)
+    comps = parse_asin_batch(competitors_text, require_link=True)
     plan.invalid, plan.repeats = list(comps.invalid), comps.repeats
     if len(comps.items) > MAX_BATCH:
         plan.errors.append(f"За один раз можно добавить не больше {MAX_BATCH} конкурентов.")
         return plan
     if not comps.items:
-        plan.errors.append("Вставьте ASIN или ссылки конкурентов.")
+        plan.errors.append("Вставьте ссылки конкурентов.")
         return plan
 
     known_rows, active_now = dbutil.run_many(
@@ -151,16 +164,6 @@ def make_plan(connect: Connect, our_text: object, market_choice: Optional[str], 
         error=PairsStoreError, what=_WHAT,
     )
     plan.active_now = active_now[0][0]
-    known_markets = list(dict.fromkeys(row[0] for row in known_rows))
-    if our.market:
-        market = our.market
-    elif market_choice in DOMAIN_BY_MARKET:
-        market = market_choice
-    elif len(known_markets) == 1:
-        market = known_markets[0]
-    else:
-        plan.errors.append("Выберите маркетплейс: по этому ASIN нельзя определить страну.")
-        return plan
     if market not in DOMAIN_BY_MARKET:
         plan.errors.append(f"Маркетплейс «{market}» не поддерживается сбором.")
         return plan

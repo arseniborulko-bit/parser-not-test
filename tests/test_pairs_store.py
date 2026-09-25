@@ -130,6 +130,19 @@ def test_empty_or_non_text_input_gives_an_empty_batch(value):
     assert batch.items == [] and batch.invalid == [] and batch.repeats == 0
 
 
+def test_require_link_rejects_bare_asin_and_market_suffix():
+    """«Добавить пару» больше не принимает голый ASIN или «ASIN:РЫНОК» — только настоящую
+    ссылку (владелец, 25.09.2026: «мы добавляем только по ссылке, а не по ASIN»)."""
+    batch = pairs_store.parse_asin_batch(f"{A} {B}:US", require_link=True)
+    assert batch.items == []
+    assert set(batch.invalid) == {A, f"{B}:US"}
+
+
+def test_require_link_accepts_a_real_amazon_link():
+    batch = pairs_store.parse_asin_batch(f"https://www.amazon.com/dp/{A}", require_link=True)
+    assert tokens(batch) == [(A, "US")]
+
+
 def test_market_tables_match_the_parsers_domain_mapping():
     import sheets
 
@@ -154,9 +167,14 @@ def plan_db(known=(), active_now=100, statuses=(), collected=()):
     return FakeDb(results=results)
 
 
+def link(asin: str, domain: str = "com") -> str:
+    """Тестовая ссылка Amazon: make_plan (require_link=True) страну берёт только из неё."""
+    return f"https://www.amazon.{domain}/dp/{asin}"
+
+
 def test_plan_splits_new_returning_and_existing_pairs():
     db = plan_db(known=[("US", "Our product")], statuses=[(B, True), (C, False)], collected=[A, B])
-    plan = pairs_store.make_plan(db.connect, A, None, f"{B} {C} {D}")
+    plan = pairs_store.make_plan(db.connect, link(A), f"{link(B)} {link(C)} {link(D)}")
     assert (plan.market, plan.our_asin, plan.our_product) == ("US", A, "Our product")
     assert (plan.to_add, plan.to_enable, plan.already) == ([D], [C], [B])
     assert plan.new_asins == 2
@@ -165,83 +183,92 @@ def test_plan_splits_new_returning_and_existing_pairs():
 
 def test_plan_reads_only_and_never_writes():
     db = plan_db(known=[("US", "")], statuses=[], collected=[])
-    pairs_store.make_plan(db.connect, A, None, B)
+    pairs_store.make_plan(db.connect, link(A), link(B))
     assert db.commits == 2
     assert all(sql.lstrip().upper().startswith("SELECT") for sql, _ in db.executed)
 
 
-def test_market_precedence_link_then_choice_then_database():
+def test_market_always_comes_from_the_link_not_from_history():
+    """Владелец, 25.09.2026: только ссылка — страна не выбирается вручную и не угадывается
+    по тому, что уже есть в базе (раньше был выбор «Маркетплейс» и подстановка по истории)."""
     db = plan_db(known=[("DE", "")], statuses=[], collected=[])
-    plan = pairs_store.make_plan(db.connect, f"https://www.amazon.ca/dp/{A}", "US", B)
+    plan = pairs_store.make_plan(db.connect, link(A, "ca"), link(B, "ca"))
     assert plan.market == "CA"
-    db = plan_db(known=[("DE", "")], statuses=[], collected=[])
-    assert pairs_store.make_plan(db.connect, A, "US", B).market == "US"
-    db = plan_db(known=[("DE", "")], statuses=[], collected=[])
-    assert pairs_store.make_plan(db.connect, A, None, B).market == "DE"
 
 
-def test_unknown_our_asin_without_a_market_asks_to_choose_one():
-    db = plan_db(known=[], statuses=None)
-    plan = pairs_store.make_plan(db.connect, A, None, B)
-    assert not plan.can_apply and "маркетплейс" in plan.errors[0].lower()
+def test_a_bare_asin_for_our_product_is_rejected():
+    db = FakeDb()
+    plan = pairs_store.make_plan(db.connect, A, link(B))
+    assert not plan.can_apply and "ссылка" in plan.errors[0].lower()
+    assert db.connects == 0
 
 
-def test_our_asin_in_two_markets_needs_an_explicit_choice():
-    db = plan_db(known=[("US", ""), ("CA", "")], statuses=None)
-    plan = pairs_store.make_plan(db.connect, A, None, B)
-    assert "маркетплейс" in plan.errors[0].lower()
+def test_an_asin_market_suffix_is_not_enough_a_real_link_is_required():
+    db = FakeDb()
+    plan = pairs_store.make_plan(db.connect, f"{A}:US", link(B))
+    assert not plan.can_apply and "ссылка" in plan.errors[0].lower()
 
 
-def test_new_our_asin_with_a_chosen_market_works_and_counts_all_new_asins():
+def test_new_our_asin_works_when_the_link_gives_the_market():
     db = plan_db(known=[], statuses=[], collected=[])
-    plan = pairs_store.make_plan(db.connect, A, "CA", f"{B} {C}")
+    plan = pairs_store.make_plan(db.connect, link(A, "ca"), f"{link(B, 'ca')} {link(C, 'ca')}")
     assert plan.market == "CA" and plan.to_add == [B, C] and plan.our_product == ""
     assert plan.new_asins == 3
 
 
 @pytest.mark.parametrize("our_text", ["", "hello", f"{A} {B}", f"{A} junk"])
-def test_our_product_must_be_exactly_one_asin(our_text):
+def test_our_product_must_be_exactly_one_link(our_text):
     db = FakeDb()
-    plan = pairs_store.make_plan(db.connect, our_text, "US", B)
+    plan = pairs_store.make_plan(db.connect, our_text, link(B))
     assert not plan.can_apply and "Наш товар" in plan.errors[0]
     assert db.connects == 0
 
 
 def test_no_competitors_is_an_error_without_database_access():
     db = FakeDb()
-    plan = pairs_store.make_plan(db.connect, A, "US", "  ")
-    assert plan.errors == ["Вставьте ASIN или ссылки конкурентов."] and db.connects == 0
+    plan = pairs_store.make_plan(db.connect, link(A), "  ")
+    assert plan.errors == ["Вставьте ссылки конкурентов."] and db.connects == 0
+
+
+def test_a_bare_asin_competitor_is_rejected_not_silently_accepted():
+    """Голый ASIN конкурента раньше молча считался «того же рынка, что наш товар» — теперь это
+    просто нераспознанная строка, как и для нашего товара."""
+    db = FakeDb()
+    plan = pairs_store.make_plan(db.connect, link(A), B)
+    assert plan.invalid == [B]
+    assert plan.errors == ["Вставьте ссылки конкурентов."]
+    assert db.connects == 0
 
 
 def test_batch_limit():
-    many = " ".join(f"B0{i:08d}" for i in range(pairs_store.MAX_BATCH + 1))
+    many = " ".join(link(f"B0{i:08d}") for i in range(pairs_store.MAX_BATCH + 1))
     db = FakeDb()
-    plan = pairs_store.make_plan(db.connect, A, "US", many)
+    plan = pairs_store.make_plan(db.connect, link(A), many)
     assert "не больше" in plan.errors[0] and db.connects == 0
 
 
 def test_competitor_from_another_marketplace_or_equal_to_ours_is_rejected():
     db = plan_db(known=[("US", "")], statuses=[], collected=[])
-    plan = pairs_store.make_plan(db.connect, A, None, f"https://www.amazon.de/dp/{B} {A} {C}")
+    plan = pairs_store.make_plan(db.connect, link(A), f"{link(B, 'de')} {link(A)} {link(C)}")
     assert plan.to_add == [C]
     assert len(plan.rejected) == 2 and "DE" in plan.rejected[0] and "совпадает" in plan.rejected[1]
 
 
 def test_invalid_and_repeated_items_are_reported():
     db = plan_db(known=[("US", "")], statuses=[], collected=[])
-    plan = pairs_store.make_plan(db.connect, A, None, f"{B} {B} nonsense")
+    plan = pairs_store.make_plan(db.connect, link(A), f"{link(B)} {link(B)} nonsense")
     assert plan.to_add == [B] and plan.invalid == ["nonsense"] and plan.repeats == 1
 
 
 def test_active_pairs_cap_blocks_applying():
     db = plan_db(known=[("US", "")], active_now=1499, statuses=[], collected=[])
-    plan = pairs_store.make_plan(db.connect, A, None, f"{B} {C}", max_active=1500)
+    plan = pairs_store.make_plan(db.connect, link(A), f"{link(B)} {link(C)}", max_active=1500)
     assert not plan.can_apply and "лимит" in plan.errors[0]
 
 
 def test_nothing_to_change_is_not_applicable():
     db = plan_db(known=[("US", "")], statuses=[(B, True)], collected=[A, B])
-    plan = pairs_store.make_plan(db.connect, A, None, B)
+    plan = pairs_store.make_plan(db.connect, link(A), link(B))
     assert plan.already == [B] and plan.changes == 0 and not plan.can_apply and plan.errors == []
 
 
@@ -252,7 +279,7 @@ def test_nothing_to_change_is_not_applicable():
 ])
 def test_driver_errors_are_wrapped_without_leaking_their_text(db):
     with pytest.raises(pairs_store.PairsStoreError) as info:
-        pairs_store.make_plan(db.connect, A, "US", B)
+        pairs_store.make_plan(db.connect, link(A), link(B))
     assert "hunter2" not in str(info.value) and "secret" not in str(info.value)
 
 

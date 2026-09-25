@@ -30,7 +30,6 @@ _PAIR_COLUMNS = {
 _STATUS_ALL = "Все"
 _STATUS_ACTIVE = "Активные"
 _STATUS_OFF = "Отключённые"
-_SAME_MARKET = "— как у этого товара в базе —"
 _CONFIRM_ABOVE = 25
 _ERRORS = (ValueError, access.AccessDenied, pairs_store.PairsStoreError)
 
@@ -70,12 +69,10 @@ def _summary(pairs: pd.DataFrame) -> None:
 
 def _add_callback(connect, actor: str, role: str, max_active: int, key_prefix: str = "pairs") -> None:
     state = st.session_state
-    our_key, market_key, comps_key = f"{key_prefix}_our", f"{key_prefix}_market", f"{key_prefix}_comps"
-    pick = state.get(market_key, _SAME_MARKET)
+    our_key, comps_key = f"{key_prefix}_our", f"{key_prefix}_comps"
     try:
         plan = pairs_store.make_plan(
-            connect, state.get(our_key, ""), None if pick == _SAME_MARKET else pick,
-            state.get(comps_key, ""), max_active=max_active,
+            connect, state.get(our_key, ""), state.get(comps_key, ""), max_active=max_active,
         )
         result = pairs_store.apply_plan(connect, plan, actor_role=role, actor=actor)
     except _ERRORS as exc:
@@ -119,30 +116,26 @@ def _render_plan(plan: pairs_store.Plan) -> None:
     if plan.rejected:
         st.warning("Пропущены: " + "; ".join(plan.rejected))
     if plan.invalid:
-        st.warning("Не распознано (нужен ASIN вида B0XXXXXXXX или ссылка Amazon):")
+        st.warning("Не распознано (нужна ссылка на страницу Amazon):")
         st.code("\n".join(plan.invalid[:20]) + ("\n…" if len(plan.invalid) > 20 else ""), language=None)
     if plan.repeats:
         st.caption(f"Повторов в тексте отброшено: {plan.repeats}.")
 
 
 def _render_add(connect, actor: str, role: str, max_active: int, key_prefix: str = "pairs") -> None:
-    our_key, market_key, comps_key = f"{key_prefix}_our", f"{key_prefix}_market", f"{key_prefix}_comps"
-    st.text_input("Наш товар (ASIN или ссылка)", key=our_key, placeholder="B0XXXXXXXX или ссылка на страницу Amazon")
-    st.selectbox(
-        "Маркетплейс", [_SAME_MARKET, *pairs_store.MARKETS], key=market_key,
-        help="Нужен только для нового товара без ссылки: ссылка сама определяет страну.",
-    )
+    our_key, comps_key = f"{key_prefix}_our", f"{key_prefix}_comps"
+    st.text_input("Наш товар (ссылка на Amazon)", key=our_key,
+                  placeholder="https://www.amazon.com/dp/B0XXXXXXXX")
     st.text_area(
-        "Конкуренты (ASIN или ссылки, по одному в строке или через запятую)", key=comps_key, height=110,
-        placeholder="B0XXXXXXX1, B0XXXXXXX2, https://www.amazon.com/dp/B0XXXXXXX3",
+        "Конкуренты (ссылки на Amazon, по одной в строке или через запятую)", key=comps_key, height=110,
+        placeholder="https://www.amazon.com/dp/B0XXXXXXX1, https://www.amazon.de/dp/B0XXXXXXX2",
     )
     plan = None
     if st.session_state.get(our_key, "").strip() or st.session_state.get(comps_key, "").strip():
-        pick = st.session_state.get(market_key, _SAME_MARKET)
         try:
             plan = pairs_store.make_plan(
-                connect, st.session_state.get(our_key, ""), None if pick == _SAME_MARKET else pick,
-                st.session_state.get(comps_key, ""), max_active=max_active,
+                connect, st.session_state.get(our_key, ""), st.session_state.get(comps_key, ""),
+                max_active=max_active,
             )
         except _ERRORS as exc:
             st.error(str(exc))

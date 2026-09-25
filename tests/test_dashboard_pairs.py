@@ -34,8 +34,8 @@ def pairs_env(monkeypatch, dash):  # noqa: F811
     plan = pairs_store.Plan(market="US", our_asin=OUR, our_product="Our product", to_add=["B0NEWPAIR1", "B0NEWPAIR2"],
                             to_enable=["B0OFF00000"], already=["B0COMP0000"], invalid=["junk"], new_asins=2, active_now=3)
 
-    def fake_plan(connect, our_text, market_choice, competitors_text, *, max_active=1500):
-        calls["plan"].append((our_text, market_choice, competitors_text, max_active))
+    def fake_plan(connect, our_text, competitors_text, *, max_active=1500):
+        calls["plan"].append((our_text, competitors_text, max_active))
         return calls.get("plan_result", plan)
 
     def fake_apply(connect, plan_arg, *, actor_role, actor):
@@ -117,7 +117,7 @@ def test_preview_shows_counts_cost_and_problems_before_anything_is_written(pairs
     at.text_area(key="pairs_comps").input("B0NEWPAIR1 B0NEWPAIR2 B0OFF00000 B0COMP0000 junk")
     at.run(timeout=30)
     assert not at.exception
-    assert pairs_env["plan"][-1][:3] == (OUR, None, "B0NEWPAIR1 B0NEWPAIR2 B0OFF00000 B0COMP0000 junk")
+    assert pairs_env["plan"][-1][:2] == (OUR, "B0NEWPAIR1 B0NEWPAIR2 B0OFF00000 B0COMP0000 junk")
     shown = metrics(at)
     assert (shown["Новых"], shown["Вернутся"], shown["Уже есть"], shown["Не подошло"]) == ("2", "1", "1", "1")
     assert any("В каждом сборе добавится ASIN: 2" in c.value for c in at.caption)
@@ -125,15 +125,6 @@ def test_preview_shows_counts_cost_and_problems_before_anything_is_written(pairs
     assert pairs_env["apply"] == []
     button = [b for b in at.button if b.key == "pairs_add"][0]
     assert button.label == "Добавить пар: 3" and not button.disabled
-
-
-def test_chosen_marketplace_is_passed_to_the_plan(pairs_env):
-    at = open_management(run())
-    at.text_input(key="pairs_our").input(OUR)
-    at.selectbox(key="pairs_market").select("CA")
-    at.text_area(key="pairs_comps").input("B0NEWPAIR1")
-    at.run(timeout=30)
-    assert pairs_env["plan"][-1][1] == "CA"
 
 
 def test_confirming_the_preview_writes_with_editor_role_and_the_actor(pairs_env):

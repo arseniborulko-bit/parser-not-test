@@ -219,6 +219,10 @@ def dashboard_sql(function_name: str, extra: str = "") -> str:
 def section_pairs() -> None:
     print("\n== пары ASIN ==")
     ours, mine = "B0OURASIN1", dict(actor_role=access.ROLE_EDITOR, actor="Аня")
+    ours_link = f"https://www.amazon.com/dp/{ours}"
+
+    def comp_link(asin: str) -> str:
+        return f"https://www.amazon.com/dp/{asin}"
 
     def seed():
         q("INSERT INTO bsr_radar.competitor_pairs (marketplace, our_asin, our_product, comp_asin, competitor_name, active) VALUES "
@@ -232,7 +236,8 @@ def section_pairs() -> None:
     q(MIGRATIONS["002_dashboard_users.sql"])
     seed()
     check("без таблицы журнала journal_exists = ложь", pairs_store.journal_exists(connect) is False)
-    early = pairs_store.apply_plan(connect, pairs_store.make_plan(connect, ours, None, "B0COMPAAA2 B0COMPAAA3"), **mine)
+    early = pairs_store.apply_plan(
+        connect, pairs_store.make_plan(connect, ours_link, f"{comp_link('B0COMPAAA2')} {comp_link('B0COMPAAA3')}"), **mine)
     check("без журнала пары добавляются и возвращаются", early == {"add": 1, "enable": 1}, str(early))
     check("без журнала пары отключаются", pairs_store.set_pairs_active(connect, [("US", ours, "B0COMPAAA3")], False, **mine) == 1
           and q("SELECT count(*) FROM bsr_radar.competitor_pairs WHERE active;")[0][0] == 3)
@@ -242,7 +247,10 @@ def section_pairs() -> None:
     reset()
     seed()
 
-    plan = pairs_store.make_plan(connect, ours, None, "B0COMPAAA1 B0COMPAAA2 B0COMPAAA3 https://www.amazon.com/dp/B0COMPAAA4 junk")
+    plan = pairs_store.make_plan(
+        connect, ours_link,
+        f"{comp_link('B0COMPAAA1')} {comp_link('B0COMPAAA2')} {comp_link('B0COMPAAA3')} "
+        "https://www.amazon.com/dp/B0COMPAAA4 junk")
     check("план на настоящей базе: новые, возвращаемые и уже активные определены верно",
           plan.market == "US" and plan.our_product == "Our product" and sorted(plan.to_add) == ["B0COMPAAA3", "B0COMPAAA4"]
           and plan.to_enable == ["B0COMPAAA2"] and plan.already == ["B0COMPAAA1"] and plan.invalid == ["junk"], str(plan.errors))
@@ -257,7 +265,8 @@ def section_pairs() -> None:
           and {row[1] for row in log} == {"Аня"} and {row[2] for row in log} == {"US"})
     check("новые пары активны и получили название нашего товара",
           q("SELECT count(*) FROM bsr_radar.competitor_pairs WHERE active AND our_product = 'Our product' AND our_asin = %s;", (ours,))[0][0] == 4)
-    again = pairs_store.apply_plan(connect, pairs_store.make_plan(connect, ours, None, "B0COMPAAA3 B0COMPAAA2"), **mine)
+    again = pairs_store.apply_plan(
+        connect, pairs_store.make_plan(connect, ours_link, f"{comp_link('B0COMPAAA3')} {comp_link('B0COMPAAA2')}"), **mine)
     check("повторное добавление ничего не меняет и не пишет в журнал", again == {"add": 0, "enable": 0}
           and q("SELECT count(*) FROM bsr_radar.pair_changes;")[0][0] == 3)
 
@@ -265,7 +274,7 @@ def section_pairs() -> None:
     check("отключение двух пар", pairs_store.set_pairs_active(connect, keys, False, **mine) == 2)
     check("повторное отключение ничего не меняет", pairs_store.set_pairs_active(connect, keys, False, **mine) == 0)
     check("отключённые пары остались в таблице (история цела)", q("SELECT count(*) FROM bsr_radar.competitor_pairs WHERE NOT active;")[0][0] == 2)
-    plan2 = pairs_store.make_plan(connect, ours, None, "B0COMPAAA3")
+    plan2 = pairs_store.make_plan(connect, ours_link, comp_link("B0COMPAAA3"))
     check("отключённую пару можно вернуть добавлением: это «возврат», а не «новая»", plan2.to_enable == ["B0COMPAAA3"] and not plan2.to_add)
     pairs_store.apply_plan(connect, plan2, **mine)
     check("возврат записан в журнал как enable, не add",
@@ -273,7 +282,7 @@ def section_pairs() -> None:
     check("последние изменения читаются, новые сверху", pairs_store.recent_changes(connect, 3)[0]["action"] == "enable")
 
     fresh = "B0COMPNEW1"
-    race_plan = pairs_store.make_plan(connect, ours, None, fresh)
+    race_plan = pairs_store.make_plan(connect, ours_link, comp_link(fresh))
     out = race(lambda _: pairs_store.apply_plan(connect, race_plan, **mine), list(range(12)))
     total = sum(r["add"] + r["enable"] for kind, r in out if kind == "ok")
     check("12 одновременных добавлений одной пары: в базе одна строка, в журнале одна запись",
