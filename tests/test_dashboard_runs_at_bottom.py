@@ -1,4 +1,5 @@
-"""Порядок блоков во вкладке «Сбор и управление»: управление парами, «Время сбора» — перед
+"""Порядок блоков во вкладке «Сбор и управление»: «Автосбор» — в самом верху (владелец,
+25.09.2026: «это надо в самый верх чтобы стоял над добавить пару»), «Время сбора» — перед
 «Запустить сбор», «Последние запуски» — в самом низу, после всего остального."""
 
 from test_dashboard_access import TEAM_PASSWORD, dash, run, unlock  # noqa: F401
@@ -31,13 +32,14 @@ def test_the_schedule_time_field_comes_before_start_collection(dash, monkeypatch
     assert text.index("Автосбор") < text.index("Запустить сбор")
 
 
-def test_pair_management_comes_before_autocollect(dash, monkeypatch):  # noqa: F811
-    """Управление парами остаётся перед «Автосбор» после удаления списка ASIN."""
+def test_autocollect_comes_before_pair_management(dash, monkeypatch):  # noqa: F811
+    """Владелец попросил поднять «Автосбор» в самый верх, над «Добавить пару» (25.09.2026)."""
     monkeypatch.setenv("TEAM_PASSWORD", TEAM_PASSWORD)
     at = unlock(run())
     text = " ".join(block.value for block in at.markdown)
-    assert "Пары — правка и отключение" in text and "Автосбор" in text
-    assert text.index("Пары — правка и отключение") < text.index("Автосбор")
+    assert "Автосбор" in text and "Добавить пару" in text and "Пары — правка и отключение" in text
+    assert text.index("Автосбор") < text.index("Добавить пару")
+    assert text.index("Автосбор") < text.index("Пары — правка и отключение")
 
 
 def test_the_asin_registry_is_hidden_from_viewers_without_edit_rights(monkeypatch, dash):  # noqa: F811
