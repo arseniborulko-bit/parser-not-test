@@ -291,20 +291,13 @@ def test_the_spot_check_needs_open_management_too(monkeypatch, collect_env):
     assert "Чтобы проверять ASIN, откройте «🔒 Управление»" in captions(at)
 
 
-def test_the_refresh_button_clears_the_cache_for_everyone(monkeypatch, collect_env):
-    import streamlit as st
-
-    cleared = []
-    monkeypatch.setattr(st.cache_data, "clear", lambda: cleared.append(1))
-    monkeypatch.setenv("TEAM_PASSWORD", TEAM_PASSWORD)
-    at = run()
-    [b for b in at.button if b.key == "collect_refresh"][0].click()
-    at.run(timeout=30)
-    assert not at.exception and cleared
-    assert any("Данные обновлены" in s.value for s in at.success)
-
-
 def test_the_schedule_is_still_on_the_same_tab_under_its_own_heading(collect_env):
     at = run()
     assert any("Автосбор включён: каждый день после 09:00" in s.value for s in at.success)
     assert any(m.value.count("Автосбор") and "section-title" in m.value for m in at.markdown)
+
+
+def test_the_refresh_button_is_gone(collect_env):
+    """Владелец попросил убрать «Обновить данные из базы»: кэш и так обновляется сам, по TTL."""
+    at = run()
+    assert not [b for b in at.button if b.key == "collect_refresh"]

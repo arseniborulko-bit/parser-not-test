@@ -156,10 +156,3 @@ def render_spot_check(token: str, can_edit: bool) -> None:
         st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
 
 
-def _refresh_callback() -> None:
-    st.cache_data.clear()
-    _flash("success", "Данные обновлены.")
-
-
-def render_refresh_button() -> None:
-    st.button("🔄 Обновить данные из базы", key="collect_refresh", on_click=_refresh_callback)

@@ -1309,7 +1309,6 @@ def main() -> None:
             )
         with right:
             collect_ui.render_spot_check(_secret("SCRAPINGDOG_TOKEN"), can_edit)
-        collect_ui.render_refresh_button()
         if overview is not None:
             _render_recent_runs(overview, can_edit)
 
