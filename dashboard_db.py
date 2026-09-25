@@ -355,6 +355,31 @@ def _amazon_url(asin: object, marketplace: object) -> str:
     return f"https://www.amazon.{domain}/dp/{asin}"
 
 
+def _asins_per_country(data: pd.DataFrame) -> list[tuple[str, int]]:
+    """Сколько уникальных ASIN (наших и конкурентов вместе) приходится на каждую страну,
+    по убыванию — по образцу карточки «Стран» у Rating Radar."""
+    if "marketplace" not in data:
+        return []
+    sides = []
+    if "our_asin" in data:
+        sides.append(data[["marketplace", "our_asin"]].rename(columns={"our_asin": "asin"}))
+    if "comp_asin" in data:
+        sides.append(data[["marketplace", "comp_asin"]].rename(columns={"comp_asin": "asin"}))
+    if not sides:
+        return []
+    combined = pd.concat(sides, ignore_index=True).dropna(subset=["marketplace", "asin"])
+    combined = combined[combined["asin"].astype(str).str.strip().ne("")]
+    counts = combined.drop_duplicates(["marketplace", "asin"]).groupby("marketplace").size()
+    return sorted(counts.items(), key=lambda item: (-item[1], item[0]))
+
+
+def _country_breakdown_text(data: pd.DataFrame) -> str:
+    breakdown = _asins_per_country(data)
+    if not breakdown:
+        return "маркетплейсов"
+    return " · ".join(f"{country} {count}" for country, count in breakdown)
+
+
 def _render_overview(data: pd.DataFrame) -> None:
     latest = "—"
     if not data.empty:
@@ -366,7 +391,7 @@ def _render_overview(data: pd.DataFrame) -> None:
         _metric_card("Всего записей", f"{len(data):,}".replace(",", " "), "в выбранном срезе"),
         _metric_card("Наших ASIN", data["our_asin"].nunique() if "our_asin" in data else "—", "уникальных товаров", "#168a50"),
         _metric_card("Конкурентов", data["comp_asin"].nunique() if "comp_asin" in data else "—", "уникальных ASIN", "#d97706"),
-        _metric_card("Стран", data["marketplace"].nunique() if "marketplace" in data else "—", "маркетплейсов"),
+        _metric_card("Стран", data["marketplace"].nunique() if "marketplace" in data else "—", _country_breakdown_text(data)),
         _metric_card("Последняя дата", latest, "дата в базе", "#2563eb"),
     ]
     for column, card in zip(cards, values):
