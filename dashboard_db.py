@@ -1298,6 +1298,7 @@ def main() -> None:
 
     with schedule_tab:
         can_edit = access.has_role(manage_role, access.ROLE_EDITOR)
+        _render_retired_block()
         left, right = st.columns(2)
         with left:
             st.markdown('<p class="section-title">Автосбор</p>', unsafe_allow_html=True)
@@ -1308,7 +1309,6 @@ def main() -> None:
             )
         with right:
             collect_ui.render_spot_check(_secret("SCRAPINGDOG_TOKEN"), can_edit)
-        _render_retired_block()
         collect_ui.render_refresh_button()
         if overview is not None:
             _render_recent_runs(overview, can_edit)

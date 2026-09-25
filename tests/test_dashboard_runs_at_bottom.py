@@ -39,3 +39,20 @@ def test_the_schedule_time_field_comes_before_start_collection(dash, monkeypatch
     text = " ".join(block.value for block in at.markdown)
     assert "Автосбор" in text and "Запустить сбор" in text
     assert text.index("Автосбор") < text.index("Запустить сбор")
+
+
+def test_the_retired_asins_block_comes_before_autocollect(dash, monkeypatch):  # noqa: F811
+    """Владелец хочет видеть «Больше не собираются» раньше «Автосбор»."""
+    import dashboard_db as dash_module
+
+    monkeypatch.setenv("TEAM_PASSWORD", TEAM_PASSWORD)
+    monkeypatch.setattr(
+        dash_module, "load_retired_asins",
+        lambda: pd.DataFrame([
+            {"marketplace": "UK", "asin": "B0OLDOLD01", "name": "Старый", "role": "конкурент", "last_seen": None},
+        ]),
+    )
+    at = unlock(run())
+    text = " ".join(block.value for block in at.markdown)
+    assert "Больше не собираются" in text and "Автосбор" in text
+    assert text.index("Больше не собираются") < text.index("Автосбор")
