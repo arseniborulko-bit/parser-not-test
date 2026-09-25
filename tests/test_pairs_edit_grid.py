@@ -66,10 +66,10 @@ def test_the_asin_columns_are_links_and_cannot_be_edited():
     assert '"Наш товар": st.column_config.TextColumn' in source
 
 
-def test_the_grid_is_capped_so_a_huge_list_stays_usable():
-    assert pairs_ui.MAX_EDIT_ROWS == 200
+def test_the_grid_shows_every_matching_row_without_a_cap():
+    """Владелец явно попросил показывать все пары, а не первые 200 (25.09.2026)."""
     import inspect
 
     source = inspect.getsource(pairs_ui._render_edit)
-    assert "head(MAX_EDIT_ROWS)" in source
-    assert "уточните поиск" in source
+    assert "MAX_EDIT_ROWS" not in source
+    assert "head(" not in source

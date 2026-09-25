@@ -212,8 +212,7 @@ def _render_edit(connect, pairs: pd.DataFrame, actor: str, role: str) -> None:
     if shown.empty:
         st.info("Ничего не найдено.")
         return
-    total_found = len(shown)
-    shown = shown.head(MAX_EDIT_ROWS).reset_index(drop=True)
+    shown = shown.reset_index(drop=True)
 
     table = pd.DataFrame({
         "Страна": shown["marketplace"],
@@ -244,8 +243,6 @@ def _render_edit(connect, pairs: pd.DataFrame, actor: str, role: str) -> None:
         f"Сохранить изменения ({len(changes)})", key="pairs_edit_btn", disabled=not changes,
         on_click=_edit_callback, args=(connect, changes, actor, role),
     )
-    if total_found > MAX_EDIT_ROWS:
-        st.caption(f"Показаны первые {MAX_EDIT_ROWS}: уточните поиск.")
 
 
 def _save_pairs_grid_callback(connect, name_changes, active_changes: dict[bool, list], actor: str, role: str,
@@ -305,11 +302,8 @@ def _render_pairs_grid(connect, pairs: pd.DataFrame, actor: str, role: str, key_
     if shown.empty:
         st.info("Ничего не найдено.")
         return
-    total_found = len(shown)
-    shown = shown.head(MAX_EDIT_ROWS).reset_index(drop=True)
-    st.caption(f"Показано {len(shown)} из {total_found}."
-              + (f" Уточните страну, товар или поиск — показаны первые {MAX_EDIT_ROWS}."
-                 if total_found > MAX_EDIT_ROWS else ""))
+    shown = shown.reset_index(drop=True)
+    st.caption(f"Показано {len(shown)}.")
 
     bulk = st.columns(2)
     active_keys = [(row.marketplace, row.our_asin, row.comp_asin) for row in shown.itertuples() if row.active]
