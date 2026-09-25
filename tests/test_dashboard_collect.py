@@ -132,29 +132,18 @@ def test_a_scope_blocked_today_does_not_disable_the_other_scopes(monkeypatch, da
 
 def test_no_force_override_appears_when_the_button_is_not_blocked(collect_env):
     at = run()
-    assert not [c for c in at.checkbox if c.key == "collect_run_force_confirm"]
     assert not [b for b in at.button if b.key == "collect_run_force"]
 
 
-def test_the_force_override_appears_when_blocked_but_stays_off_until_confirmed(monkeypatch, dash, collect_env):  # noqa: F811
-    """Решение владельца 25.09.2026: «уже был сбор сегодня» можно обойти вручную, но не одним кликом —
-    сначала явное подтверждение, потому что это ещё один платный сбор."""
-    monkeypatch.setattr(dash, "_admission_preview_cached", lambda scope="all": BLOCKED if scope == "all" else None)
-    at = run()
-    assert run_button(at).disabled
-    assert BLOCKED not in captions(at), "владелец не хочет пояснительных подписей"
-    force_button = [b for b in at.button if b.key == "collect_run_force"][0]
-    assert force_button.disabled, "без подтверждения кнопка обхода должна быть неактивна"
-    assert collect_env["dispatches"] == []
-
-
-def test_confirming_and_clicking_the_override_dispatches_with_force(monkeypatch, dash, collect_env):  # noqa: F811
+def test_the_force_override_appears_when_blocked_and_works_in_one_click(monkeypatch, dash, collect_env):  # noqa: F811
+    """Решение владельца 25.09.2026: «уже был сбор сегодня» можно обойти вручную, одним кликом —
+    без отдельного подтверждения, это платный повторный сбор и так понятно без объяснений."""
     monkeypatch.setattr(dash, "_admission_preview_cached", lambda scope="all": BLOCKED if scope == "all" else None)
     collect_env["gate_by_scope"]["all"] = BLOCKED
     collect_env["gate_by_scope"][("all", True)] = None  # force снимает именно этот блок
     at = run()
-    [c for c in at.checkbox if c.key == "collect_run_force_confirm"][0].set_value(True)
-    at = at.run(timeout=30)
+    assert run_button(at).disabled
+    assert BLOCKED not in captions(at), "владелец не хочет пояснительных подписей"
     force_button = [b for b in at.button if b.key == "collect_run_force"][0]
     assert not force_button.disabled
     force_button.click()
@@ -169,8 +158,6 @@ def test_the_force_button_does_the_real_check_live_not_the_stale_caption(monkeyp
     collect_env["gate_by_scope"]["all"] = BLOCKED
     collect_env["gate_by_scope"][("all", True)] = "Есть незавершённая попытка — сбор заблокирован."
     at = run()
-    [c for c in at.checkbox if c.key == "collect_run_force_confirm"][0].set_value(True)
-    at = at.run(timeout=30)
     [b for b in at.button if b.key == "collect_run_force"][0].click()
     at = at.run(timeout=30)
     assert collect_env["dispatches"] == []
