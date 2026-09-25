@@ -30,3 +30,12 @@ def test_recent_runs_are_visible_to_a_viewer_without_edit_rights(dash):  # noqa:
     at = run()
     text = " ".join(block.value for block in at.markdown)
     assert "Последние запуски" in text
+
+
+def test_the_schedule_time_field_comes_before_start_collection(dash, monkeypatch):  # noqa: F811
+    """Владелец хочет видеть «Время сбора (по Киеву)» раньше кнопок «Запустить сбор»."""
+    monkeypatch.setenv("TEAM_PASSWORD", TEAM_PASSWORD)
+    at = unlock(run())
+    text = " ".join(block.value for block in at.markdown)
+    assert "Автосбор" in text and "Запустить сбор" in text
+    assert text.index("Автосбор") < text.index("Запустить сбор")

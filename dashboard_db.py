@@ -1300,12 +1300,12 @@ def main() -> None:
         can_edit = access.has_role(manage_role, access.ROLE_EDITOR)
         left, right = st.columns(2)
         with left:
+            st.markdown('<p class="section-title">Автосбор</p>', unsafe_allow_html=True)
+            overview = _render_schedule_tab(actor, manage_role)
             collect_ui.render_run_block(
                 _connect, pairs, _admission_preview_cached,
                 _secret("GITHUB_DISPATCH_TOKEN"), _secret("GITHUB_REPO") or github_dispatch.DEFAULT_REPO, can_edit,
             )
-            st.markdown('<p class="section-title">Автосбор</p>', unsafe_allow_html=True)
-            overview = _render_schedule_tab(actor, manage_role)
         with right:
             collect_ui.render_spot_check(_secret("SCRAPINGDOG_TOKEN"), can_edit)
         _render_retired_block()
