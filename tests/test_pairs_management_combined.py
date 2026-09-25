@@ -168,29 +168,16 @@ def test_no_pairs_means_no_toggle_control(monkeypatch):
     assert calls == []  # пустой список — контрол не рисуется вовсе
 
 
-def test_confirm_bulk_shows_a_warning_and_checks_the_typed_word(monkeypatch):
-    """Раньше это была обычная серая подпись рядом с отключённой кнопкой — владелец принял такой
-    блок за отсутствие кнопки вовсе (скриншот, 25.09.2026). Теперь это st.warning (жёлтый блок)."""
-    warnings = []
-    monkeypatch.setattr(pairs_ui.st, "warning", lambda msg: warnings.append(msg))
-    monkeypatch.setattr(pairs_ui.st, "text_input", lambda *a, **k: "убрать")  # регистр не важен
-    assert pairs_ui._confirm_bulk("Отключится 100 пар.", key="x") is True
-    assert warnings == ["Отключится 100 пар."]
-
-    monkeypatch.setattr(pairs_ui.st, "text_input", lambda *a, **k: "")
-    assert pairs_ui._confirm_bulk("Отключится 100 пар.", key="x") is False
-
-
-def test_a_large_disable_batch_needs_confirmation():
-    """Подтверждение вынесено в _confirm_bulk — жёлтым предупреждением, а не серой подписью,
-    которую владелец принял за отсутствие кнопки (25.09.2026)."""
+def test_a_large_disable_batch_needs_no_typed_confirmation():
+    """Владелец сперва попросил сделать заметнее подтверждение текстом «УБРАТЬ», а затем прямо
+    попросил его убрать целиком (25.09.2026, скриншот с полем ввода + «убере это»). Кнопки массового
+    отключения теперь работают сразу, без набора слова и без _confirm_bulk (функция удалена)."""
     import inspect
 
     source = inspect.getsource(pairs_ui._render_pairs_grid)
-    assert "_CONFIRM_ABOVE" in source
-    assert "_confirm_bulk" in source
-    assert "УБРАТЬ" in inspect.getsource(pairs_ui._confirm_bulk)
-    assert "st.warning" in inspect.getsource(pairs_ui._confirm_bulk)
+    assert "_confirm_bulk" not in source
+    assert "Введите «УБРАТЬ»" not in source
+    assert not hasattr(pairs_ui, "_confirm_bulk")
 
 
 def test_render_pairs_management_covers_both_add_and_grid():

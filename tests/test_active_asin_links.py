@@ -153,23 +153,22 @@ def test_adding_a_new_line_does_not_create_anything():
     assert removed == set()
 
 
-def test_a_large_batch_needs_typed_confirmation(monkeypatch):
+def test_a_large_batch_works_without_typed_confirmation(monkeypatch):
+    """Владелец попросил убрать обязательный ввод «УБРАТЬ» — кнопка работает сразу, при любом
+    количестве (25.09.2026: «убери это»)."""
     many_pairs = pd.DataFrame([
         pair(market="US", our="B0OURASIN1", comp=f"B0COMP{i:04d}") for i in range(30)
     ])
     items = pairs_ui._active_asin_links_by_market(many_pairs)["US"]
     monkeypatch.setattr(pairs_ui.st, "text_area", lambda *a, **k: "")  # стёрли всё разом
     monkeypatch.setattr(pairs_ui.st, "caption", lambda *a, **k: None)
-    monkeypatch.setattr(pairs_ui.st, "warning", lambda *a, **k: None)
-    typed_inputs = []
-    monkeypatch.setattr(pairs_ui.st, "text_input", lambda *a, **k: (typed_inputs.append(1), "")[1])
     recorder = ButtonRecorder()
     monkeypatch.setattr(pairs_ui.st, "button", recorder)
 
     pairs_ui._render_links_editor(None, many_pairs, "US", items, "Тест", "editor", "collect")
 
-    assert typed_inputs, "при большом отключении нужно подтверждение текстом"
-    assert recorder.calls[0]["disabled"] is True  # без ввода «УБРАТЬ» кнопка недоступна
+    assert len(recorder.calls[0]["args"][2]) == 30
+    assert recorder.calls[0]["disabled"] is False
 
 
 def test_the_resave_callback_uses_its_own_flash_key_not_the_pairs_grids(monkeypatch):

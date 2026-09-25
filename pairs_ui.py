@@ -35,15 +35,6 @@ _CONFIRM_ABOVE = 25
 _ERRORS = (ValueError, access.AccessDenied, pairs_store.PairsStoreError)
 
 
-def _confirm_bulk(message: str, key: str) -> bool:
-    """Подтверждение перед крупным отключением — жёлтым предупреждением, а не обычной серой
-    подписью: раньше рядом с ним была только отключённая (серая) кнопка, и весь блок подтверждения
-    терялся на светлом фоне — владелец решил, что там «нет кнопки» (25.09.2026)."""
-    st.warning(message)
-    typed = st.text_input("Введите «УБРАТЬ» для подтверждения", key=key)
-    return typed.strip().upper() == "УБРАТЬ"
-
-
 def _flash(kind: str, message: str, key_prefix: str = "pairs") -> None:
     st.session_state[f"{key_prefix}_flash"] = (kind, message)
 
@@ -243,12 +234,9 @@ def _render_links_editor(connect, pairs: pd.DataFrame, market: str, items: list[
             if row.our_asin in removed or row.comp_asin in removed
         ]
 
-    confirmed = True
-    if len(keys_to_disable) > _CONFIRM_ABOVE:
-        confirmed = _confirm_bulk(f"Отключится пар: {len(keys_to_disable)}.", key=f"{text_key}_confirm")
     st.button(
         f"Пересохранить список — {market} ({len(keys_to_disable)})", key=f"{text_key}_save",
-        disabled=not keys_to_disable or not confirmed,
+        disabled=not keys_to_disable,
         on_click=_resave_links_callback, args=(connect, market, keys_to_disable, actor, role, flash_prefix),
     )
 
@@ -506,13 +494,9 @@ def _render_pairs_grid(connect, pairs: pd.DataFrame, actor: str, role: str, key_
             on_click=_toggle_callback, args=(connect, inactive_keys, True, actor, role, key_prefix),
         )
     with bulk[1]:
-        bulk_confirmed = True
-        if len(active_keys) > _CONFIRM_ABOVE:
-            bulk_confirmed = _confirm_bulk(f"Выключится {len(active_keys)} пар.",
-                                           key=f"{key_prefix}_grid_disable_all_confirm")
         st.button(
             f"Выключить все показанные ({len(active_keys)})", key=f"{key_prefix}_grid_disable_all",
-            disabled=not active_keys or not bulk_confirmed,
+            disabled=not active_keys,
             on_click=_toggle_callback, args=(connect, active_keys, False, actor, role, key_prefix),
         )
 
@@ -548,13 +532,9 @@ def _render_pairs_grid(connect, pairs: pd.DataFrame, actor: str, role: str, key_
             active_changes[active_now].append(key)
 
     total = len(name_changes) + len(active_changes[True]) + len(active_changes[False])
-    confirmed = True
-    if len(active_changes[False]) > _CONFIRM_ABOVE:
-        confirmed = _confirm_bulk(f"Отключается {len(active_changes[False])} пар.",
-                                  key=f"{key_prefix}_grid_confirm")
     st.button(
         f"Сохранить изменения ({total})", key=f"{key_prefix}_grid_save",
-        disabled=not total or not confirmed,
+        disabled=not total,
         on_click=_save_pairs_grid_callback, args=(connect, name_changes, active_changes, actor, role, key_prefix),
     )
 
@@ -821,12 +801,9 @@ def _render_remove(connect, pairs: pd.DataFrame, actor: str, role: str) -> None:
     )
     chosen = edited[edited["Убрать"]]
     count = len(chosen)
-    confirmed = True
-    if count > _CONFIRM_ABOVE:
-        confirmed = _confirm_bulk(f"Отключается {count} пар.", key="pairs_remove_confirm")
     keys = [(row.marketplace, row.our_asin, row.comp_asin) for row in chosen.itertuples()]
     st.button(
-        f"Отключить отмеченные ({count})", key="pairs_remove_btn", disabled=count == 0 or not confirmed,
+        f"Отключить отмеченные ({count})", key="pairs_remove_btn", disabled=count == 0,
         on_click=_toggle_callback, args=(connect, keys, False, actor, role),
     )
     st.caption("Пара не удаляется: история остаётся, вернуть её можно в разделе «Вернуть отключённые».")

@@ -197,17 +197,12 @@ def test_nothing_is_disabled_until_something_is_ticked(pairs_env):
     assert button.label == "Отключить отмеченные (0)" and button.disabled
 
 
-def test_disabling_many_pairs_needs_a_typed_confirmation(monkeypatch, dash, pairs_env):  # noqa: F811
+def test_disabling_many_pairs_works_without_typed_confirmation(monkeypatch, dash, pairs_env):  # noqa: F811
+    """Владелец попросил убрать обязательный ввод «УБРАТЬ» — кнопка работает сразу (25.09.2026)."""
     big = pair_rows(active_count=30, inactive_count=0)
     monkeypatch.setattr(dash, "load_competitor_pairs", lambda: big)
     at = open_management(run())
     at.checkbox(key=f"pairs_remove_all_{OUR}").check()
-    at.run(timeout=30)
-    assert [b for b in at.button if b.key == "pairs_remove_btn"][0].disabled
-    at.text_input(key="pairs_remove_confirm").input("нет")
-    at.run(timeout=30)
-    assert [b for b in at.button if b.key == "pairs_remove_btn"][0].disabled
-    at.text_input(key="pairs_remove_confirm").input("убрать")
     at.run(timeout=30)
     button = [b for b in at.button if b.key == "pairs_remove_btn"][0]
     assert not button.disabled and button.label == "Отключить отмеченные (30)"
