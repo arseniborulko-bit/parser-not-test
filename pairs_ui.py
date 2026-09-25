@@ -171,6 +171,46 @@ def _with_links(frame: pd.DataFrame) -> pd.DataFrame:
     return result
 
 
+def _active_asin_links_by_market(pairs: pd.DataFrame) -> dict[str, list[tuple[str, str]]]:
+    """ASIN (наши и конкурентов вместе), которые сейчас в работе, сгруппированные по маркетплейсу.
+
+    «В работе» = участвует хотя бы в одной активной паре. Значение — список (ASIN, ссылка),
+    без дублей, по алфавиту внутри страны."""
+    if pairs.empty or "active" not in pairs:
+        return {}
+    active = pairs[pairs["active"]]
+    if active.empty:
+        return {}
+    ours = active[["marketplace", "our_asin"]].rename(columns={"our_asin": "asin"})
+    comps = active[["marketplace", "comp_asin"]].rename(columns={"comp_asin": "asin"})
+    asins = pd.concat([ours, comps], ignore_index=True)
+    asins["asin"] = asins["asin"].astype(str).str.strip()
+    asins = asins[asins["asin"].ne("")].drop_duplicates()
+
+    result: dict[str, list[tuple[str, str]]] = {}
+    for market in sorted(asins["marketplace"].dropna().unique()):
+        group = sorted(asins.loc[asins["marketplace"] == market, "asin"].unique())
+        result[market] = [(asin, _asin_url(asin, market)) for asin in group]
+    return result
+
+
+def render_active_asin_links(pairs: pd.DataFrame) -> None:
+    """Плоский список ссылок на все ASIN, которые сейчас в работе, по маркетплейсам — без
+    таблицы и без правки, только чтобы быстро открыть карточку товара (владелец, 25.09.2026)."""
+    by_market = _active_asin_links_by_market(pairs)
+    total = sum(len(group) for group in by_market.values())
+    if not by_market:
+        st.info("Активных пар пока нет.")
+        return
+    with st.expander(f"🔗 Ссылки на все ASIN в работе ({total})"):
+        for market, items in by_market.items():
+            links = " · ".join(f'<a href="{escape(url)}" target="_blank">{escape(asin)}</a>' for asin, url in items)
+            st.markdown(
+                f'<div class="section-note"><b>{escape(market)}</b> ({len(items)}): {links}</div>',
+                unsafe_allow_html=True,
+            )
+
+
 MAX_EDIT_ROWS = 200
 
 

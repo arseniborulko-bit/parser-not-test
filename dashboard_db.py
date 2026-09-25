@@ -1413,6 +1413,7 @@ def main() -> None:
         can_edit = access.has_role(manage_role, access.ROLE_EDITOR)
         if can_edit:
             pairs_ui.render_pairs_management(_connect, pairs, actor, manage_role, _max_active(), key_prefix="collect")
+        pairs_ui.render_active_asin_links(pairs)
         left, right = st.columns(2)
         with left:
             st.markdown('<p class="section-title">Автосбор</p>', unsafe_allow_html=True)
