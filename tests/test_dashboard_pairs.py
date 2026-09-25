@@ -34,9 +34,9 @@ def pairs_env(monkeypatch, dash):  # noqa: F811
     plan = pairs_store.Plan(market="US", our_asin=OUR, our_product="Our product", to_add=["B0NEWPAIR1", "B0NEWPAIR2"],
                             to_enable=["B0OFF00000"], already=["B0COMP0000"], invalid=["junk"], new_asins=2, active_now=3)
 
-    def fake_plan(connect, our_text, competitors_text, *, max_active=1500):
+    def fake_plans(connect, our_text, competitors_text, *, max_active=1500):
         calls["plan"].append((our_text, competitors_text, max_active))
-        return calls.get("plan_result", plan)
+        return [calls.get("plan_result", plan)]
 
     def fake_apply(connect, plan_arg, *, actor_role, actor):
         calls["apply"].append((plan_arg, actor_role, actor))
@@ -46,7 +46,7 @@ def pairs_env(monkeypatch, dash):  # noqa: F811
         calls["toggle"].append((list(keys), active, actor_role, actor))
         return len(keys)
 
-    monkeypatch.setattr(pairs_store, "make_plan", fake_plan)
+    monkeypatch.setattr(pairs_store, "make_plans", fake_plans)
     monkeypatch.setattr(pairs_store, "apply_plan", fake_apply)
     monkeypatch.setattr(pairs_store, "set_pairs_active", fake_toggle)
     monkeypatch.setattr(pairs_store, "recent_changes", lambda connect, limit=30: [])
@@ -73,7 +73,7 @@ def test_guest_sees_summary_and_table_but_no_management(pairs_env):
     assert metrics(at)["Активных пар"] == "3" and metrics(at)["Отключено"] == "1"
     assert set(pairs_table(at)["active"]) == {True}
     assert any("Чтобы добавлять и убирать пары" in c.value for c in at.caption)
-    assert not [t for t in at.text_input if t.key == "pairs_our"]
+    assert not [t for t in at.text_area if t.key == "pairs_our"]
     assert not [b for b in at.button if b.key == "pairs_add"]
 
 
@@ -108,12 +108,12 @@ def test_management_sections_appear_after_unlock(pairs_env):
     labels = [e.label for e in at.expander]
     for expected in ("➕ Добавить конкурентов", "🗑 Убрать пары", "↩ Вернуть отключённые", "📜 Журнал изменений"):
         assert expected in labels
-    assert [t for t in at.text_input if t.key == "pairs_our"]
+    assert [t for t in at.text_area if t.key == "pairs_our"]
 
 
 def test_preview_shows_counts_cost_and_problems_before_anything_is_written(pairs_env):
     at = open_management(run())
-    at.text_input(key="pairs_our").input(OUR)
+    at.text_area(key="pairs_our").input(OUR)
     at.text_area(key="pairs_comps").input("B0NEWPAIR1 B0NEWPAIR2 B0OFF00000 B0COMP0000 junk")
     at.run(timeout=30)
     assert not at.exception
@@ -129,7 +129,7 @@ def test_preview_shows_counts_cost_and_problems_before_anything_is_written(pairs
 
 def test_confirming_the_preview_writes_with_editor_role_and_the_actor(pairs_env):
     at = open_management(run())
-    at.text_input(key="pairs_our").input(OUR)
+    at.text_area(key="pairs_our").input(OUR)
     at.text_area(key="pairs_comps").input("B0NEWPAIR1 B0NEWPAIR2")
     at.run(timeout=30)
     [b for b in at.button if b.key == "pairs_add"][0].click()
@@ -144,7 +144,7 @@ def test_confirming_the_preview_writes_with_editor_role_and_the_actor(pairs_env)
 def test_a_plan_with_errors_cannot_be_applied(pairs_env):
     pairs_env["plan_result"] = pairs_store.Plan(market="US", our_asin=OUR, to_add=["B0NEWPAIR1"], errors=["Активных пар станет больше лимита"])
     at = open_management(run())
-    at.text_input(key="pairs_our").input(OUR)
+    at.text_area(key="pairs_our").input(OUR)
     at.text_area(key="pairs_comps").input("B0NEWPAIR1")
     at.run(timeout=30)
     assert any("больше лимита" in e.value for e in at.error)
@@ -158,7 +158,7 @@ def test_store_failure_while_applying_is_shown_not_raised(monkeypatch, pairs_env
 
     monkeypatch.setattr(pairs_store, "apply_plan", broken)
     at = open_management(run())
-    at.text_input(key="pairs_our").input(OUR)
+    at.text_area(key="pairs_our").input(OUR)
     at.text_area(key="pairs_comps").input("B0NEWPAIR1")
     at.run(timeout=30)
     [b for b in at.button if b.key == "pairs_add"][0].click()
@@ -229,9 +229,9 @@ def test_open_management_shows_the_pairs_manager_to_everyone_and_writes_as_the_t
     monkeypatch.delenv("TEAM_PASSWORD")
     at = run()
     assert not at.exception
-    assert [t for t in at.text_input if t.key == "pairs_our"]
+    assert [t for t in at.text_area if t.key == "pairs_our"]
     assert not any("Чтобы добавлять и убирать пары" in c.value for c in at.caption)
-    at.text_input(key="pairs_our").input(OUR)
+    at.text_area(key="pairs_our").input(OUR)
     at.text_area(key="pairs_comps").input("B0NEWPAIR1 B0NEWPAIR2")
     at.run(timeout=30)
     [b for b in at.button if b.key == "pairs_add"][0].click()
@@ -242,7 +242,7 @@ def test_open_management_shows_the_pairs_manager_to_everyone_and_writes_as_the_t
 
 def test_the_pairs_manager_stays_hidden_while_a_password_is_required(pairs_env):
     at = run()
-    assert not [t for t in at.text_input if t.key == "pairs_our"]
+    assert not [t for t in at.text_area if t.key == "pairs_our"]
     assert any("Чтобы добавлять и убирать пары" in c.value for c in at.caption)
 
 
@@ -253,7 +253,7 @@ def test_management_is_available_to_a_google_editor_without_the_team_password(mo
     sign_in(monkeypatch, dash, logged_in("boss@x.com"))
     at = run()
     assert not at.exception
-    assert [t for t in at.text_input if t.key == "pairs_our"]
+    assert [t for t in at.text_area if t.key == "pairs_our"]
 
 
 def test_the_current_state_query_only_counts_active_pairs():

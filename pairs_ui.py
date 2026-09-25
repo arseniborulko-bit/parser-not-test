@@ -71,21 +71,39 @@ def _add_callback(connect, actor: str, role: str, max_active: int, key_prefix: s
     state = st.session_state
     our_key, comps_key = f"{key_prefix}_our", f"{key_prefix}_comps"
     try:
-        plan = pairs_store.make_plan(
+        plans = pairs_store.make_plans(
             connect, state.get(our_key, ""), state.get(comps_key, ""), max_active=max_active,
         )
-        result = pairs_store.apply_plan(connect, plan, actor_role=role, actor=actor)
+        added = enabled = applied = 0
+        failed = []
+        for plan in plans:
+            if not plan.can_apply:
+                if plan.errors:
+                    failed.append(plan.our_asin or "?")
+                continue
+            result = pairs_store.apply_plan(connect, plan, actor_role=role, actor=actor)
+            added += result["add"]
+            enabled += result["enable"]
+            applied += 1
     except _ERRORS as exc:
         _flash("error", str(exc), key_prefix)
         return
     st.cache_data.clear()
     state[comps_key] = ""
+    if not applied:
+        _flash("error", "Ничего не применено: " + ", ".join(failed) if failed else "Ничего не изменилось.", key_prefix)
+        return
+    if not failed:
+        state[our_key] = ""
     parts = []
-    if result["add"]:
-        parts.append(f"добавлено {result['add']}")
-    if result["enable"]:
-        parts.append(f"возвращено {result['enable']}")
-    _flash("success", "Готово: " + ", ".join(parts) + ". Пары попадут в ближайший сбор." if parts else "Ничего не изменилось.", key_prefix)
+    if added:
+        parts.append(f"добавлено {added}")
+    if enabled:
+        parts.append(f"возвращено {enabled}")
+    message = "Готово: " + ", ".join(parts) + ". Пары попадут в ближайший сбор." if parts else "Ничего не изменилось."
+    if failed:
+        message += f" Пропущено (с ошибкой): {', '.join(failed)}."
+    _flash("success", message, key_prefix)
 
 
 def _toggle_callback(connect, keys, active: bool, actor: str, role: str, key_prefix: str = "pairs") -> None:
@@ -122,28 +140,55 @@ def _render_plan(plan: pairs_store.Plan) -> None:
         st.caption(f"Повторов в тексте отброшено: {plan.repeats}.")
 
 
+def _render_plans(plans: list[pairs_store.Plan]) -> None:
+    """Один план — как раньше, просто и сразу. Несколько (несколько ссылок в «Наш товар») —
+    общие цифры сверху, детали каждого товара — в своих свёрнутых блоках."""
+    if len(plans) == 1:
+        _render_plan(plans[0])
+        return
+    cells = st.columns(4)
+    cells[0].metric("Новых", sum(len(p.to_add) for p in plans))
+    cells[1].metric("Вернутся", sum(len(p.to_enable) for p in plans))
+    cells[2].metric("Уже есть", sum(len(p.already) for p in plans))
+    cells[3].metric("Не подошло", sum(len(p.invalid) + len(p.rejected) for p in plans))
+    for plan in plans:
+        title = plan.our_asin or "?"
+        if plan.market:
+            title += f" · {plan.market}"
+        if plan.our_product:
+            title += f" · {plan.our_product}"
+        title += " — ошибка" if plan.errors else f" ({plan.changes} изменений)"
+        with st.expander(title, expanded=bool(plan.errors)):
+            _render_plan(plan)
+
+
 def _render_add(connect, actor: str, role: str, max_active: int, key_prefix: str = "pairs") -> None:
     our_key, comps_key = f"{key_prefix}_our", f"{key_prefix}_comps"
-    st.text_input("Наш товар (ссылка на Amazon)", key=our_key,
-                  placeholder="https://www.amazon.com/dp/B0XXXXXXXX")
+    st.text_area(
+        "Наш товар (ссылки на Amazon, по одной в строке или через запятую — можно несколько)",
+        key=our_key, height=80,
+        placeholder="https://www.amazon.de/dp/B0XXXXXXX1\nhttps://www.amazon.com/dp/B0YYYYYYY",
+    )
     st.text_area(
         "Конкуренты (ссылки на Amazon, по одной в строке или через запятую)", key=comps_key, height=110,
-        placeholder="https://www.amazon.com/dp/B0XXXXXXX1, https://www.amazon.de/dp/B0XXXXXXX2",
+        placeholder="https://www.amazon.de/dp/B0XXXXXXX1\nhttps://www.amazon.de/dp/B0XXXXXXX2",
     )
-    plan = None
+    plans: list[pairs_store.Plan] = []
     if st.session_state.get(our_key, "").strip() or st.session_state.get(comps_key, "").strip():
         try:
-            plan = pairs_store.make_plan(
+            plans = pairs_store.make_plans(
                 connect, st.session_state.get(our_key, ""), st.session_state.get(comps_key, ""),
                 max_active=max_active,
             )
         except _ERRORS as exc:
             st.error(str(exc))
-    if plan is not None:
-        _render_plan(plan)
-    label = f"Добавить пар: {plan.changes}" if plan is not None and plan.changes else "Добавить"
+    if plans:
+        _render_plans(plans)
+    total_changes = sum(p.changes for p in plans)
+    label = f"Добавить пар: {total_changes}" if total_changes else "Добавить пару"
     st.button(
-        label, type="primary", key=f"{key_prefix}_add", disabled=plan is None or not plan.can_apply,
+        label, type="primary", key=f"{key_prefix}_add",
+        disabled=not plans or not any(p.can_apply for p in plans),
         on_click=_add_callback, args=(connect, actor, role, max_active, key_prefix),
     )
 
@@ -162,100 +207,6 @@ def _with_links(frame: pd.DataFrame) -> pd.DataFrame:
             result[column] = [_asin_url(asin, market)
                               for asin, market in zip(result[column], result.get("marketplace", ""))]
     return result
-
-
-def _active_asin_links_by_market(pairs: pd.DataFrame) -> dict[str, list[tuple[str, str]]]:
-    """ASIN (наши и конкурентов вместе), которые сейчас в работе, сгруппированные по маркетплейсу.
-
-    «В работе» = участвует хотя бы в одной активной паре. Значение — список (ASIN, ссылка),
-    без дублей, по алфавиту внутри страны."""
-    if pairs.empty or "active" not in pairs:
-        return {}
-    active = pairs[pairs["active"]]
-    if active.empty:
-        return {}
-    ours = active[["marketplace", "our_asin"]].rename(columns={"our_asin": "asin"})
-    comps = active[["marketplace", "comp_asin"]].rename(columns={"comp_asin": "asin"})
-    asins = pd.concat([ours, comps], ignore_index=True)
-    asins["asin"] = asins["asin"].astype(str).str.strip()
-    asins = asins[asins["asin"].ne("")].drop_duplicates()
-
-    result: dict[str, list[tuple[str, str]]] = {}
-    for market in sorted(asins["marketplace"].dropna().unique()):
-        group = sorted(asins.loc[asins["marketplace"] == market, "asin"].unique())
-        result[market] = [(asin, _asin_url(asin, market)) for asin in group]
-    return result
-
-
-def _links_text(items: list[tuple[str, str]]) -> str:
-    return "\n".join(url for _, url in items)
-
-
-def _resave_links_callback(connect, market: str, keys: list[tuple[str, str, str]], actor: str, role: str,
-                           key_prefix: str = "pairs") -> None:
-    """Строки, которых не стало в тексте, — это ASIN, которые владелец решил убрать из работы:
-    отключает все их пары в этой стране (мягко, active=False — как и везде в проекте)."""
-    try:
-        changed = pairs_store.set_pairs_active(connect, keys, False, actor_role=role, actor=actor)
-    except _ERRORS as exc:
-        _flash("error", str(exc), key_prefix)
-        return
-    st.cache_data.clear()
-    _flash("success", f"{market}: отключено пар — {changed}.", key_prefix)
-
-
-def _render_links_editor(connect, pairs: pd.DataFrame, market: str, items: list[tuple[str, str]],
-                         actor: str, role: str, key_prefix: str) -> None:
-    # Отдельный флеш-ключ (не голый key_prefix): render_pairs_management уже показывает свой флеш
-    # под тем же key_prefix выше на этой же вкладке — общий ключ означал бы, что сообщение об
-    # отключении пары через список ссылок показывалось бы в сетке пар, а не здесь, в экспандере.
-    flash_prefix = f"{key_prefix}_links"
-    text_key = f"{key_prefix}_links_{market}"
-    st.caption(f"{market} — {len(items)}: по одной ссылке в строке. Чтобы убрать ASIN из работы — "
-               "сотрите его строку и нажмите «Пересохранить список» (новые строки форма не добавляет, "
-               "для этого есть «Добавить пару»).")
-    edited_text = st.text_area(f"Ссылки — {market}", value=_links_text(items), key=text_key,
-                               height=220, label_visibility="collapsed")
-    remaining = {item.asin for item in pairs_store.parse_asin_batch(edited_text).items}
-    removed = {asin for asin, _ in items} - remaining
-
-    keys_to_disable: list[tuple[str, str, str]] = []
-    if removed:
-        subset = pairs[(pairs["marketplace"] == market) & pairs["active"]]
-        keys_to_disable = [
-            (row.marketplace, row.our_asin, row.comp_asin) for row in subset.itertuples()
-            if row.our_asin in removed or row.comp_asin in removed
-        ]
-
-    st.button(
-        f"Пересохранить список — {market} ({len(keys_to_disable)})", key=f"{text_key}_save",
-        disabled=not keys_to_disable,
-        on_click=_resave_links_callback, args=(connect, market, keys_to_disable, actor, role, flash_prefix),
-    )
-
-
-def render_active_asin_links(connect, pairs: pd.DataFrame, actor: str | None, role: str | None,
-                             can_edit: bool, key_prefix: str = "pairs") -> None:
-    """Ссылки на все ASIN, которые сейчас в работе, по маркетплейсам. У кого есть права редактора —
-    список правится текстом (стереть строку и «Пересохранить»); у остальных — только чтение
-    (владелец, 25.09.2026: сперва просто список ссылок, потом — «удалить, сотерев из текста»)."""
-    by_market = _active_asin_links_by_market(pairs)
-    total = sum(len(group) for group in by_market.values())
-    if not by_market:
-        st.info("Активных пар пока нет.")
-        return
-    with st.expander(f"🔗 Ссылки на все ASIN в работе ({total})"):
-        if can_edit:
-            _show_flash(f"{key_prefix}_links")
-        for market, items in by_market.items():
-            if can_edit:
-                _render_links_editor(connect, pairs, market, items, actor or "?", role, key_prefix)
-            else:
-                links = " · ".join(f'<a href="{escape(url)}" target="_blank">{escape(asin)}</a>' for asin, url in items)
-                st.markdown(
-                    f'<div class="section-note"><b>{escape(market)}</b> ({len(items)}): {links}</div>',
-                    unsafe_allow_html=True,
-                )
 
 
 MAX_EDIT_ROWS = 200
@@ -536,15 +487,28 @@ def _render_pairs_grid(connect, pairs: pd.DataFrame, actor: str, role: str, key_
     )
 
 
+_ADD_MODE = "➕ Добавить новые"
+
+
 def render_pairs_management(connect, pairs: pd.DataFrame, actor: str | None, role: str | None,
                             max_active: int, key_prefix: str = "pairs") -> None:
     """Добавление и правка пар — публичная точка входа для других вкладок дашборда (например,
-    «Сбор и управление»), не только для вкладки «Пары конкурентов»."""
+    «Сбор и управление»), не только для вкладки «Пары конкурентов». Переключатель «добавить» /
+    «управлять» вместо двух подряд идущих заголовков (владелец, 25.09.2026, макет).
+
+    st.segmented_control, а не st.tabs: второй st.tabs на странице путает at.tabs в тестах
+    (плоский список — там, где ждут только шесть вкладок верхнего уровня) и, в отличие от
+    сегментов, рисует ОБЕ панели в разметке всегда, просто прячет неактивную CSS."""
     _show_flash(key_prefix)
-    st.markdown('<p class="section-title">Добавить пару</p>', unsafe_allow_html=True)
-    _render_add(connect, actor or "?", role, max_active, key_prefix)
-    st.markdown('<p class="section-title">Пары — правка и отключение</p>', unsafe_allow_html=True)
-    _render_pairs_grid(connect, pairs, actor or "?", role, key_prefix)
+    manage_mode = f"☰ Управлять существующими ({len(pairs)})"
+    picked = st.segmented_control(
+        "Режим", [_ADD_MODE, manage_mode], default=_ADD_MODE,
+        key=f"{key_prefix}_pairs_mode", label_visibility="collapsed",
+    )
+    if picked == manage_mode:
+        _render_pairs_grid(connect, pairs, actor or "?", role, key_prefix)
+    else:
+        _render_add(connect, actor or "?", role, max_active, key_prefix)
 
 
 def _asin_registry(pairs: pd.DataFrame) -> pd.DataFrame:

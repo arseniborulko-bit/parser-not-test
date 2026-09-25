@@ -208,6 +208,30 @@ def make_plan(connect: Connect, our_text: object, competitors_text: object, *,
     return plan
 
 
+def make_plans(connect: Connect, our_text: object, competitors_text: object, *,
+               max_active: int = DEFAULT_MAX_ACTIVE) -> List[Plan]:
+    """Как make_plan, но «наш товар» может быть не одной ссылкой, а несколькими (по одной в
+    строке или через запятую) — конкуренты из competitors_text применяются к каждой из них
+    (владелец, 25.09.2026: «Наш товар» тоже «можно несколько»). Один план на одну ссылку;
+    список из одного плана с ошибкой — если ни одной ссылки не распознано.
+
+    Лимит max_active проверяется в каждом плане по отдельности, от одного и того же текущего
+    active_now: при добавлении сразу нескольких «наших» товаров у самого края лимита это может
+    пропустить пару пар, которые в сумме лимит превысили бы. Случай редкий (нужно быть в пределах
+    десятка от лимита и добавлять несколько «наших» ссылок разом), а сам лимит — не точный биллинг,
+    а защита от разгона, поэтому усложнять ради него не стали."""
+    ours = parse_asin_batch(our_text, require_link=True)
+    if not ours.items or ours.invalid:
+        plan = Plan()
+        plan.errors.append("Наш товар: нужна хотя бы одна ссылка на страницу Amazon.")
+        return [plan]
+    return [
+        make_plan(connect, f"https://www.amazon.{DOMAIN_BY_MARKET[item.market]}/dp/{item.asin}",
+                 competitors_text, max_active=max_active)
+        for item in ours.items
+    ]
+
+
 def journal_exists(connect: Connect) -> bool:
     """Журнал (pair_changes) необязателен: пока таблицы нет, изменения применяются без записи в журнал."""
     return bool(_run(connect, "SELECT to_regclass('bsr_radar.pair_changes') IS NOT NULL;", fetch=True)[0][0])
