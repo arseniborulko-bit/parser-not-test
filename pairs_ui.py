@@ -56,20 +56,21 @@ def _summary(pairs: pd.DataFrame) -> None:
     cells[3].metric("Отключено", len(pairs) - len(active))
 
 
-def _add_callback(connect, actor: str, role: str, max_active: int) -> None:
+def _add_callback(connect, actor: str, role: str, max_active: int, key_prefix: str = "pairs") -> None:
     state = st.session_state
-    pick = state.get("pairs_market", _SAME_MARKET)
+    our_key, market_key, comps_key = f"{key_prefix}_our", f"{key_prefix}_market", f"{key_prefix}_comps"
+    pick = state.get(market_key, _SAME_MARKET)
     try:
         plan = pairs_store.make_plan(
-            connect, state.get("pairs_our", ""), None if pick == _SAME_MARKET else pick,
-            state.get("pairs_comps", ""), max_active=max_active,
+            connect, state.get(our_key, ""), None if pick == _SAME_MARKET else pick,
+            state.get(comps_key, ""), max_active=max_active,
         )
         result = pairs_store.apply_plan(connect, plan, actor_role=role, actor=actor)
     except _ERRORS as exc:
         _flash("error", str(exc))
         return
     st.cache_data.clear()
-    state["pairs_comps"] = ""
+    state[comps_key] = ""
     parts = []
     if result["add"]:
         parts.append(f"добавлено {result['add']}")
@@ -112,23 +113,24 @@ def _render_plan(plan: pairs_store.Plan) -> None:
         st.caption(f"Повторов в тексте отброшено: {plan.repeats}.")
 
 
-def _render_add(connect, actor: str, role: str, max_active: int) -> None:
-    st.text_input("Наш товар (ASIN или ссылка)", key="pairs_our", placeholder="B0XXXXXXXX или ссылка на страницу Amazon")
+def _render_add(connect, actor: str, role: str, max_active: int, key_prefix: str = "pairs") -> None:
+    our_key, market_key, comps_key = f"{key_prefix}_our", f"{key_prefix}_market", f"{key_prefix}_comps"
+    st.text_input("Наш товар (ASIN или ссылка)", key=our_key, placeholder="B0XXXXXXXX или ссылка на страницу Amazon")
     st.selectbox(
-        "Маркетплейс", [_SAME_MARKET, *pairs_store.MARKETS], key="pairs_market",
+        "Маркетплейс", [_SAME_MARKET, *pairs_store.MARKETS], key=market_key,
         help="Нужен только для нового товара без ссылки: ссылка сама определяет страну.",
     )
     st.text_area(
-        "Конкуренты (ASIN или ссылки, по одному в строке или через запятую)", key="pairs_comps", height=110,
+        "Конкуренты (ASIN или ссылки, по одному в строке или через запятую)", key=comps_key, height=110,
         placeholder="B0XXXXXXX1, B0XXXXXXX2, https://www.amazon.com/dp/B0XXXXXXX3",
     )
     plan = None
-    if st.session_state.get("pairs_our", "").strip() or st.session_state.get("pairs_comps", "").strip():
-        pick = st.session_state.get("pairs_market", _SAME_MARKET)
+    if st.session_state.get(our_key, "").strip() or st.session_state.get(comps_key, "").strip():
+        pick = st.session_state.get(market_key, _SAME_MARKET)
         try:
             plan = pairs_store.make_plan(
-                connect, st.session_state.get("pairs_our", ""), None if pick == _SAME_MARKET else pick,
-                st.session_state.get("pairs_comps", ""), max_active=max_active,
+                connect, st.session_state.get(our_key, ""), None if pick == _SAME_MARKET else pick,
+                st.session_state.get(comps_key, ""), max_active=max_active,
             )
         except _ERRORS as exc:
             st.error(str(exc))
@@ -136,8 +138,8 @@ def _render_add(connect, actor: str, role: str, max_active: int) -> None:
         _render_plan(plan)
     label = f"Добавить пар: {plan.changes}" if plan is not None and plan.changes else "Добавить"
     st.button(
-        label, type="primary", key="pairs_add", disabled=plan is None or not plan.can_apply,
-        on_click=_add_callback, args=(connect, actor, role, max_active),
+        label, type="primary", key=f"{key_prefix}_add", disabled=plan is None or not plan.can_apply,
+        on_click=_add_callback, args=(connect, actor, role, max_active, key_prefix),
     )
 
 
@@ -199,6 +201,7 @@ def _render_edit(connect, pairs: pd.DataFrame, actor: str, role: str) -> None:
     if shown.empty:
         st.info("Ничего не найдено.")
         return
+    total_found = len(shown)
     shown = shown.head(MAX_EDIT_ROWS).reset_index(drop=True)
 
     table = pd.DataFrame({
@@ -230,8 +233,110 @@ def _render_edit(connect, pairs: pd.DataFrame, actor: str, role: str) -> None:
         f"Сохранить изменения ({len(changes)})", key="pairs_edit_btn", disabled=not changes,
         on_click=_edit_callback, args=(connect, changes, actor, role),
     )
-    if len(_matches(pairs, query)) > MAX_EDIT_ROWS:
+    if total_found > MAX_EDIT_ROWS:
         st.caption(f"Показаны первые {MAX_EDIT_ROWS}: уточните поиск.")
+
+
+def _save_pairs_grid_callback(connect, name_changes, active_changes: dict[bool, list], actor: str, role: str) -> None:
+    """Сохраняет и правки названий, и включения/отключения — за одно нажатие «Сохранить изменения»."""
+    saved_names = 0
+    saved_active = 0
+    try:
+        for key, our_product, competitor_name in name_changes:
+            saved_names += pairs_store.edit_pair_names(
+                connect, key, our_product, competitor_name, actor_role=role, actor=actor,
+            )
+        for active_value, keys in active_changes.items():
+            if keys:
+                saved_active += pairs_store.set_pairs_active(connect, keys, active_value, actor_role=role, actor=actor)
+    except _ERRORS as exc:
+        saved = saved_names + saved_active
+        _flash("error", f"Сохранено строк: {saved}, дальше ошибка — {exc}" if saved else str(exc))
+        return
+    st.cache_data.clear()
+    _flash("success", f"Сохранено: названий {saved_names}, статусов {saved_active}.")
+
+
+def _render_pairs_grid(connect, pairs: pd.DataFrame, actor: str, role: str, key_prefix: str = "pairs") -> None:
+    """Одна таблица на добавление, правку и отключение: страна и поиск сверху, название и
+    активность правятся прямо в сетке, сохранение — одной кнопкой на все изменённые строки.
+
+    Ключ пары (страна и оба ASIN) не редактируется: это же ключ снимков, и его смена означала бы
+    другую пару, без прежней истории. Поэтому ASIN здесь — ссылка, а не поле ввода; чтобы сменить
+    ASIN, пару отключают и заводят заново через «Добавить пару»."""
+    if pairs.empty:
+        st.info("Пар пока нет.")
+        return
+
+    top = st.columns([2, 3])
+    market = top[0].selectbox("Страна", ["Все", *sorted(pairs["marketplace"].dropna().unique())],
+                              key=f"{key_prefix}_grid_market")
+    query = top[1].text_input("ASIN или часть названия", key=f"{key_prefix}_grid_search")
+
+    shown = pairs if market == "Все" else pairs[pairs["marketplace"] == market]
+    shown = _matches(shown, query)
+    if shown.empty:
+        st.info("Ничего не найдено.")
+        return
+    shown = shown.head(MAX_EDIT_ROWS).reset_index(drop=True)
+
+    table = pd.DataFrame({
+        "Страна": shown["marketplace"],
+        "Наш ASIN": [_asin_url(a, m) for a, m in zip(shown["our_asin"], shown["marketplace"])],
+        "Наш товар": shown["our_product"].fillna(""),
+        "ASIN конкурента": [_asin_url(a, m) for a, m in zip(shown["comp_asin"], shown["marketplace"])],
+        "Конкурент": shown["competitor_name"].fillna(""),
+        "Активна": shown["active"],
+    })
+    edited = st.data_editor(
+        table, key=f"{key_prefix}_grid_editor", hide_index=True, use_container_width=True, height=420,
+        disabled=["Страна", "Наш ASIN", "ASIN конкурента"],
+        column_config={
+            "Наш ASIN": st.column_config.LinkColumn("Наш ASIN", display_text=_ASIN_LINK_TEXT, width="small"),
+            "ASIN конкурента": st.column_config.LinkColumn("ASIN конкурента", display_text=_ASIN_LINK_TEXT, width="small"),
+            "Наш товар": st.column_config.TextColumn("Наш товар", max_chars=pairs_store.MAX_NAME),
+            "Конкурент": st.column_config.TextColumn("Конкурент", max_chars=pairs_store.MAX_NAME),
+            "Активна": st.column_config.CheckboxColumn("Активна"),
+        },
+    )
+
+    name_changes = []
+    active_changes: dict[bool, list] = {True: [], False: []}
+    for position, row in enumerate(shown.itertuples()):
+        key = (row.marketplace, row.our_asin, row.comp_asin)
+        our_now = str(edited["Наш товар"].iloc[position] or "")
+        comp_now = str(edited["Конкурент"].iloc[position] or "")
+        if our_now != str(row.our_product or "") or comp_now != str(row.competitor_name or ""):
+            name_changes.append((key, our_now, comp_now))
+        active_now = bool(edited["Активна"].iloc[position])
+        if active_now != bool(row.active):
+            active_changes[active_now].append(key)
+
+    total = len(name_changes) + len(active_changes[True]) + len(active_changes[False])
+    confirmed = True
+    if len(active_changes[False]) > _CONFIRM_ABOVE:
+        typed = st.text_input(
+            f"Отключается {len(active_changes[False])} пар. Введите УБРАТЬ для подтверждения",
+            key=f"{key_prefix}_grid_confirm",
+        )
+        confirmed = typed.strip().upper() == "УБРАТЬ"
+    st.button(
+        f"Сохранить изменения ({total})", key=f"{key_prefix}_grid_save",
+        disabled=not total or not confirmed,
+        on_click=_save_pairs_grid_callback, args=(connect, name_changes, active_changes, actor, role),
+    )
+    if len(shown) >= MAX_EDIT_ROWS:
+        st.caption(f"Показаны первые {MAX_EDIT_ROWS}: уточните страну или поиск.")
+
+
+def render_pairs_management(connect, pairs: pd.DataFrame, actor: str | None, role: str | None,
+                            max_active: int, key_prefix: str = "pairs") -> None:
+    """Добавление и правка пар — публичная точка входа для других вкладок дашборда (например,
+    «Сбор и управление»), не только для вкладки «Пары конкурентов»."""
+    st.markdown('<p class="section-title">Добавить пару</p>', unsafe_allow_html=True)
+    _render_add(connect, actor or "?", role, max_active, key_prefix)
+    st.markdown('<p class="section-title">Пары — правка и отключение</p>', unsafe_allow_html=True)
+    _render_pairs_grid(connect, pairs, actor or "?", role, key_prefix)
 
 
 def _asin_registry(pairs: pd.DataFrame) -> pd.DataFrame:

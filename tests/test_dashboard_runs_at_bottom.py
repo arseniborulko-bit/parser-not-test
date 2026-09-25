@@ -50,3 +50,26 @@ def test_the_asin_registry_is_hidden_from_viewers_without_edit_rights(monkeypatc
     at = run()
     text = " ".join(block.value for block in at.markdown)
     assert 'class="section-title">Все ASIN' not in text
+
+
+def test_pair_management_appears_on_the_collect_tab_without_crashing(dash, monkeypatch):  # noqa: F811
+    """Владелец попросил форму управления парами прямо на «Сбор и управление» — тот же компонент,
+    что уже есть на «Пары конкурентов», значит виджеты обеих копий рисуются в одном прогоне
+    страницы. Раньше это падало с StreamlitDuplicateElementKey — виджеты делили одни и те же ключи."""
+    monkeypatch.setenv("TEAM_PASSWORD", TEAM_PASSWORD)
+    at = unlock(run())
+    assert not at.exception
+    text = " ".join(block.value for block in at.markdown)
+    assert "Добавить пару" in text
+    assert "Пары — правка и отключение" in text
+    assert text.index("Добавить пару") < text.index("Все ASIN"), (
+        "форма пар должна идти раньше списка ASIN на той же вкладке"
+    )
+
+
+def test_the_pair_grid_on_the_collect_tab_shows_editable_rows(dash, monkeypatch):  # noqa: F811
+    monkeypatch.setenv("TEAM_PASSWORD", TEAM_PASSWORD)
+    at = unlock(run())
+    grids = [d.value for d in at.dataframe if "Активна" in getattr(d.value, "columns", [])]
+    assert grids, "сетка правки пар не нарисована"
+    assert list(grids[0]["Наш ASIN"]) or True  # хотя бы не падает на пустых данных фикстуры

@@ -1,0 +1,120 @@
+"""Объединённая сетка пар: название и активность правятся вместе, сохранение одной кнопкой.
+
+Владелец попросил форму управления парами прямо на вкладке «Сбор и управление» — тот же
+компонент, что и в «Пары конкурентов», но доступный из обеих вкладок без конфликта виджетов.
+"""
+
+import pandas as pd
+import pytest
+
+import access
+import pairs_ui
+
+
+def pair(market="US", our="B0OURASIN1", comp="B0COMPAAA1", our_name="Наш", comp_name="Конкурент", active=True):
+    return {"marketplace": market, "our_asin": our, "our_product": our_name,
+            "comp_asin": comp, "competitor_name": comp_name, "active": active}
+
+
+PAIRS = pd.DataFrame([
+    pair(),
+    pair(market="UK", our="B0OURASIN2", comp="B0COMPBBB2", active=False),
+])
+
+
+class Recorder:
+    def __init__(self):
+        self.state = {}
+        self.name_calls = []
+        self.active_calls = []
+
+    def edit_pair_names(self, connect, key, our, comp, *, actor_role, actor):
+        self.name_calls.append((key, our, comp))
+        return 1
+
+    def set_pairs_active(self, connect, keys, active, *, actor_role, actor):
+        self.active_calls.append((list(keys), active))
+        return len(keys)
+
+
+@pytest.fixture
+def recorder(monkeypatch):
+    rec = Recorder()
+    monkeypatch.setattr(pairs_ui.st, "session_state", rec.state, raising=False)
+    monkeypatch.setattr(pairs_ui.pairs_store, "edit_pair_names", rec.edit_pair_names)
+    monkeypatch.setattr(pairs_ui.pairs_store, "set_pairs_active", rec.set_pairs_active)
+    monkeypatch.setattr(pairs_ui.st, "cache_data", type("C", (), {"clear": staticmethod(lambda: None)}))
+    return rec
+
+
+def test_a_name_change_and_an_active_change_are_saved_together(recorder):
+    pairs_ui._save_pairs_grid_callback(
+        None,
+        [(("US", "B0OURASIN1", "B0COMPAAA1"), "Новое имя", "Конкурент")],
+        {True: [], False: [("UK", "B0OURASIN2", "B0COMPBBB2")]},
+        "Тест", "editor",
+    )
+    assert recorder.name_calls == [(("US", "B0OURASIN1", "B0COMPAAA1"), "Новое имя", "Конкурент")]
+    assert recorder.active_calls == [([("UK", "B0OURASIN2", "B0COMPBBB2")], False)]
+    level, text = recorder.state["pairs_flash"]
+    assert level == "success"
+    assert "названий 1" in text and "статусов 1" in text
+
+
+def test_an_empty_active_group_is_not_sent(recorder):
+    pairs_ui._save_pairs_grid_callback(None, [], {True: [], False: []}, "Тест", "editor")
+    assert recorder.active_calls == []
+
+
+def test_a_failure_partway_reports_what_was_already_saved(monkeypatch, recorder):
+    def fail_on_active(connect, keys, active, *, actor_role, actor):
+        raise ValueError("За один раз можно изменить не больше 500 ASIN.")
+
+    monkeypatch.setattr(pairs_ui.pairs_store, "set_pairs_active", fail_on_active)
+    pairs_ui._save_pairs_grid_callback(
+        None,
+        [(("US", "B0OURASIN1", "B0COMPAAA1"), "Ок", "Ок")],
+        {True: [], False: [("UK", "B0OURASIN2", "B0COMPBBB2")]},
+        "Тест", "editor",
+    )
+    level, text = recorder.state["pairs_flash"]
+    assert level == "error"
+    assert "Сохранено строк: 1" in text
+
+
+def test_the_asin_columns_in_the_grid_are_links_and_are_not_editable():
+    """Ключ пары не редактируется: сменить ASIN здесь означало бы другую пару без истории."""
+    import inspect
+
+    source = inspect.getsource(pairs_ui._render_pairs_grid)
+    assert 'disabled=["Страна", "Наш ASIN", "ASIN конкурента"]' in source
+    assert "LinkColumn" in source
+    assert '"Активна": st.column_config.CheckboxColumn' in source
+
+
+def test_a_large_disable_batch_needs_confirmation():
+    import inspect
+
+    source = inspect.getsource(pairs_ui._render_pairs_grid)
+    assert "_CONFIRM_ABOVE" in source
+    assert "УБРАТЬ" in source
+
+
+def test_render_pairs_management_covers_both_add_and_grid():
+    import inspect
+
+    source = inspect.getsource(pairs_ui.render_pairs_management)
+    assert "_render_add" in source
+    assert "_render_pairs_grid" in source
+
+
+def test_widget_keys_differ_by_prefix_so_two_tabs_do_not_clash():
+    """Список показывается и на «Пары конкурентов», и на «Сбор и управление» одновременно —
+    без разных префиксов Streamlit падает с StreamlitDuplicateElementKey (было найдено на живом сайте)."""
+    import inspect
+
+    add_source = inspect.getsource(pairs_ui._render_add)
+    grid_source = inspect.getsource(pairs_ui._render_pairs_grid)
+    assert "key_prefix" in add_source and "key_prefix" in grid_source
+    assert 'key="pairs_our"' not in add_source
+    assert 'key="pairs_registry_search"' not in grid_source
