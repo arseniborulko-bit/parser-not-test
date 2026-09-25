@@ -1,6 +1,7 @@
 """Порядок блоков во вкладке «Сбор и управление»: «Автосбор» — в самом верху (владелец,
 25.09.2026: «это надо в самый верх чтобы стоял над добавить пару»), «Время сбора» — перед
-«Запустить сбор», «Последние запуски» — в самом низу, после всего остального."""
+«Запустить сбор», «Запустить сбор» — сразу над «Последние запуски» (владелец, тот же день:
+«перенисти это над Последние запуски»), «Последние запуски» — в самом низу, после всего остального."""
 
 from test_dashboard_access import TEAM_PASSWORD, dash, run, unlock  # noqa: F401
 
@@ -40,6 +41,17 @@ def test_autocollect_comes_before_pair_management(dash, monkeypatch):  # noqa: F
     assert "Автосбор" in text and "Добавить пару" in text and "Пары — правка и отключение" in text
     assert text.index("Автосбор") < text.index("Добавить пару")
     assert text.index("Автосбор") < text.index("Пары — правка и отключение")
+
+
+def test_start_collection_moved_right_above_recent_runs(dash, monkeypatch):  # noqa: F811
+    """Владелец попросил перенести «Запустить сбор» вниз, над «Последние запуски» (25.09.2026) —
+    раньше блок стоял вверху рядом с «Автосбор»."""
+    monkeypatch.setenv("TEAM_PASSWORD", TEAM_PASSWORD)
+    at = unlock(run())
+    text = " ".join(block.value for block in at.markdown)
+    assert "Запустить сбор" in text and "Последние запуски" in text
+    assert text.index("Пары — правка и отключение") < text.index("Запустить сбор")
+    assert text.index("Запустить сбор") < text.index("Последние запуски")
 
 
 def test_the_asin_registry_is_hidden_from_viewers_without_edit_rights(monkeypatch, dash):  # noqa: F811
