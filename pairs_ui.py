@@ -472,7 +472,9 @@ def _render_registry_from_store(connect, actor: str, role: str, key_prefix: str 
                for url, a, m in zip(shown["source_url"], shown["asin"], shown["marketplace"])]
     table = pd.DataFrame({
         "Страна": shown["marketplace"],
-        "ASIN": shown["asin"],
+        # Кликабельный ASIN — ведёт на собранный адрес (всегда открывается), а не на исходную
+        # ссылку: та может быть с параметрами варианта/продавца и не всегда матчит /dp/ASIN.
+        "ASIN": [_asin_url(a, m) for a, m in zip(shown["asin"], shown["marketplace"])],
         "Ссылка": sources,
         "Название": shown["name"],
         "Роль": [asins_store.KIND_LABELS.get(kind, kind) for kind in shown["kind"]],
@@ -483,6 +485,7 @@ def _render_registry_from_store(connect, actor: str, role: str, key_prefix: str 
         table, key=f"{key_prefix}_asin_registry_grid", hide_index=True, use_container_width=True, height=400,
         disabled=["Страна", "ASIN", "Роль", "В работе"],
         column_config={
+            "ASIN": st.column_config.LinkColumn("ASIN", display_text=_ASIN_LINK_TEXT, width="small"),
             "Ссылка": st.column_config.LinkColumn("Ссылка", display_text="открыть", width="small"),
             "Название": st.column_config.TextColumn("Название", max_chars=pairs_store.MAX_NAME),
             "В работе": st.column_config.CheckboxColumn("В работе"),
