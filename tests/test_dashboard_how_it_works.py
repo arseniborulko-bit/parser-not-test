@@ -46,7 +46,7 @@ def test_the_difference_between_the_at_sign_and_an_empty_cell_is_explained():
 
 def test_it_explains_that_history_outlives_a_disabled_pair():
     text = dash_module._HOW_IT_WORKS
-    assert "Больше не собираются" in text
+    assert "Все ASIN" in text
     assert "не удаляются никогда" in text
 
 

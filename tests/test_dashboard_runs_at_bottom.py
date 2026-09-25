@@ -1,27 +1,17 @@
-"""Таблица «Последние запуски» — в самом низу вкладки «Сбор и управление», после «Больше не
-собираются» и кнопки обновления, а не в середине блока «Автосбор»."""
-
-import pandas as pd
+"""Порядок блоков во вкладке «Сбор и управление»: «Все ASIN» — первым, «Время сбора» — перед
+«Запустить сбор», «Последние запуски» — в самом низу, после всего остального."""
 
 from test_dashboard_access import TEAM_PASSWORD, dash, run, unlock  # noqa: F401
 
 
-def test_recent_runs_come_after_the_retired_asins_block(dash, monkeypatch):  # noqa: F811
-    import dashboard_db as dash_module
-
+def test_recent_runs_come_after_the_asin_registry(dash, monkeypatch):  # noqa: F811
     monkeypatch.setenv("TEAM_PASSWORD", TEAM_PASSWORD)
-    monkeypatch.setattr(
-        dash_module, "load_retired_asins",
-        lambda: pd.DataFrame([
-            {"marketplace": "UK", "asin": "B0OLDOLD01", "name": "Старый", "role": "конкурент", "last_seen": None},
-        ]),
-    )
     at = unlock(run())
     text = " ".join(block.value for block in at.markdown)
     assert "Последние запуски" in text
-    assert "Больше не собираются" in text
-    assert text.index("Больше не собираются") < text.index("Последние запуски"), (
-        "таблица запусков должна идти ПОСЛЕ списка отключённых ASIN"
+    assert "Все ASIN" in text
+    assert text.index("Все ASIN") < text.index("Последние запуски"), (
+        "таблица запусков должна идти ПОСЛЕ списка ASIN"
     )
 
 
@@ -41,18 +31,22 @@ def test_the_schedule_time_field_comes_before_start_collection(dash, monkeypatch
     assert text.index("Автосбор") < text.index("Запустить сбор")
 
 
-def test_the_retired_asins_block_comes_before_autocollect(dash, monkeypatch):  # noqa: F811
-    """Владелец хочет видеть «Больше не собираются» раньше «Автосбор»."""
-    import dashboard_db as dash_module
-
+def test_the_asin_registry_comes_before_autocollect(dash, monkeypatch):  # noqa: F811
+    """Владелец хочет видеть список ASIN раньше «Автосбор»."""
     monkeypatch.setenv("TEAM_PASSWORD", TEAM_PASSWORD)
-    monkeypatch.setattr(
-        dash_module, "load_retired_asins",
-        lambda: pd.DataFrame([
-            {"marketplace": "UK", "asin": "B0OLDOLD01", "name": "Старый", "role": "конкурент", "last_seen": None},
-        ]),
-    )
     at = unlock(run())
     text = " ".join(block.value for block in at.markdown)
-    assert "Больше не собираются" in text and "Автосбор" in text
-    assert text.index("Больше не собираются") < text.index("Автосбор")
+    assert "Все ASIN" in text and "Автосбор" in text
+    assert text.index("Все ASIN") < text.index("Автосбор")
+
+
+def test_the_asin_registry_is_hidden_from_viewers_without_edit_rights(monkeypatch, dash):  # noqa: F811
+    """Список редактируется прямо там же (вписать/убрать/переименовать), поэтому, как и «Пары
+    конкурентов», показывается только тем, у кого открыто «Управление» — не всем подряд.
+
+    Ищем именно заголовок раздела, а не любое упоминание фразы «Все ASIN» — она есть и в тексте
+    «Как это работает», который виден всем."""
+    monkeypatch.setenv("TEAM_PASSWORD", TEAM_PASSWORD)
+    at = run()
+    text = " ".join(block.value for block in at.markdown)
+    assert 'class="section-title">Все ASIN' not in text

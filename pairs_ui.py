@@ -316,22 +316,25 @@ def _drop_asins_callback(connect, keys, actor: str, role: str) -> None:
     st.session_state["pairs_flash"] = ("success", f"Убрано ASIN: {count}.")
 
 
-def _render_add_asin_form(connect, actor: str, role: str) -> None:
+def _render_add_asin_form(connect, actor: str, role: str, key_prefix: str = "pairs") -> None:
     """Вписать ASIN прямо в справочник, без пары."""
     columns = st.columns([2, 1, 1])
-    text = columns[0].text_input("Вписать ASIN или ссылки", key="asin_add_text",
+    text = columns[0].text_input("Вписать ASIN или ссылки", key=f"{key_prefix}_asin_add_text",
                                  placeholder="B0XXXXXXXX, ссылка на Amazon…")
-    market = columns[1].selectbox("Страна", pairs_store.MARKETS, key="asin_add_market")
+    market = columns[1].selectbox("Страна", pairs_store.MARKETS, key=f"{key_prefix}_asin_add_market")
     kind = columns[2].selectbox(
-        "Это", asins_store.KINDS, key="asin_add_kind",
+        "Это", asins_store.KINDS, key=f"{key_prefix}_asin_add_kind",
         format_func=lambda value: asins_store.KIND_LABELS[value],
     )
-    st.button("Вписать", key="asin_add_btn", disabled=not text.strip(),
+    st.button("Вписать", key=f"{key_prefix}_asin_add_btn", disabled=not text.strip(),
               on_click=_add_asins_callback, args=(connect, market, text, kind, actor, role))
 
 
-def _render_registry_from_store(connect, actor: str, role: str) -> bool:
-    """Справочник ASIN: вписать и убрать. Возвращает False, если миграции 008 ещё нет."""
+def _render_registry_from_store(connect, actor: str, role: str, key_prefix: str = "pairs") -> bool:
+    """Справочник ASIN: вписать и убрать. Возвращает False, если миграции 008 ещё нет.
+
+    key_prefix отличает ключи виджетов, когда список показан на нескольких вкладках сразу
+    («Пары конкурентов» и «Сбор и управление») — иначе Streamlit ловит одинаковые ключи."""
     try:
         if not asins_store.registry_exists(connect):
             return False
@@ -342,14 +345,14 @@ def _render_registry_from_store(connect, actor: str, role: str) -> bool:
         log.warning("Справочник ASIN недоступен, показываю список из пар")
         return False
 
-    _render_add_asin_form(connect, actor, role)
+    _render_add_asin_form(connect, actor, role, key_prefix)
     if not rows:
         st.info("В справочнике пока пусто.")
         return True
 
     registry = pd.DataFrame(rows)
-    query = st.text_input("ASIN или часть названия", key="asin_registry_search")
-    show_off = st.checkbox("Показывать убранные", key="asin_registry_show_off")
+    query = st.text_input("ASIN или часть названия", key=f"{key_prefix}_asin_registry_search")
+    show_off = st.checkbox("Показывать убранные", key=f"{key_prefix}_asin_registry_show_off")
     shown = _matches(registry, query)
     if not show_off:
         shown = shown[shown["active"]]
@@ -372,7 +375,7 @@ def _render_registry_from_store(connect, actor: str, role: str) -> bool:
         "Убрать": False,
     })
     edited = st.data_editor(
-        table, key="asin_registry_grid", hide_index=True, use_container_width=True, height=400,
+        table, key=f"{key_prefix}_asin_registry_grid", hide_index=True, use_container_width=True, height=400,
         disabled=["Страна", "ASIN", "Роль", "В работе"],
         column_config={
             "Ссылка": st.column_config.LinkColumn("Ссылка", display_text="открыть", width="small"),
@@ -400,19 +403,19 @@ def _render_registry_from_store(connect, actor: str, role: str) -> bool:
     marked = edited[edited["Убрать"]]
     keys = [(shown["marketplace"].iloc[i], shown["asin"].iloc[i]) for i in marked.index]
     with buttons[0]:
-        st.button(f"Сохранить изменения ({len(changes)})", key="asin_registry_save",
+        st.button(f"Сохранить изменения ({len(changes)})", key=f"{key_prefix}_asin_registry_save",
                   disabled=not changes, on_click=_save_registry_callback,
                   args=(connect, changes, actor, role))
     with buttons[1]:
-        st.button(f"Убрать отмеченные ({len(keys)})", key="asin_registry_drop", disabled=not keys,
+        st.button(f"Убрать отмеченные ({len(keys)})", key=f"{key_prefix}_asin_registry_drop", disabled=not keys,
                   on_click=_drop_asins_callback, args=(connect, keys, actor, role))
     if len(_matches(registry, query)) > MAX_EDIT_ROWS:
         st.caption(f"Показаны первые {MAX_EDIT_ROWS}: уточните поиск.")
     return True
 
 
-def _render_registry(connect, pairs: pd.DataFrame, actor: str, role: str) -> None:
-    if _render_registry_from_store(connect, actor, role):
+def _render_registry(connect, pairs: pd.DataFrame, actor: str, role: str, key_prefix: str = "pairs") -> None:
+    if _render_registry_from_store(connect, actor, role, key_prefix):
         return
     # Справочника в базе ещё нет (миграция 008 не применена) — показываем то же самое, собранное
     # из пар: список и «стереть» работают, вписать отдельный ASIN пока некуда.
@@ -422,8 +425,8 @@ def _render_registry(connect, pairs: pd.DataFrame, actor: str, role: str) -> Non
         return
 
     top = st.columns([3, 2])
-    query = top[0].text_input("ASIN или часть названия", key="pairs_registry_search")
-    only_active = top[1].checkbox("Только участвующие в сборе", value=True, key="pairs_registry_active")
+    query = top[0].text_input("ASIN или часть названия", key=f"{key_prefix}_registry_search")
+    only_active = top[1].checkbox("Только участвующие в сборе", value=True, key=f"{key_prefix}_registry_active")
 
     shown = _matches(registry, query)
     if only_active:
@@ -442,7 +445,7 @@ def _render_registry(connect, pairs: pd.DataFrame, actor: str, role: str) -> Non
         "Стереть": False,
     })
     edited = st.data_editor(
-        table, key="pairs_registry_grid", hide_index=True, use_container_width=True, height=400,
+        table, key=f"{key_prefix}_registry_grid", hide_index=True, use_container_width=True, height=400,
         disabled=["Страна", "ASIN", "Название", "Роль", "Пар в сборе"],
         column_config={
             "ASIN": st.column_config.LinkColumn("ASIN", display_text=_ASIN_LINK_TEXT, width="small"),
@@ -456,10 +459,10 @@ def _render_registry(connect, pairs: pd.DataFrame, actor: str, role: str) -> Non
     confirmed = True
     if affected > _CONFIRM_ABOVE:
         typed = st.text_input(f"Отключится {affected} пар. Введите СТЕРЕТЬ для подтверждения",
-                              key="pairs_registry_confirm")
+                              key=f"{key_prefix}_registry_confirm")
         confirmed = typed.strip().upper() == "СТЕРЕТЬ"
     st.button(
-        f"Стереть отмеченные ({len(targets)})", key="pairs_registry_btn",
+        f"Стереть отмеченные ({len(targets)})", key=f"{key_prefix}_registry_btn",
         disabled=not targets or not confirmed,
         on_click=_erase_callback, args=(connect, pairs, targets, actor, role),
     )
@@ -550,6 +553,16 @@ def _render_log(connect) -> None:
         ]),
         use_container_width=True, hide_index=True,
     )
+
+
+def render_asin_registry(connect, pairs: pd.DataFrame, actor: str | None, role: str | None,
+                         key_prefix: str = "pairs") -> None:
+    """Список всех ASIN со ссылками, названием и правкой — публичная точка входа для других вкладок
+    дашборда (например, «Сбор и управление»), не только для вкладки «Пары конкурентов».
+
+    key_prefix обязателен, если список показывается на нескольких вкладках одной страницы сразу:
+    у виджетов должны быть разные ключи, иначе Streamlit откажет на дублирующемся key."""
+    _render_registry(connect, pairs, actor or "?", role, key_prefix)
 
 
 def render_pairs_tab(connect, pairs: pd.DataFrame, actor: str | None, role: str | None, max_active: int) -> None:
