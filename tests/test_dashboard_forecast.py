@@ -112,3 +112,60 @@ def test_the_tab_says_when_there_is_not_enough_data(dash, monkeypatch):  # noqa:
     monkeypatch.setattr(dash, "load_snapshots", lambda: rows([100, 200]))
     notes = " ".join(info.value for info in run().info)
     assert "Недостаточно замеров" in notes
+
+
+def test_the_asin_series_bridges_the_last_fact_point_into_the_forecast():
+    """Прогнозная (пунктирная) линия должна начинаться с последней фактической точки, а не
+    висеть в воздухе отдельной точкой — иначе на графике был бы разрыв."""
+    series = dash_module._asin_forecast_series(
+        rows([300, 200, 100]), window_days=30, horizon_days=7, asin="B000000001", market="US",
+    )
+    fact = series[series["Тип"] == "Факт"]
+    forecast = series[series["Тип"] == "Прогноз"]
+    assert len(fact) == 3
+    assert list(fact["BSR"]) == [300, 200, 100]
+    assert len(forecast) == 2
+    assert forecast.iloc[0]["Дата"] == fact.iloc[-1]["Дата"]
+    assert forecast.iloc[0]["BSR"] == fact.iloc[-1]["BSR"]
+    # наклон −100/день, горизонт 7 дней от 100 — упирается в ноль (тот же случай, что и в таблице)
+    assert forecast.iloc[-1]["BSR"] == 0.0
+
+
+def test_the_asin_series_is_empty_below_the_minimum_points():
+    empty = dash_module._asin_forecast_series(rows([200, 100]), 30, 7, "B000000001", "US")
+    assert empty.empty
+
+
+def test_the_asin_series_is_empty_for_an_asin_not_in_the_data():
+    empty = dash_module._asin_forecast_series(rows([300, 200, 100]), 30, 7, "B0NOTHERE1", "US")
+    assert empty.empty
+
+
+def test_the_leaders_chart_plots_the_change_per_day_as_bars():
+    table = dash_module._forecast_table(rows([300, 200, 100]), window_days=30, horizon_days=7)
+    spec = dash_module._forecast_leaders_chart(table).to_dict()
+    mark = spec["mark"]
+    assert (mark if isinstance(mark, str) else mark["type"]) == "bar"
+    assert spec["encoding"]["x"]["field"] == "Изменение в день"
+    assert spec["encoding"]["y"]["field"] == "Метка"
+
+
+def test_the_line_chart_uses_dashing_to_tell_fact_from_forecast():
+    series = dash_module._asin_forecast_series(rows([300, 200, 100]), 30, 7, "B000000001", "US")
+    spec = dash_module._asin_forecast_line_chart(series).to_dict()
+    mark = spec["mark"]
+    assert (mark if isinstance(mark, str) else mark["type"]) == "line"
+    assert spec["encoding"]["y"]["field"] == "BSR"
+    assert spec["encoding"]["strokeDash"]["field"] == "Тип"
+
+
+def test_the_forecast_tab_shows_charts_not_a_raw_table(dash, monkeypatch):  # noqa: F811
+    """Владелец попросил графики вместо таблицы чисел (25.09.2026)."""
+    monkeypatch.setattr(dash, "load_snapshots", lambda: rows([300, 200, 100]))
+    at = run()
+    assert not at.exception
+    assert at.get("vega_lite_chart"), "на вкладке должен быть хотя бы один график"
+    assert any(sb.key == "forecast_asin_pick" for sb in at.selectbox)
+    assert not any("BSR сейчас" in str(df.value) for df in at.dataframe), (
+        "числовая таблица прогноза должна быть заменена графиками"
+    )
