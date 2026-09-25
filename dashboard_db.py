@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -197,6 +198,27 @@ def _apply_design() -> None:
         div[data-testid="stTabs"] button:disabled { opacity: .45 !important; cursor: not-allowed; }
         .stButton > button { background: #168ed0; color: #fff; border: 0; border-radius: 8px; font-weight: 650; }
         .stButton > button:hover { background: #075b9b; color: #fff; }
+
+        .how-hero { margin: .3rem 0 1.6rem; }
+        .how-title { font-size: 2.3rem; font-weight: 800; letter-spacing: -.03em; color: #111827; margin: 0 0 .45rem; line-height: 1.15; }
+        .how-subtitle { color: #64748b; font-size: .98rem; line-height: 1.55; max-width: 760px; margin: 0; }
+        .how-eyebrow { color: #94a3b8; font-size: .72rem; letter-spacing: .12em; text-transform: uppercase; font-weight: 650; margin: 1.7rem 0 .7rem; }
+        .how-flow { display: flex; align-items: stretch; }
+        .how-flow-step { flex: 1; background: #ffffff; border: 1px solid #e5e7eb; border-radius: 12px; padding: .8rem .9rem; text-align: center; }
+        .how-flow-step.is-live { border-color: #168ed0; box-shadow: inset 0 0 0 1px #168ed0; }
+        .how-flow-step-title { font-weight: 700; color: #111827; font-size: .92rem; }
+        .how-flow-step-detail { color: #64748b; font-size: .76rem; margin-top: .3rem; }
+        .how-flow-step.is-live .how-flow-step-detail { color: #168ed0; }
+        .how-flow-connector { flex: 0 0 30px; position: relative; display: flex; align-items: center; justify-content: center; }
+        .how-flow-connector::before { content: ""; position: absolute; left: 0; right: 0; top: 50%; height: 1px; background: #dbe0ea; }
+        .how-flow-connector span { width: 6px; height: 6px; border-radius: 50%; background: #168ed0; position: relative; }
+        .how-flow-legend { display: flex; justify-content: space-between; color: #94a3b8; font-size: .78rem; margin: .55rem .2rem 0; }
+        .how-flow-legend-mid { flex: 1; text-align: center; }
+        .how-card { display: flex; gap: 1rem; background: #ffffff; border: 1px solid #e5e7eb; border-radius: 14px; padding: 1rem 1.2rem; margin-bottom: .65rem; }
+        .how-card-num { flex: 0 0 30px; height: 30px; border-radius: 50%; background: #121826; color: #fff; font-weight: 700; font-size: .82rem; display: flex; align-items: center; justify-content: center; }
+        .how-card-title { font-weight: 700; color: #111827; font-size: .98rem; margin-bottom: .25rem; }
+        .how-card-text { color: #4b5563; font-size: .89rem; line-height: 1.55; }
+        .how-card-text b { color: #111827; }
         </style>
         """,
         unsafe_allow_html=True,
@@ -608,8 +630,88 @@ ASIN: фактическая история BSR сплошной линией и
 """
 
 
-def _render_how_it_works() -> None:
-    st.markdown(_HOW_IT_WORKS)
+def _markdown_bold_to_html(text: str) -> str:
+    """Только `**жирный**` → `<b>`, весь остальной текст экранируется — этого хватает для того,
+    что реально встречается в _HOW_IT_WORKS (никаких ссылок, списков и прочей разметки)."""
+    parts = text.split("**")
+    return "".join(f"<b>{escape(part)}</b>" if i % 2 else escape(part) for i, part in enumerate(parts))
+
+
+def _how_it_works_sections() -> list[tuple[str, str]]:
+    """Разбирает _HOW_IT_WORKS на (заголовок, текст) для карточек — один источник правды с текстом,
+    который уже проверяют tests/test_dashboard_how_it_works.py."""
+    sections = []
+    for block in _HOW_IT_WORKS.strip().split("\n\n"):
+        block = re.sub(r"\s+", " ", block.strip())
+        match = re.match(r"^\*\*(.+?)\*\*\s*(.*)$", block)
+        title, body = match.groups() if match else ("", block)
+        sections.append((title.rstrip("."), body))
+    return sections
+
+
+def _how_it_works_flow(pairs: pd.DataFrame, data: pd.DataFrame) -> str:
+    """Живая схема потока: сколько пар в матрице, когда был последний сбор, сколько строк и стран
+    сейчас в базе — те же числа, что и в карточках «Текущее состояние», просто в виде потока."""
+    active_pairs = int(pairs["active"].sum()) if "active" in pairs else 0
+    total_pairs = len(pairs)
+    latest = "нет сборов"
+    if not data.empty and "snapshot_date" in data:
+        dates = pd.to_datetime(data["snapshot_date"], errors="coerce")
+        if dates.notna().any():
+            latest = dates.max().strftime("%d.%m.%Y")
+    records = len(data)
+    countries = data["marketplace"].nunique() if "marketplace" in data else 0
+
+    steps = [
+        ("Матрица пар", f"{active_pairs} активных из {total_pairs}", False),
+        ("Сбор", "раз в сутки, ScrapingDog", False),
+        ("База", f"последний: {latest}", True),
+        ("Дашборд", f"{records} строк · {countries} стран", False),
+    ]
+    cells = []
+    for index, (title, detail, live) in enumerate(steps):
+        if index:
+            cells.append('<div class="how-flow-connector"><span></span></div>')
+        live_class = " is-live" if live else ""
+        cells.append(
+            f'<div class="how-flow-step{live_class}">'
+            f'<div class="how-flow-step-title">{escape(title)}</div>'
+            f'<div class="how-flow-step-detail">{escape(detail)}</div></div>'
+        )
+    return (
+        '<div class="how-eyebrow">Как течёт поток · живая схема</div>'
+        f'<div class="how-flow">{"".join(cells)}</div>'
+        '<div class="how-flow-legend">'
+        '<span>← пару добавляет человек</span>'
+        '<span class="how-flow-legend-mid">данные текут сами</span>'
+        '<span>смотрит и правит человек →</span>'
+        '</div>'
+    )
+
+
+def _render_how_it_works(pairs: pd.DataFrame | None = None, data: pd.DataFrame | None = None) -> None:
+    st.markdown(
+        '<div class="how-hero">'
+        '<h1 class="how-title">Как это работает</h1>'
+        '<p class="how-subtitle">Competitor BSR раз в сутки собирает позицию в категории (BSR), цену и '
+        'наличие по каждой паре «наш товар — конкурент» на Amazon и показывает, куда идёт каждый BSR.</p>'
+        '</div>',
+        unsafe_allow_html=True,
+    )
+    if pairs is not None and data is not None:
+        st.markdown(_how_it_works_flow(pairs, data), unsafe_allow_html=True)
+
+    st.markdown('<div class="how-eyebrow">Порядок работы</div>', unsafe_allow_html=True)
+    for number, (title, body) in enumerate(_how_it_works_sections(), start=1):
+        st.markdown(
+            '<div class="how-card">'
+            f'<div class="how-card-num">{number}</div>'
+            '<div>'
+            f'<div class="how-card-title">{escape(title)}</div>'
+            f'<div class="how-card-text">{_markdown_bold_to_html(body)}</div>'
+            '</div></div>',
+            unsafe_allow_html=True,
+        )
 
 
 _MATRIX_METRICS = {"BSR": ("our_bsr", "comp_bsr"), "Цена": ("our_price", "comp_price")}
@@ -1325,7 +1427,7 @@ def main() -> None:
             _render_recent_runs(overview, can_edit)
 
     with how_tab:
-        _render_how_it_works()
+        _render_how_it_works(pairs, shown_history)
 
     if role == access.ROLE_ADMIN:
         with tabs[6]:

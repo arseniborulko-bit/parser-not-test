@@ -4,6 +4,7 @@
 один, свёрнут по умолчанию и лежит во вкладке управления, а не над данными.
 """
 
+import pandas as pd
 import pytest
 
 from test_dashboard_access import dash, run  # noqa: F401
@@ -67,3 +68,40 @@ def test_it_does_not_still_say_below_now_that_it_is_a_separate_tab(dash):  # noq
     text = dash_module._HOW_IT_WORKS
     assert "задаётся ниже" not in text
     assert "видны ниже" not in text
+
+
+def test_bold_markdown_becomes_html_and_everything_else_is_escaped():
+    html = dash_module._markdown_bold_to_html("BSR — чем **меньше**, тем лучше <script>")
+    assert "<b>меньше</b>" in html
+    assert "<script>" not in html  # экранирован, а не вставлен как есть
+    assert "&lt;script&gt;" in html
+
+
+def test_sections_are_parsed_out_of_how_it_works_one_per_paragraph():
+    """Карточки строятся из того же текста, что проверяют тесты выше — не из отдельной копии."""
+    sections = dash_module._how_it_works_sections()
+    titles = [title for title, _ in sections]
+    assert "Откуда берутся данные" in titles
+    assert "Что не пропадает" in titles
+    # у каждого раздела есть непустой текст, а заголовок не утащил в себя весь абзац
+    assert all(title and body for title, body in sections)
+    assert all(len(title) < 60 for title, _ in sections)
+
+
+def test_the_flow_diagram_shows_live_numbers_not_placeholders():
+    pairs = pd.DataFrame([
+        {"marketplace": "US", "active": True}, {"marketplace": "US", "active": False},
+    ])
+    data = pd.DataFrame([{"snapshot_date": "2026-09-25", "marketplace": "US"}])
+    html = dash_module._how_it_works_flow(pairs, data)
+    assert "1 активных из 2" in html
+    assert "25.09.2026" in html
+    assert "1 строк" in html and "1 стран" in html
+
+
+def test_the_tab_renders_the_new_design_without_crashing(dash):  # noqa: F811
+    at = run()
+    assert not at.exception
+    text = " ".join(block.value for block in at.markdown)
+    assert "how-title" in text or "Как это работает" in text
+    assert "Порядок работы" in text
