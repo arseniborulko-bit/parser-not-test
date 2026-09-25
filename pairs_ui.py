@@ -517,16 +517,13 @@ def _render_registry_from_store(connect, actor: str, role: str, key_prefix: str 
         return True
     shown = shown.head(MAX_EDIT_ROWS).reset_index(drop=True)
 
-    # Исходная ссылка, как её вписали: собранная из ASIN теряет параметры и вариант товара.
-    # Если ссылки нет, показываем собранную — чтобы товар всё равно открывался.
-    sources = [url or _asin_url(a, m)
-               for url, a, m in zip(shown["source_url"], shown["asin"], shown["marketplace"])]
     table = pd.DataFrame({
         "Страна": shown["marketplace"],
-        # Кликабельный ASIN — ведёт на собранный адрес (всегда открывается), а не на исходную
-        # ссылку: та может быть с параметрами варианта/продавца и не всегда матчит /dp/ASIN.
+        # Кликабельный ASIN — единственная ссылка в этой таблице, ведёт на собранный адрес
+        # (всегда открывается). Отдельное поле для исходной ссылки (с параметрами варианта или
+        # продавца) убрано отсюда по просьбе владельца — задать её по-прежнему можно при
+        # добавлении нового ASIN, в поле «Вписать ASIN или ссылки».
         "ASIN": [_asin_url(a, m) for a, m in zip(shown["asin"], shown["marketplace"])],
-        "Ссылка": sources,
         "Название": shown["name"],
         "Роль": [asins_store.KIND_LABELS.get(kind, kind) for kind in shown["kind"]],
         "В работе": shown["active"],
@@ -537,7 +534,6 @@ def _render_registry_from_store(connect, actor: str, role: str, key_prefix: str 
         disabled=["Страна", "ASIN", "Роль", "В работе"],
         column_config={
             "ASIN": st.column_config.LinkColumn("ASIN", display_text=_ASIN_LINK_TEXT, width="small"),
-            "Ссылка": st.column_config.LinkColumn("Ссылка", display_text="открыть", width="small"),
             "Название": st.column_config.TextColumn("Название", max_chars=pairs_store.MAX_NAME),
             "В работе": st.column_config.CheckboxColumn("В работе"),
             "Убрать": st.column_config.CheckboxColumn("Убрать"),
@@ -547,15 +543,11 @@ def _render_registry_from_store(connect, actor: str, role: str, key_prefix: str 
     changes = []
     for position in range(len(shown)):
         name_now = str(edited["Название"].iloc[position] or "")
-        url_now = str(edited["Ссылка"].iloc[position] or "")
-        was_url = str(shown["source_url"].iloc[position] or "")
-        # Подставленную из ASIN ссылку за правку не считаем: пользователь её не трогал.
-        url_changed = url_now != (was_url or sources[position])
-        if name_now != str(shown["name"].iloc[position] or "") or url_changed:
+        if name_now != str(shown["name"].iloc[position] or ""):
             changes.append((
                 (shown["marketplace"].iloc[position], shown["asin"].iloc[position]),
                 name_now,
-                url_now if url_changed else None,
+                None,
             ))
 
     buttons = st.columns(2)

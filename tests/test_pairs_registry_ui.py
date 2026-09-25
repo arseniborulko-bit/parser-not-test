@@ -77,14 +77,17 @@ def test_with_the_migration_the_store_version_takes_over(monkeypatch):
 
 
 def test_the_asin_column_is_its_own_clickable_link():
-    """ASIN сам по себе — ссылка на карточку товара (собранный адрес, всегда открывается),
-    а «Ссылка» — отдельная колонка с исходным, как её вписали."""
+    """ASIN сам по себе — ссылка на карточку товара (собранный адрес, всегда открывается).
+
+    Отдельную колонку «Ссылка» владелец попросил убрать 25.09.2026 — рядом с кликабельным ASIN
+    она выглядела как дубль. Задать исходную ссылку (с параметрами варианта/продавца) по-прежнему
+    можно при добавлении нового ASIN, в форме «Вписать ASIN или ссылки»."""
     import inspect
 
     source = inspect.getsource(pairs_ui._render_registry_from_store)
     assert '"ASIN": st.column_config.LinkColumn("ASIN", display_text=_ASIN_LINK_TEXT' in source
-    assert '"Ссылка": st.column_config.LinkColumn("Ссылка", display_text="открыть"' in source
     assert '"ASIN": shown["asin"],' not in source, "ASIN должен быть ссылкой, а не голым текстом"
+    assert '"Ссылка"' not in source
 
 
 def test_an_unreachable_registry_falls_back_instead_of_showing_an_error(monkeypatch):
