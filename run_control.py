@@ -55,12 +55,15 @@ def format_positions(positions: Positions) -> str:
     return f"В работе {positions.total} ASIN: наших {positions.ours} · конкурентов {positions.competitors} ({markets})"
 
 
-def admission_preview(connect: Connect, now: datetime, scope: str = "all") -> Optional[str]:
+def admission_preview(connect: Connect, now: datetime, scope: str = "all", force: bool = False) -> Optional[str]:
     """Причина, по которой проверка допуска не пустит сбор прямо сейчас; None — пустит. Ничего не записывает.
 
     scope — та же область, что у кнопки ("all"/"ours"/"competitors"): у каждой свой дневной лимит и
     правило "уже был успешный сбор сегодня", а "идёт незавершённый сбор" — общее на все области сразу
-    (нельзя собирать двумя запросами одновременно, точно как в db_runs.admit_parser_run)."""
+    (нельзя собирать двумя запросами одновременно, точно как в db_runs.admit_parser_run).
+
+    force — предпросмотр кнопки «Собрать ещё раз»: см. db_runs.admission_block_reason, что именно
+    он снимает и что нет."""
     if now.tzinfo is None:
         raise RunControlError("Некорректное время для проверки.")
     if scope not in db_runs.SCOPES:
@@ -93,7 +96,7 @@ def admission_preview(connect: Connect, now: datetime, scope: str = "all") -> Op
     try:
         return db_runs.admission_block_reason(
             now=now, schedule=schedule, attempts_today=attempts, successful_today=bool(successful),
-            unfinished=bool(unfinished_rows[0][0]), force=False,
+            unfinished=bool(unfinished_rows[0][0]), force=force,
         )
     except db_runs.RunStoreError as exc:
         raise RunControlError(str(exc)) from None

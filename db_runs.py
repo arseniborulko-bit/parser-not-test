@@ -75,12 +75,21 @@ def invocation_from_environment(environment: Mapping[str, str]) -> Invocation:
 def admission_block_reason(*, now: datetime, schedule: Optional[tuple[int, int]],
                            attempts_today: int, successful_today: bool,
                            unfinished: bool, force: bool = False) -> Optional[str]:
-    """Чистая политика допуска. force снимает ТОЛЬКО дневной лимит."""
+    """Чистая политика допуска.
+
+    force снимает и дневной лимит попыток, и запрет повторного сбора после уже успешного сегодня —
+    решение владельца 25.09.2026: кнопка «Собрать ещё раз» должна реально запускать сбор, а не
+    упираться в ту же самую защиту. Это осознанный отказ от части защиты платных запросов: каждое
+    нажатие с force — это новый платный прогон, ограничения по числу нет.
+
+    force НЕ снимает: незавершённую попытку (защита от гонки при записи в Sheets, не про деньги)
+    и то, что расписание не задано или время ещё не наступило (когда собирать — решается отдельно).
+    """
     if now.tzinfo is None or now.utcoffset() is None or attempts_today < 0:
         raise RunStoreError("Некорректные данные для проверки допуска.")
     if unfinished:
         return "Есть незавершённая попытка (включая прошлые дни) — сбор заблокирован."
-    if successful_today:
+    if successful_today and not force:
         return "Сегодня уже был успешный сбор — пропуск."
     if schedule is None:
         return "Расписание в базе не задано — пропуск."

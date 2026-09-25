@@ -38,16 +38,26 @@ def test_limit_blocks(count):
     assert policy(attempts_today=count) is not None
 
 
-def test_force_overrides_only_limit():
+def test_force_overrides_the_daily_attempt_limit():
     assert policy(attempts_today=3, force=True) is None
 
 
+def test_force_also_overrides_already_succeeded_today():
+    """Решение владельца 25.09.2026: кнопка «Собрать ещё раз» должна реально запускать сбор
+    после уже успешного сегодня, а не упираться в ту же защиту."""
+    assert policy(successful_today=True, force=True) is None
+
+
+def test_without_force_success_today_still_blocks():
+    assert policy(successful_today=True, force=False) is not None
+
+
 @pytest.mark.parametrize("override", [
-    {"unfinished": True}, {"successful_today": True}, {"schedule": None},
-    {"schedule": (23, 0)},
+    {"unfinished": True}, {"schedule": None}, {"schedule": (23, 0)},
 ])
 @pytest.mark.parametrize("force", [False, True])
 def test_other_blocks_cannot_be_forced(override, force):
+    """Незавершённая попытка (гонка при записи) и время сбора — не про деньги, force их не снимает."""
     assert policy(**override, force=force) is not None
 
 

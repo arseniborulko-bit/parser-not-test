@@ -33,11 +33,12 @@ _STATUS_MESSAGES = {
 
 
 def dispatch_collection(token: Optional[str], repo: str = DEFAULT_REPO, *, workflow: str = DEFAULT_WORKFLOW,
-                        ref: str = DEFAULT_REF, scope: str = "all", post: Optional[Callable] = None,
-                        timeout: float = 20) -> DispatchResult:
-    """Просит GitHub запустить сбор. force отсюда недоступен — снимает только лимит попыток и есть только
-    внутри самого gate. scope="all" (по умолчанию) не добавляет inputs вовсе — тело запроса остаётся ровно
-    {"ref": ref}, как раньше; "ours"/"competitors" — частичный сбор, добавляет inputs.scope."""
+                        ref: str = DEFAULT_REF, scope: str = "all", force: bool = False,
+                        post: Optional[Callable] = None, timeout: float = 20) -> DispatchResult:
+    """Просит GitHub запустить сбор. scope="all" и force=False (по умолчанию) не добавляют inputs
+    вовсе — тело запроса остаётся ровно {"ref": ref}, как раньше. force=True передаётся как
+    inputs.force — снимает и дневной лимит попыток, и запрет повторного сбора после уже успешного
+    сегодня (решение владельца 25.09.2026); что именно он снимает — см. db_runs.admission_block_reason."""
     if not token:
         return DispatchResult(False, "Не задан токен GitHub (секрет GITHUB_DISPATCH_TOKEN).")
     if not (_REPO_RE.match(repo or "") and _WORKFLOW_RE.match(workflow or "") and _REF_RE.match(ref or "")):
@@ -51,7 +52,12 @@ def dispatch_collection(token: Optional[str], repo: str = DEFAULT_REPO, *, workf
         "X-GitHub-Api-Version": "2022-11-28",
         "User-Agent": "parser-not-test-dashboard",
     }
-    body = {"ref": ref} if scope == "all" else {"ref": ref, "inputs": {"scope": scope}}
+    inputs = {}
+    if scope != "all":
+        inputs["scope"] = scope
+    if force:
+        inputs["force"] = True
+    body = {"ref": ref, "inputs": inputs} if inputs else {"ref": ref}
     try:
         response = (post or requests.post)(url, headers=headers, json=body, timeout=timeout)
     except requests.Timeout:

@@ -33,12 +33,14 @@ def collect_env(monkeypatch, dash):  # noqa: F811
     state = {"dispatches": [], "now": 1_000_000.0, "gate": None, "gate_by_scope": {},
              "result": github_dispatch.DispatchResult(True, "ok")}
 
-    def fake_dispatch(token, repo=DEFAULT_REPO, *, scope="all", **kwargs):
-        state["dispatches"].append((token, repo, scope))
+    def fake_dispatch(token, repo=DEFAULT_REPO, *, scope="all", force=False, **kwargs):
+        state["dispatches"].append((token, repo, scope, force))
         return state["result"]
 
-    def fake_gate(connect, now, scope="all"):
-        value = state["gate_by_scope"].get(scope, state["gate"])
+    def fake_gate(connect, now, scope="all", force=False):
+        state.setdefault("gate_calls", []).append((scope, force))
+        key = (scope, True) if force and (scope, True) in state["gate_by_scope"] else scope
+        value = state["gate_by_scope"].get(key, state["gate"])
         if isinstance(value, Exception):
             raise value
         return value
@@ -93,7 +95,7 @@ def test_clicking_sends_one_dispatch_with_the_token_and_repo_then_cools_down(col
     run_button(at).click()
     at.run(timeout=30)
     assert not at.exception
-    assert collect_env["dispatches"] == [(GITHUB_TOKEN, DEFAULT_REPO, "all")]
+    assert collect_env["dispatches"] == [(GITHUB_TOKEN, DEFAULT_REPO, "all", False)]
     assert any("Запуск отправлен в GitHub" in s.value for s in at.success)
     assert run_button(at).disabled
     assert "Запуск отправлен" in captions(at)
@@ -108,7 +110,7 @@ def test_the_repository_can_be_changed_in_the_secrets(monkeypatch, collect_env):
     at = run()
     run_button(at).click()
     at.run(timeout=30)
-    assert collect_env["dispatches"] == [(GITHUB_TOKEN, "acme/tracker", "all")]
+    assert collect_env["dispatches"] == [(GITHUB_TOKEN, "acme/tracker", "all", False)]
 
 
 def test_the_partial_scope_buttons_show_their_own_counts_and_dispatch_their_own_scope(collect_env):
@@ -117,7 +119,7 @@ def test_the_partial_scope_buttons_show_their_own_counts_and_dispatch_their_own_
     assert run_button(at, "collect_run_competitors").label == "Собрать конкурентов (1)"
     run_button(at, "collect_run_ours").click()
     at.run(timeout=30)
-    assert collect_env["dispatches"] == [(GITHUB_TOKEN, DEFAULT_REPO, "ours")]
+    assert collect_env["dispatches"] == [(GITHUB_TOKEN, DEFAULT_REPO, "ours", False)]
 
 
 def test_a_scope_blocked_today_does_not_disable_the_other_scopes(monkeypatch, dash, collect_env):  # noqa: F811
@@ -126,6 +128,53 @@ def test_a_scope_blocked_today_does_not_disable_the_other_scopes(monkeypatch, da
     assert run_button(at).disabled
     assert not run_button(at, "collect_run_ours").disabled
     assert not run_button(at, "collect_run_competitors").disabled
+
+
+def test_no_force_override_appears_when_the_button_is_not_blocked(collect_env):
+    at = run()
+    assert not [c for c in at.checkbox if c.key == "collect_run_force_confirm"]
+    assert not [b for b in at.button if b.key == "collect_run_force"]
+
+
+def test_the_force_override_appears_when_blocked_but_stays_off_until_confirmed(monkeypatch, dash, collect_env):  # noqa: F811
+    """Решение владельца 25.09.2026: «уже был сбор сегодня» можно обойти вручную, но не одним кликом —
+    сначала явное подтверждение, потому что это ещё один платный сбор."""
+    monkeypatch.setattr(dash, "_admission_preview_cached", lambda scope="all": BLOCKED if scope == "all" else None)
+    at = run()
+    assert run_button(at).disabled
+    assert BLOCKED in captions(at)
+    force_button = [b for b in at.button if b.key == "collect_run_force"][0]
+    assert force_button.disabled, "без подтверждения кнопка обхода должна быть неактивна"
+    assert collect_env["dispatches"] == []
+
+
+def test_confirming_and_clicking_the_override_dispatches_with_force(monkeypatch, dash, collect_env):  # noqa: F811
+    monkeypatch.setattr(dash, "_admission_preview_cached", lambda scope="all": BLOCKED if scope == "all" else None)
+    collect_env["gate_by_scope"]["all"] = BLOCKED
+    collect_env["gate_by_scope"][("all", True)] = None  # force снимает именно этот блок
+    at = run()
+    [c for c in at.checkbox if c.key == "collect_run_force_confirm"][0].set_value(True)
+    at = at.run(timeout=30)
+    force_button = [b for b in at.button if b.key == "collect_run_force"][0]
+    assert not force_button.disabled
+    force_button.click()
+    at = at.run(timeout=30)
+    assert collect_env["dispatches"] == [(GITHUB_TOKEN, DEFAULT_REPO, "all", True)]
+    assert any("Повторный запуск отправлен в GitHub" in s.value for s in at.success)
+
+
+def test_the_force_button_does_the_real_check_live_not_the_stale_caption(monkeypatch, dash, collect_env):  # noqa: F811
+    """Подпись под кнопкой могла устареть за 20 секунд кэша; решение принимает живой вызов."""
+    monkeypatch.setattr(dash, "_admission_preview_cached", lambda scope="all": BLOCKED if scope == "all" else None)
+    collect_env["gate_by_scope"]["all"] = BLOCKED
+    collect_env["gate_by_scope"][("all", True)] = "Есть незавершённая попытка — сбор заблокирован."
+    at = run()
+    [c for c in at.checkbox if c.key == "collect_run_force_confirm"][0].set_value(True)
+    at = at.run(timeout=30)
+    [b for b in at.button if b.key == "collect_run_force"][0].click()
+    at = at.run(timeout=30)
+    assert collect_env["dispatches"] == []
+    assert any("Не запускаю" in w.value and "незавершённая" in w.value for w in at.warning)
 
 
 def test_the_click_asks_the_gate_again_and_does_not_dispatch_if_it_closed_meanwhile(collect_env):
@@ -170,7 +219,7 @@ def test_after_the_password_is_entered_the_run_button_works(monkeypatch, collect
     assert not run_button(at).disabled
     run_button(at).click()
     at.run(timeout=30)
-    assert collect_env["dispatches"] == [(GITHUB_TOKEN, DEFAULT_REPO, "all")]
+    assert collect_env["dispatches"] == [(GITHUB_TOKEN, DEFAULT_REPO, "all", False)]
 
 
 def test_the_click_handler_itself_refuses_without_rights(monkeypatch, collect_env):

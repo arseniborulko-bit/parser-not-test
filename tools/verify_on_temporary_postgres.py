@@ -53,6 +53,7 @@ import access  # noqa: E402
 import asins_store  # noqa: E402
 import db_runs  # noqa: E402
 import pairs_store  # noqa: E402
+import run_control  # noqa: E402
 import schedule_store  # noqa: E402
 
 NEW_SCHEMA = (PROJECT / "schema.sql").read_text(encoding="utf-8")
@@ -468,14 +469,22 @@ def section_admission() -> None:
         db_runs.log_finish(d.run_id, "error", "проверка")
     fourth = db_runs.admit_parser_run(gh(404))
     check("после 3 неудачных попыток четвёртая обычная блокируется", not fourth.should_run and "Лимит" in fourth.reason, fourth.reason)
-    check("force снимает только дневной лимит", db_runs.admit_parser_run(gh(405, force=True)).should_run)
+    check("force снимает дневной лимит попыток", db_runs.admit_parser_run(gh(405, force=True)).should_run)
 
     reset()
     d = db_runs.admit_parser_run(gh(501))
     db_runs.claim_parser_run(d.run_id, gh(501))
     db_runs.log_finish(d.run_id, "done")
-    check("после успешного сбора отклонены и обычный допуск, и force",
-          not db_runs.admit_parser_run(gh(502)).should_run and not db_runs.admit_parser_run(gh(503, force=True)).should_run)
+    # Решение владельца 25.09.2026: force ТЕПЕРЬ снимает и «уже был успешный сбор сегодня» —
+    # кнопка «Собрать ещё раз» должна реально запускать сбор, а не упираться в ту же защиту.
+    # Предпросмотр проверяем ДО реального повторного допуска: иначе новая running-запись
+    # от него самого попала бы в «незавершённый сбор» и смазала бы именно эту проверку.
+    check("предпросмотр с force тоже пропускает — кнопка не обманывает",
+          run_control.admission_preview(connect, datetime.now(schedule_store.TZ), force=True) is None)
+    check("предпросмотр без force по-прежнему отказывает",
+          run_control.admission_preview(connect, datetime.now(schedule_store.TZ)) is not None)
+    check("после успешного сбора обычный допуск отклонён, а force пропускает",
+          not db_runs.admit_parser_run(gh(502)).should_run and db_runs.admit_parser_run(gh(503, force=True)).should_run)
 
     for step in ("parser", "sync"):
         reset()

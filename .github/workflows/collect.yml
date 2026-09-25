@@ -12,7 +12,7 @@ on:
   workflow_dispatch:
     inputs:
       force:
-        description: "Снять только дневной лимит попыток (остальные проверки обязательны)"
+        description: "Собрать ещё раз: снимает дневной лимит и запрет после уже успешного сбора сегодня (не снимает защиту от гонки и время по расписанию)"
         type: boolean
         required: false
         default: false

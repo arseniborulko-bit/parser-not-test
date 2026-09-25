@@ -29,7 +29,7 @@ def _spot_budget() -> spot_check.SpotBudget:
     return spot_check.SpotBudget()
 
 
-def _run_callback(connect, token: str, repo: str, can_edit: bool, scope: str = "all") -> None:
+def _run_callback(connect, token: str, repo: str, can_edit: bool, scope: str = "all", force: bool = False) -> None:
     if not can_edit:
         _flash("error", "Запускать сбор могут только с открытым управлением.")
         return
@@ -37,19 +37,23 @@ def _run_callback(connect, token: str, repo: str, can_edit: bool, scope: str = "
         _flash("info", "Запуск уже отправлен: подождите пару минут.")
         return
     try:
-        reason = run_control.admission_preview(connect, datetime.now(TZ), scope=scope)
+        # Всегда проверяем заново, вживую: закэшированная подпись под кнопкой — только подсказка,
+        # решение принимает этот вызов. Для force это особенно важно — он снимает часть защиты,
+        # и решение не должно приниматься по устаревшим на 20 секунд данным.
+        reason = run_control.admission_preview(connect, datetime.now(TZ), scope=scope, force=force)
     except run_control.RunControlError as exc:
         _flash("error", str(exc))
         return
     if reason:
         _flash("warning", f"Не запускаю: {reason}")
         return
-    result = github_dispatch.dispatch_collection(token, repo, scope=scope)
+    result = github_dispatch.dispatch_collection(token, repo, scope=scope, force=force)
     if not result.ok:
         _flash("error", result.message)
         return
     st.session_state["collect_dispatched_at"] = _now_ts()
-    _flash("success", "Запуск отправлен в GitHub. Сбор начнётся в течение минуты и идёт около 10–20 минут; ход виден в «Последних запусках» ниже.")
+    verb = "Повторный запуск" if force else "Запуск"
+    _flash("success", f"{verb} отправлен в GitHub. Сбор начнётся в течение минуты и идёт около 10–20 минут; ход виден в «Последних запусках» ниже.")
 
 
 def _scope_status(preview: Callable[[str], Optional[str]], token: str, can_edit: bool, cooling: bool,
@@ -72,8 +76,23 @@ def _scope_button(connect, token: str, repo: str, can_edit: bool, cooling: bool,
     )
     if error:
         st.caption(f"⚠️ {error}")
-    elif reason:
-        st.caption(reason)
+        return
+    if not reason:
+        return
+    st.caption(reason)
+    if not (can_edit and token and not cooling):
+        return
+    # Решение владельца 25.09.2026: «уже был сбор сегодня» и дневной лимит попыток можно обойти
+    # вручную — с явным подтверждением, потому что каждое нажатие тратит деньги за новый сбор.
+    # Незавершённый сбор и «время ещё не наступило» force не снимает — кнопка всё равно вызывает
+    # тот же живой admission_preview, поэтому в таком случае честно откажет, а не соврёт, что сработало.
+    confirmed = st.checkbox(
+        "Понимаю: это ещё один платный сбор", key=f"{key}_force_confirm",
+    )
+    st.button(
+        "Собрать ещё раз, несмотря на ограничение", key=f"{key}_force", disabled=not confirmed,
+        on_click=_run_callback, args=(connect, token, repo, can_edit, scope, True),
+    )
 
 
 def render_run_block(connect, pairs: pd.DataFrame, preview: Callable[[str], Optional[str]], token: str, repo: str,
