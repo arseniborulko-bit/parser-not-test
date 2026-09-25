@@ -49,11 +49,13 @@ def collect_env(monkeypatch, dash):  # noqa: F811
     return state
 
 
-def test_the_tab_says_what_is_in_work_from_the_active_pairs(collect_env):
+def test_the_tab_renders_without_an_explanatory_caption(collect_env):
+    """Владелец не хочет пояснительных подписей в интерфейсе: числа видны на самих кнопках."""
     at = run()
     assert not at.exception
     assert "⚙ Сбор и управление" in [t.label for t in at.tabs]
-    assert "В работе 2 ASIN: наших 1 · конкурентов 1 (US 2)" in captions(at)
+    assert "В работе 2 ASIN" not in " ".join(captions(at))
+    assert "Собрать всё (2)" in " ".join(b.label for b in at.button)
 
 
 def test_without_a_github_token_the_button_is_off_and_nothing_is_explained(monkeypatch, collect_env):

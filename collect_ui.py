@@ -86,7 +86,6 @@ def render_run_block(connect, pairs: pd.DataFrame, preview: Callable[[str], Opti
         positions = run_control.Positions(0, 0, 0, {})
     else:
         positions = run_control.positions_summary(zip(pairs["marketplace"], pairs["our_asin"], pairs["comp_asin"], pairs["active"]))
-    st.caption(run_control.format_positions(positions))
 
     since = _now_ts() - st.session_state.get("collect_dispatched_at", 0)
     cooling = since < COOLDOWN_SECONDS
