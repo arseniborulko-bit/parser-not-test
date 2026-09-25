@@ -165,10 +165,15 @@ def _apply_design() -> None:
         a.bot-link:hover, .stMarkdown a.bot-link:hover { background: #0b5988; }
         .status-box { background: #dbeafe; color: #2563eb; border-radius: 10px; padding: 1rem 1.1rem; }
         .status-box strong { color: #1d4ed8; }
-        .metric-card { background: #ffffff; border: 1px solid #e5e7eb; border-radius: 15px; padding: 1rem 1.15rem; min-height: 120px; box-shadow: 0 1px 2px rgba(15,23,42,.025); }
-        .metric-label { color: #64748b; font-size: .72rem; letter-spacing: .065em; text-transform: uppercase; }
-        .metric-value { color: #111827; font-size: 1.85rem; font-weight: 800; line-height: 1.25; margin: .25rem 0; }
-        .metric-detail { color: #64748b; font-size: .78rem; }
+        /* Раньше была фиксированная min-height: 120px. Пока в детали помещалась одна короткая
+        строка ("маркетплейсов"), это работало; с разбивкой по странам («Стран» стала занимать
+        две строки) Streamlit растягивает все карточки в ряду по высоте самой высокой — и у
+        остальных внизу появлялось пустое место. Убираем фиксированную высоту и padding, чтобы
+        карточки были размером с содержимое, а не с самую длинную деталь. */
+        .metric-card { background: #ffffff; border: 1px solid #e5e7eb; border-radius: 15px; padding: .7rem .9rem; box-shadow: 0 1px 2px rgba(15,23,42,.025); }
+        .metric-label { color: #64748b; font-size: .7rem; letter-spacing: .065em; text-transform: uppercase; }
+        .metric-value { color: #111827; font-size: 1.5rem; font-weight: 800; line-height: 1.2; margin: .15rem 0; }
+        .metric-detail { color: #64748b; font-size: .74rem; line-height: 1.3; }
         .section-title { font-size: 1.55rem; font-weight: 750; margin: 1.75rem 0 .2rem; }
         .section-note { color: #64748b; font-size: .86rem; margin-bottom: .6rem; }
         /* Вкладки выбираются по role: в новых версиях Streamlit это уже не <button> и не baseweb. */
