@@ -303,6 +303,18 @@ def test_make_plans_with_no_valid_links_returns_one_error_plan():
     plans = pairs_store.make_plans(db.connect, "not a link", link(B))
     assert len(plans) == 1
     assert not plans[0].can_apply and "ссылка" in plans[0].errors[0].lower()
+
+
+def test_make_plans_with_a_mix_of_valid_and_invalid_our_links_reports_which_failed():
+    """Раньше сообщение было общим «нужна хотя бы одна ссылка», даже если рабочие ссылки среди
+    них уже были, — сбивало с толку. Теперь видно, сколько строк не распознано и какие именно."""
+    db = FakeDb()
+    plans = pairs_store.make_plans(db.connect, f"{link(A)} not-a-link", link(B))
+    assert len(plans) == 1
+    assert not plans[0].can_apply
+    assert "не распознано 1" in plans[0].errors[0].lower()
+    assert plans[0].invalid == ["not-a-link"]
+    assert db.connects == 0
     assert db.connects == 0
 
 

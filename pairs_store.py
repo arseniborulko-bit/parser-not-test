@@ -223,7 +223,14 @@ def make_plans(connect: Connect, our_text: object, competitors_text: object, *,
     ours = parse_asin_batch(our_text, require_link=True)
     if not ours.items or ours.invalid:
         plan = Plan()
-        plan.errors.append("Наш товар: нужна хотя бы одна ссылка на страницу Amazon.")
+        if ours.invalid:
+            # Хотя бы одна строка похожа на попытку, но не ссылка — показываем, какие именно
+            # (через plan.invalid, тот же блок «Не распознано», что и для конкурентов), а не только
+            # общее «нужна ссылка», которое сбивает с толку, если рабочие ссылки среди них уже есть.
+            plan.invalid = list(ours.invalid)
+            plan.errors.append(f"Наш товар: не распознано {len(ours.invalid)} (нужна ссылка на страницу Amazon для каждой строки).")
+        else:
+            plan.errors.append("Наш товар: нужна хотя бы одна ссылка на страницу Amazon.")
         return [plan]
     return [
         make_plan(connect, f"https://www.amazon.{DOMAIN_BY_MARKET[item.market]}/dp/{item.asin}",

@@ -162,6 +162,23 @@ def _render_plans(plans: list[pairs_store.Plan]) -> None:
             _render_plan(plan)
 
 
+def _render_recognized_caption(text: str, hint: str) -> None:
+    """Живой счётчик распознанных ссылок по мере ввода — опечатка видна сразу под полем, не
+    дожидаясь расчёта всего плана ниже (владелец, 25.09.2026: «мне нравится 2» — про живой
+    счётчик из списка предложенных улучшений)."""
+    text = (text or "").strip()
+    if not text:
+        st.caption(hint)
+        return
+    batch = pairs_store.parse_asin_batch(text, require_link=True)
+    parts = [f"Распознано: {len(batch.items)}"]
+    if batch.repeats:
+        parts.append(f"повторов: {batch.repeats}")
+    if batch.invalid:
+        parts.append(f"не распознано: {len(batch.invalid)}")
+    st.caption(" · ".join(parts) + ".")
+
+
 def _render_add(connect, actor: str, role: str, max_active: int, key_prefix: str = "pairs") -> None:
     our_key, comps_key = f"{key_prefix}_our", f"{key_prefix}_comps"
     st.markdown(
@@ -172,7 +189,7 @@ def _render_add(connect, actor: str, role: str, max_active: int, key_prefix: str
         "Наш товар", key=our_key, height=80, label_visibility="collapsed",
         placeholder="https://www.amazon.de/dp/B0XXXXXXX1\nhttps://www.amazon.com/dp/B0YYYYYYY",
     )
-    st.caption("Одна ссылка или несколько — по одной в строке.")
+    _render_recognized_caption(st.session_state.get(our_key, ""), "Одна ссылка или несколько — по одной в строке.")
 
     st.markdown(
         '<div class="field-label">Конкуренты <span class="field-badge">можно пачкой</span></div>',
@@ -182,7 +199,9 @@ def _render_add(connect, actor: str, role: str, max_active: int, key_prefix: str
         "Конкуренты", key=comps_key, height=110, label_visibility="collapsed",
         placeholder="https://www.amazon.de/dp/B0XXXXXXX1\nhttps://www.amazon.de/dp/B0XXXXXXX2",
     )
-    st.caption("Одна ссылка или несколько — по одной в строке или через запятую.")
+    _render_recognized_caption(
+        st.session_state.get(comps_key, ""), "Одна ссылка или несколько — по одной в строке или через запятую.",
+    )
     plans: list[pairs_store.Plan] = []
     if st.session_state.get(our_key, "").strip() or st.session_state.get(comps_key, "").strip():
         try:
