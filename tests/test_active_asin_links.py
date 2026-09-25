@@ -160,6 +160,7 @@ def test_a_large_batch_needs_typed_confirmation(monkeypatch):
     items = pairs_ui._active_asin_links_by_market(many_pairs)["US"]
     monkeypatch.setattr(pairs_ui.st, "text_area", lambda *a, **k: "")  # стёрли всё разом
     monkeypatch.setattr(pairs_ui.st, "caption", lambda *a, **k: None)
+    monkeypatch.setattr(pairs_ui.st, "warning", lambda *a, **k: None)
     typed_inputs = []
     monkeypatch.setattr(pairs_ui.st, "text_input", lambda *a, **k: (typed_inputs.append(1), "")[1])
     recorder = ButtonRecorder()
