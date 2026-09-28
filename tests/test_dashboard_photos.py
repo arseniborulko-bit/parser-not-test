@@ -1,4 +1,5 @@
-"""«Текущее состояние» показывает фото товара и конкурента; «История» — нет. Без настоящей базы."""
+"""«Текущее состояние» и «История» одинаково показывают фото товара и конкурента (владелец,
+28.09.2026: «надо чтобы в истории тоже самое было как в текущем состоянии фотки»). Без настоящей базы."""
 
 import pandas as pd
 
@@ -30,10 +31,19 @@ def test_the_raw_url_column_does_not_also_appear_as_plain_text():
     assert "our_image_url" not in result.columns and "comp_image_url" not in result.columns
 
 
-def test_the_history_table_never_gets_photo_columns_even_if_present_in_the_data():
+def test_without_the_with_images_flag_present_table_has_no_photo_columns():
+    """_present_table по умолчанию (with_images=False) фото не добавляет; этим флагом управляет
+    вызывающий код — следующий тест проверяет, что вкладка «История» теперь включает его явно."""
     result, config = dashboard_db._present_table(pd.DataFrame([ROW]))
     assert "Фото наш" not in result.columns and "Фото конкурента" not in result.columns
     assert "Фото наш" not in config
+
+
+def test_the_history_tab_asks_present_table_for_photos_too():
+    import inspect
+
+    source = inspect.getsource(dashboard_db.main)
+    assert "_table_or_note(_pick_day(shown_history), with_images=True)" in source
 
 
 def test_missing_image_columns_do_not_break_the_table():

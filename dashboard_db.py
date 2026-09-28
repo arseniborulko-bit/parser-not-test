@@ -1407,7 +1407,7 @@ def main() -> None:
 
     with history_tab:
         _render_history_matrix(shown_history)
-        _table_or_note(_pick_day(shown_history))
+        _table_or_note(_pick_day(shown_history), with_images=True)
 
     with forecast_tab:
         _render_forecast(shown_history)
