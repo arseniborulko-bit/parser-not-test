@@ -32,9 +32,9 @@ DOMAIN_TO_COUNTRY = {
 
 def _get_http_session() -> requests.Session:
     """
-    Создаёт сессию requests БЕЗ автоматических повторов на уровне транспорта.
-    Повторные попытки — и, соответственно, повторное списание токенов ScrapingDog —
-    здесь намеренно не делаются: 1 ASIN = максимум 1 фактический запрос к API.
+    Создаёт сессию requests БЕЗ автоматических повторов на уровне транспорта (urllib3 их не
+    делает сам, тихо и неограниченно). Явные, посчитанные повторы — только для ASIN, которые
+    не дали данных — делает fetch_products_concurrent (max_attempts), а не эта сессия.
     """
     session = requests.Session()
     retries = Retry(total=0)
@@ -214,10 +214,20 @@ def fetch_products_concurrent(
     max_workers: int = MAX_CONCURRENT_WORKERS,
     progress_callback: Optional[Callable[[float, str], None]] = None,
     asin_domains: Optional[Dict[str, str]] = None,
+    max_attempts: int = 3,
 ) -> Tuple[List[ProductData], Dict[str, ProductData], List[str]]:
     """
     Параллельный сбор данных о товарах с использованием пула потоков.
     Возвращает (список собранных ProductData, словарь по asin, список необработанных asin).
+
+    ASIN, по которым не удалось получить данные (сетевая ошибка, не-200 ответ от ScrapingDog,
+    битый JSON — то же самое, что в матрице потом становится «@»), перезапрашиваются ещё раз,
+    максимум max_attempts попыток на каждый (владелец, 28.09.2026: «те асины по которым нету
+    данных нужно прогнать 3 раза» — часть таких сбоев временная, на стороне ScrapingDog).
+    ASIN, для которых данные пришли, повторно не запрашиваются ни разу — платится не больше
+    (max_attempts - 1) лишних токенов, и только за реально упавшие ASIN, а не за всю пачку:
+    предсказуемость расхода из fetch_product (1 попытка = 1 токен) этим не нарушается, просто
+    "1 ASIN" здесь может состоять из нескольких попыток, если предыдущие не дали ответа.
 
     asin_domains — опциональная карта {ASIN: домен amazon}. Если для конкретного ASIN
     в ней есть запись — запрос уходит именно на этот домен (например, "ca" для
@@ -230,35 +240,49 @@ def fetch_products_concurrent(
     session = _get_http_session()
     collected: List[ProductData] = []
     products_by_asin: Dict[str, ProductData] = {}
-    failed_asins: List[str] = []
 
     total = len(asins) or 1
     completed_count = 0
 
-    def task(asin: str) -> Tuple[str, Optional[dict]]:
-        asin_domain = (asin_domains or {}).get(asin, domain)
-        data = fetch_product(asin, domain=asin_domain, token=token, session=session)
-        return asin, data
+    def run_pass(pending: List[str]) -> List[str]:
+        nonlocal completed_count
+        failed: List[str] = []
 
-    with ThreadPoolExecutor(max_workers=min(max_workers, len(asins) or 1)) as executor:
-        futures = {executor.submit(task, asin): asin for asin in asins}
-        for future in as_completed(futures):
-            asin = futures[future]
-            completed_count += 1
-            if progress_callback:
-                progress_callback(completed_count / total, f"Обработан {asin} ({completed_count}/{total})")
-            
-            try:
-                _, data = future.result()
-                if data is None:
-                    failed_asins.append(asin)
-                else:
-                    product = parse_product(data, asin=asin)
-                    collected.append(product)
-                    products_by_asin[asin] = product
-                    logger.info(f"Успешно обработан [{asin}]: {product.title[:50]}... | Цена: {product.price} | BSR: {product.bsr}")
-            except Exception as exc:
-                logger.error(f"Непредвиденная ошибка при обработке {asin}: {exc}")
-                failed_asins.append(asin)
+        def task(asin: str) -> Tuple[str, Optional[dict]]:
+            asin_domain = (asin_domains or {}).get(asin, domain)
+            data = fetch_product(asin, domain=asin_domain, token=token, session=session)
+            return asin, data
+
+        with ThreadPoolExecutor(max_workers=min(max_workers, len(pending) or 1)) as executor:
+            futures = {executor.submit(task, asin): asin for asin in pending}
+            for future in as_completed(futures):
+                asin = futures[future]
+                completed_count += 1
+                if progress_callback:
+                    progress_callback(min(completed_count / total, 1.0), f"Обработан {asin} ({completed_count}/{total})")
+
+                try:
+                    _, data = future.result()
+                    if data is None:
+                        failed.append(asin)
+                    else:
+                        product = parse_product(data, asin=asin)
+                        collected.append(product)
+                        products_by_asin[asin] = product
+                        logger.info(f"Успешно обработан [{asin}]: {product.title[:50]}... | Цена: {product.price} | BSR: {product.bsr}")
+                except Exception as exc:
+                    logger.error(f"Непредвиденная ошибка при обработке {asin}: {exc}")
+                    failed.append(asin)
+        return failed
+
+    pending = list(asins)
+    failed_asins: List[str] = []
+    for attempt in range(1, max(1, max_attempts) + 1):
+        if not pending:
+            break
+        if attempt > 1:
+            logger.info(f"Повтор {attempt}/{max_attempts}: {len(pending)} ASIN без данных с прошлой попытки.")
+        failed_asins = run_pass(pending)
+        pending = failed_asins
 
     return collected, products_by_asin, failed_asins
