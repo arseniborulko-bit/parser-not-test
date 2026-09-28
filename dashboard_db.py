@@ -777,6 +777,247 @@ def _render_history_matrix(data: pd.DataFrame) -> None:
         st.caption(f"Показаны первые {MAX_MATRIX_ROWS} из {len(matrix)}: сузьте фильтры выше.")
 
 
+_PIVOT_METRICS: dict[str, tuple[str, str]] = {
+    "BSR": ("our_bsr", "comp_bsr"), "Цена": ("our_price", "comp_price"),
+    "Рейтинг": ("our_rating", "comp_rating"), "Отзывы": ("our_reviews_count", "comp_reviews_count"),
+}
+_RANK_SCALE = ["#1f8a4c", "#7ec97e", "#d9f0d3", "#ffe9b3", "#ffc09b", "#e8534f"]
+_RATING_SCALE = [(4.5, "#1f8a4c"), (4.0, "#7ec97e"), (3.5, "#ffe9b3"), (3.0, "#ffc09b"), (0.0, "#e8534f")]
+
+
+def _asin_day_pivot(data: pd.DataFrame, our_col: str, comp_col: str) -> pd.DataFrame:
+    """ASIN × день -> значение метрики, независимо от того, наш это ASIN или конкурент.
+
+    Как и в _history_matrix: один ASIN в один день даёт одно число во всех парах, где он
+    участвует, поэтому дубли по парам здесь схлопываются через aggfunc='last'."""
+    parts = []
+    for asin_column, value_column in (("our_asin", our_col), ("comp_asin", comp_col)):
+        if asin_column not in data or value_column not in data:
+            continue
+        parts.append(pd.DataFrame({
+            "asin": data[asin_column],
+            "day": pd.to_datetime(data["snapshot_date"], errors="coerce"),
+            "value": pd.to_numeric(data[value_column], errors="coerce"),
+        }))
+    if not parts:
+        return pd.DataFrame()
+    long = pd.concat(parts, ignore_index=True).dropna(subset=["day"])
+    long = long[long["asin"].astype(str).str.strip().ne("")]
+    return long.pivot_table(index="asin", columns="day", values="value", aggfunc="last")
+
+
+def _pivot_value_fmt(metric: str, value: object) -> str:
+    if pd.isna(value):
+        return ""
+    if metric == "Рейтинг":
+        return f"{float(value):.1f}"
+    if metric == "Цена":
+        return f"{float(value):,.2f}".replace(",", " ")
+    return f"{int(value):,}".replace(",", " ")
+
+
+def _pivot_rating_css(value: float) -> str:
+    for threshold, color in _RATING_SCALE:
+        if value >= threshold:
+            fg = ";color:#fff" if color in ("#1f8a4c", "#e8534f") else ""
+            return f"background:{color}{fg}"
+    return ""
+
+
+def _pivot_change_css(metric: str, value: float, prev: float | None) -> str:
+    if metric == "Рейтинг":
+        return _pivot_rating_css(value)
+    if prev is None or pd.isna(prev) or value == prev:
+        return ""
+    if metric in ("BSR", "Цена"):  # меньше — лучше; насыщенность по силе изменения
+        delta = abs(prev - value) / prev if prev else 0
+        strong = delta > (0.15 if metric == "BSR" else 0.1)
+        if value < prev:
+            return "background:#57d957" if strong and metric == "BSR" else "background:#c8f7c5"
+        return "background:#e8534f;color:#fff" if strong else "background:#ffcdd2"
+    if metric == "Отзывы":
+        return "background:#c8f7c5" if value > prev else "background:#ffe0b2"
+    return ""
+
+
+def _pivot_rank_css(pos: int, total: int) -> str:
+    if total <= 1:
+        return ""
+    idx = int(pos / max(1, total - 1) * (len(_RANK_SCALE) - 1))
+    bg = _RANK_SCALE[idx]
+    fg = ";color:#fff" if idx in (0, len(_RANK_SCALE) - 1) else ""
+    return f"background:{bg}{fg}"
+
+
+def _pivot_group_rank_css(metric: str, asin: str, day, present: list[str], table: pd.DataFrame) -> str:
+    """Место позиции среди конкурентов под тем же нашим товаром в этот же день."""
+    value = table.loc[asin, day] if asin in table.index else None
+    if value is None or pd.isna(value):
+        return ""
+    vals = [(a, table.loc[a, day]) for a in present if a in table.index and pd.notnull(table.loc[a, day])]
+    if len(vals) < 2:
+        return ""
+    better_first = metric in ("BSR", "Цена")
+    vals.sort(key=lambda kv: kv[1], reverse=not better_first)
+    pos = [a for a, _ in vals].index(asin)
+    return _pivot_rank_css(pos, len(vals))
+
+
+_PIVOT_CSS = """
+<style>
+.cmp-wrap { max-height:800px; overflow:auto; border:1px solid #e5e5ea; border-radius:12px; background:#fff; }
+.cmp { border-collapse:separate; border-spacing:0; font-size:12.5px; min-width:100%; }
+.cmp th { position:sticky; top:0; background:#f5f5f7; color:#6e6e73; font-weight:600;
+   padding:8px 10px; border-bottom:1px solid #e5e5ea; white-space:nowrap; z-index:2; text-align:right; }
+.cmp th:nth-child(-n+2) { text-align:left; }
+.cmp td { padding:6px 10px; border-bottom:1px solid #f0f0f2; text-align:right; white-space:nowrap; }
+.cmp td:nth-child(-n+2) { text-align:left; }
+.cmp td.c-asin { position:sticky; left:0; background:#fff; z-index:1; min-width:130px;
+          font-family:ui-monospace,Menlo,monospace; font-weight:600; }
+.cmp td.c-name { position:sticky; left:130px; background:#fff; z-index:1; min-width:180px;
+          max-width:220px; overflow:hidden; text-overflow:ellipsis; color:#6e6e73; }
+.cmp td.c-asin a { color:#0071e3; text-decoration:none; }
+.cmp td.nodata { background:#fff4f4; }
+.cmp td.nodata a { color:#c5221f; }
+.cmp tr.mine td { background:#eaf4ff; font-weight:600; }
+.cmp tr.mine td.c-asin { background:#eaf4ff; box-shadow: inset 3px 0 0 #0071e3; }
+.cmp tr.mine td.c-name { background:#eaf4ff; color:#0056b3; }
+.cmp th:nth-child(1) { position:sticky; left:0; z-index:3; }
+.cmp th:nth-child(2) { position:sticky; left:130px; z-index:3; }
+.cmp tr.ghead td { background:#1d1d1f; color:#fff; font-size:13.5px; font-weight:650;
+            padding:9px 12px; position:sticky; left:0; }
+.cmp tr.mhead td { background:#e8e8ed; font-weight:650; padding:6px 12px;
+            border-top:1px solid #c7c7cc; position:sticky; left:0; }
+.cmp tr.sep td { background:#fafafa; color:#8e8e93; font-size:11.5px; padding:3px 12px;
+          border-top:1px dashed #c7c7cc; position:sticky; left:0; }
+</style>
+"""
+
+
+def _render_competitors_pivot(history: pd.DataFrame, pairs: pd.DataFrame) -> None:
+    """Вкладка «Конкуренты»: как в Rating Radar — ASIN сгруппированы (там по товарной группе,
+    здесь, за неимением групп в этой схеме, по нашему товару), метрики блоками, даты колонками,
+    ячейки подсвечены по изменению к предыдущему замеру или по месту среди конкурентов."""
+    if pairs.empty or "active" not in pairs or not pairs["active"].any():
+        st.info("Активных пар пока нет — добавьте их во вкладке «⚙ Сбор и управление».")
+        return
+    active_pairs = pairs[pairs["active"]]
+
+    markets = sorted(active_pairs["marketplace"].dropna().unique())
+    f1, f2, f3, f4, f5 = st.columns([1.1, 1.8, 0.9, 1.4, 1.4])
+    sel_market = f1.selectbox("Страна", markets, key="cmp_market")
+
+    in_market = active_pairs[active_pairs["marketplace"] == sel_market]
+    our_options = in_market.drop_duplicates("our_asin").set_index("our_asin")["our_product"].to_dict()
+    sel_ours = f2.multiselect(
+        "Наши товары", list(our_options), default=list(our_options), key=f"cmp_our_{sel_market}",
+        format_func=lambda a: f"{a} · {str(our_options.get(a) or '')[:40]}",
+        placeholder="все товары этой страны",
+    )
+    period = f3.selectbox("Период", [7, 14, 30, 60, 90], index=0,
+                          format_func=lambda d: f"{d} дн.", key="cmp_period")
+    available_metrics = [name for name, (o, c) in _PIVOT_METRICS.items()
+                         if o in history.columns and c in history.columns]
+    sel_metrics = f4.multiselect("Метрики", available_metrics, default=available_metrics, key="cmp_metrics")
+    color_mode = f5.selectbox(
+        "Раскраска", ["Изменение к прошлому замеру", "Место среди конкурентов"], key="cmp_color",
+        help="«Изменение» — стало лучше или хуже со предыдущего замера. "
+             "«Место среди конкурентов» — как позиция выглядит на фоне остальных под этим же нашим товаром.",
+    )
+
+    q = st.text_input("Поиск", key=f"cmp_q_{sel_market}", label_visibility="collapsed",
+                      placeholder="🔍 поиск: ASIN, наш товар или конкурент")
+
+    use_ours = sel_ours or list(our_options)
+    view = in_market[in_market["our_asin"].isin(use_ours)]
+    if q.strip():
+        ql = q.strip().lower()
+        hay = (view["our_asin"].astype(str) + " " + view["our_product"].astype(str) + " "
+              + view["comp_asin"].astype(str) + " " + view["competitor_name"].astype(str)).str.lower()
+        keep = set(view.loc[hay.str.contains(ql, na=False, regex=False), "our_asin"])
+        use_ours = [a for a in use_ours if a in keep]
+        view = view[view["our_asin"].isin(use_ours)]
+        if not use_ours:
+            st.warning(f"По запросу «{q}» ничего не найдено")
+            return
+
+    st.markdown(f"#### {sel_market} · {len(use_ours)} наших товаров"
+               + (f" · фильтр: «{q}»" if q.strip() else ""))
+    if not use_ours or not sel_metrics:
+        st.info("Нечего показать: проверьте фильтры выше.")
+        return
+
+    # snapshot_date из базы приходит tz-naive (как и в _apply_filter выше) — сравниваем с ним
+    # tz-naive курсором, иначе pandas падает на сравнении naive/aware.
+    cutoff = datetime.now() - pd.Timedelta(days=int(period))
+    hist = history[(history["marketplace"] == sel_market)
+                  & (history["our_asin"].isin(use_ours))
+                  & pd.to_datetime(history["snapshot_date"], errors="coerce").ge(cutoff)].copy()
+    if hist.empty:
+        st.warning("По этой стране и периоду ещё нет замеров.")
+        return
+
+    piv = {metric: _asin_day_pivot(hist, *_PIVOT_METRICS[metric]) for metric in sel_metrics}
+    days_c = sorted({d for table in piv.values() for d in table.columns})
+    if not days_c:
+        st.warning("По этой стране и периоду ещё нет замеров.")
+        return
+    labels = [pd.Timestamp(d).strftime("%d.%m") for d in days_c]
+
+    meta_comp = view.drop_duplicates("comp_asin").set_index("comp_asin")
+    dom = pairs_store.DOMAIN_BY_MARKET.get(sel_market, "com")
+
+    ncols = 2 + len(labels)
+    rows_html: list[str] = []
+    for our_asin in use_ours:
+        group = view[view["our_asin"] == our_asin]
+        if group.empty:
+            continue
+        product = str(group["our_product"].iloc[0] or "") if not group.empty else ""
+        members = [our_asin] + list(group["comp_asin"])
+        rows_html.append(
+            f"<tr class='ghead'><td colspan='{ncols}'>▸ {escape(product) or escape(our_asin)} "
+            f"<span style='font-weight:400;color:#6e6e73'>· {escape(our_asin)} · {escape(sel_market)} · "
+            f"{len(members) - 1} конкурент(ов)</span></td></tr>"
+        )
+        for metric in sel_metrics:
+            table = piv[metric]
+            present = [a for a in members if a in table.index]
+            if not present:
+                continue
+            rows_html.append(f"<tr class='mhead'><td colspan='{ncols}'>{escape(metric)}</td></tr>")
+            for i_row, asin in enumerate(present):
+                if i_row == 1:
+                    rows_html.append(f"<tr class='sep'><td colspan='{ncols}'>— конкуренты —</td></tr>")
+                mine = asin == our_asin
+                name = product if mine else str(meta_comp.loc[asin, "competitor_name"] or "") if asin in meta_comp.index else ""
+                no_data = all(pd.isna(table.loc[asin, d]) for d in days_c)
+                flag = " ⚠️" if no_data else ""
+                cls = "c-asin" + (" nodata" if no_data else "")
+                tds = [
+                    f"<td class='{cls}'><a href='https://www.amazon.{dom}/dp/{escape(asin)}' "
+                    f"target='_blank'>{escape(asin)}</a>{flag}</td>",
+                    f"<td class='c-name'>{escape((name or '—')[:40])}</td>",
+                ]
+                prev = None
+                for d in days_c:
+                    value = table.loc[asin, d] if d in table.columns else np.nan
+                    css = (_pivot_change_css(metric, value, prev) if color_mode.startswith("Изменение")
+                          else _pivot_group_rank_css(metric, asin, d, present, table))
+                    tds.append(f"<td style='{css}'>{_pivot_value_fmt(metric, value)}</td>")
+                    if pd.notnull(value):
+                        prev = value
+                rows_html.append(f"<tr class='{'mine' if mine else ''}'>{''.join(tds)}</tr>")
+
+    th = "".join(f"<th>{escape(c)}</th>" for c in ["ASIN", "Название"] + labels)
+    st.markdown(
+        f"{_PIVOT_CSS}<div class='cmp-wrap'><table class='cmp'><thead><tr>{th}</tr></thead>"
+        f"<tbody>{''.join(rows_html)}</tbody></table></div>",
+        unsafe_allow_html=True,
+    )
+    st.caption(f"Замеров: {len(hist)} · дней: {len(days_c)} · наших товаров: {len(use_ours)}")
+
+
 _FORECAST_WINDOWS = {"7 дней": 7, "14 дней": 14, "30 дней": 30}
 _FORECAST_HORIZONS = {"7 дней": 7, "14 дней": 14, "30 дней": 30}
 # Меньше трёх замеров — это не тренд, а две точки и совпадение. Такой ASIN в прогноз не берём.
@@ -1413,7 +1654,7 @@ def main() -> None:
         _render_forecast(shown_history)
 
     with pairs_tab:
-        pairs_ui.render_pairs_tab(_connect, pairs, actor, manage_role, _max_active())
+        _render_competitors_pivot(history, pairs)
 
     with schedule_tab:
         can_edit = access.has_role(manage_role, access.ROLE_EDITOR)
@@ -1425,6 +1666,8 @@ def main() -> None:
             collect_ui.render_spot_check(_secret("SCRAPINGDOG_TOKEN"), can_edit)
         if can_edit:
             pairs_ui.render_pairs_management(_connect, pairs, actor, manage_role, _max_active(), key_prefix="collect")
+        with st.expander("🛠 Список, добавление и правка пар", expanded=False):
+            pairs_ui.render_pairs_tab(_connect, pairs, actor, manage_role, _max_active())
         collect_ui.render_run_block(
             _connect, pairs, _admission_preview_cached,
             _secret("GITHUB_DISPATCH_TOKEN"), _secret("GITHUB_REPO") or github_dispatch.DEFAULT_REPO, can_edit,
