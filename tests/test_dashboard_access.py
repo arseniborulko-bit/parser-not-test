@@ -497,3 +497,12 @@ def test_google_admin_manages_schedule_without_the_team_password(monkeypatch, da
     assert not at.exception
     assert len(time_inputs(at)) == 1
     assert not [t for t in at.text_input if t.key == "unlock_password"]
+
+
+def test_the_current_state_query_only_counts_active_pairs():
+    import inspect
+
+    import dashboard_db
+
+    source = inspect.getsource(dashboard_db.load_current.__wrapped__ if hasattr(dashboard_db.load_current, "__wrapped__") else dashboard_db.load_current)
+    assert "JOIN bsr_radar.competitor_pairs" in source and "p.active" in source

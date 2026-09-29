@@ -165,6 +165,7 @@ def _apply_design() -> None:
             font-size: .86rem; font-weight: 650; line-height: 1.4;
         }
         a.bot-link:hover, .stMarkdown a.bot-link:hover { background: #0b5988; }
+        .bot-hint { color: #64748b; font-size: .8rem; margin: .3rem 0 0; text-align: right; }
         .status-box { background: #dbeafe; color: #2563eb; border-radius: 10px; padding: 1rem 1.1rem; }
         .status-box strong { color: #1d4ed8; }
         /* Раньше была фиксированная min-height: 120px. Пока в детали помещалась одна короткая
@@ -576,6 +577,7 @@ def _bot_link_html() -> str:
     return (
         f'<div class="bot-row"><a class="bot-link" href="https://t.me/{escape(username)}" '
         f'target="_blank" rel="noopener">✈️ @{escape(username)}</a></div>'
+        f'<div class="bot-hint">Нажмите «Подписаться», затем отправьте боту /start</div>'
     )
 
 
@@ -1666,8 +1668,6 @@ def main() -> None:
             collect_ui.render_spot_check(_secret("SCRAPINGDOG_TOKEN"), can_edit)
         if can_edit:
             pairs_ui.render_pairs_management(_connect, pairs, actor, manage_role, _max_active(), key_prefix="collect")
-        with st.expander("🛠 Список, добавление и правка пар", expanded=False):
-            pairs_ui.render_pairs_tab(_connect, pairs, actor, manage_role, _max_active())
         collect_ui.render_run_block(
             _connect, pairs, _admission_preview_cached,
             _secret("GITHUB_DISPATCH_TOKEN"), _secret("GITHUB_REPO") or github_dispatch.DEFAULT_REPO, can_edit,
