@@ -51,15 +51,15 @@ CREATE TABLE IF NOT EXISTS bsr_radar.snapshots (
     CONSTRAINT snapshots_day_market_pair_key UNIQUE (snapshot_date, marketplace, our_asin, comp_asin)
 );
 
--- Одна строка (id = 1) — время ежедневного автозапуска парсера. Раньше это
--- время задавалось в листе Config Google Таблицы; теперь дашборд пишет его
--- сюда и сразу же перепрограммирует задачу Планировщика Windows.
+-- До двух строк (id = 1, id = 2) — независимые слоты времени автозапуска парсера в сутки.
+-- Раньше время задавалось в листе Config Google Таблицы; теперь дашборд пишет его сюда.
+-- Строка отсутствует — соответствующий слот выключен (миграция 011 добавила второй слот).
 CREATE TABLE IF NOT EXISTS bsr_radar.schedule (
     id SMALLINT PRIMARY KEY DEFAULT 1,
     hour SMALLINT NOT NULL CHECK (hour BETWEEN 0 AND 23),
     minute SMALLINT NOT NULL CHECK (minute BETWEEN 0 AND 59),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    CONSTRAINT schedule_single_row CHECK (id = 1)
+    CONSTRAINT schedule_two_slots CHECK (id IN (1, 2))
 );
 
 -- История запусков (ручных и автоматических, локальных и из GitHub Actions).

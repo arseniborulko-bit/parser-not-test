@@ -114,14 +114,24 @@ def test_next_day_keeps_wall_clock_time_across_the_autumn_clock_change():
 def test_load_overview_reads_everything_over_one_connection():
     started = kyiv(2026, 9, 20, 9, 5)
     finished = kyiv(2026, 9, 20, 9, 17)
-    db = FakeDb(results=[[(9, 0)], [(True,)], [(started, finished, "done", None), (started, None, "running", None)]])
+    db = FakeDb(results=[[(9, 0)], [], [(1,)], [(started, finished, "done", None), (started, None, "running", None)]])
     result = schedule_store.load_overview(db.connect, kyiv(2026, 9, 21, 8, 0))
     assert result.schedule == Schedule(9, 0)
+    assert result.schedule2 is None
     assert result.collected_today is True
+    assert result.collected_count == 1
     assert [run["status"] for run in result.runs] == ["done", "running"]
     assert result.runs[0]["finished_at"] == finished
     assert (db.connects, db.commits, db.closed) == (1, 1, 1)
-    assert len(db.executed) == 3
+    assert len(db.executed) == 4
+
+
+def test_load_overview_reads_the_second_slot_too():
+    db = FakeDb(results=[[(9, 0)], [(18, 30)], [(2,)], []])
+    result = schedule_store.load_overview(db.connect, kyiv(2026, 9, 21, 8, 0))
+    assert result.schedule == Schedule(9, 0)
+    assert result.schedule2 == Schedule(18, 30)
+    assert result.collected_count == 2
 
 
 @pytest.mark.parametrize("now, expected_day", [
@@ -131,15 +141,15 @@ def test_load_overview_reads_everything_over_one_connection():
     (datetime(2026, 9, 21, 21, 0, tzinfo=timezone.utc), date(2026, 9, 22)),
 ])
 def test_collected_today_question_uses_the_kyiv_calendar_day(now, expected_day):
-    db = FakeDb(results=[[], [(False,)], []])
+    db = FakeDb(results=[[], [], [(0,)], []])
     schedule_store.load_overview(db.connect, now)
-    sql, params = db.executed[1]
+    sql, params = db.executed[2]
     assert params == (expected_day,)
     assert "Europe/Kyiv" in sql
 
 
 def test_missing_schedule_row_means_autocollection_is_off():
-    db = FakeDb(results=[[], [(False,)], []])
+    db = FakeDb(results=[[], [], [(0,)], []])
     result = schedule_store.load_overview(db.connect, kyiv(2026, 9, 21, 8, 0))
     assert result == schedule_store.Overview(None, False, [])
 
@@ -147,7 +157,7 @@ def test_missing_schedule_row_means_autocollection_is_off():
 @pytest.mark.parametrize("db", [
     FakeDb(fail_connect="host=secret-host password=hunter2"),
     FakeDb(fail_execute="password=hunter2"),
-    FakeDb(results=[[], [(False,)], []], fail_commit="password=hunter2"),
+    FakeDb(results=[[], [], [(0,)], []], fail_commit="password=hunter2"),
 ])
 def test_driver_errors_are_wrapped_without_leaking_their_text(db):
     with pytest.raises(schedule_store.ScheduleStoreError) as info:
@@ -161,17 +171,40 @@ def test_enabled_save_upserts_the_single_schedule_row(role):
     schedule_store.save_schedule(db.connect, 10, 30, True, actor_role=role, actor="Аня")
     sql, params = db.executed[0]
     assert "INSERT INTO bsr_radar.schedule" in sql and "ON CONFLICT (id)" in sql
-    assert params == (10, 30)
+    assert params == (1, 10, 30)
     assert (db.commits, db.closed) == (1, 1)
+
+
+def test_enabled_save_upserts_the_second_slot():
+    db = FakeDb()
+    schedule_store.save_schedule(db.connect, 18, 0, True, slot=2, actor_role=access.ROLE_EDITOR, actor="Аня")
+    sql, params = db.executed[0]
+    assert "INSERT INTO bsr_radar.schedule" in sql and "ON CONFLICT (id)" in sql
+    assert params == (2, 18, 0)
 
 
 def test_disabled_save_removes_the_schedule_row():
     db = FakeDb()
     schedule_store.save_schedule(db.connect, 10, 30, False, actor_role=access.ROLE_EDITOR, actor="Аня")
     sql, params = db.executed[0]
-    assert sql.strip().startswith("DELETE FROM bsr_radar.schedule WHERE id = 1")
-    assert params == ()
+    assert sql.strip().startswith("DELETE FROM bsr_radar.schedule WHERE id = %s")
+    assert params == (1,)
     assert db.commits == 1
+
+
+def test_disabled_save_removes_the_second_slot():
+    db = FakeDb()
+    schedule_store.save_schedule(db.connect, 10, 30, False, slot=2, actor_role=access.ROLE_EDITOR, actor="Аня")
+    sql, params = db.executed[0]
+    assert params == (2,)
+
+
+@pytest.mark.parametrize("slot", [0, 3, -1, None])
+def test_invalid_slot_is_rejected_without_database_access(slot):
+    db = FakeDb()
+    with pytest.raises(ValueError):
+        schedule_store.save_schedule(db.connect, 10, 30, True, slot=slot, actor_role=access.ROLE_EDITOR, actor="Аня")
+    assert db.connects == 0
 
 
 @pytest.mark.parametrize("role", [None, "viewer", "superuser", ""])

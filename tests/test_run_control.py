@@ -128,7 +128,7 @@ def test_before_the_scheduled_time_is_blocked():
 def test_the_preview_is_exactly_the_gates_own_policy(kwargs):
     schedule = kwargs.get("schedule", ((9, 0),))
     expected = db_runs.admission_block_reason(
-        now=KYIV_NOON, schedule=schedule[0] if schedule else None, attempts_today=kwargs.get("attempts", 0),
+        now=KYIV_NOON, schedules=tuple(schedule), attempts_today=kwargs.get("attempts", 0),
         successful_today=kwargs.get("done", False), unfinished=kwargs.get("unfinished", False), force=False,
     )
     assert run_control.admission_preview(preview_db(**kwargs).connect, KYIV_NOON) == expected
@@ -181,7 +181,7 @@ def test_an_unknown_scope_is_refused_before_touching_the_database():
 
 def test_the_preview_matches_the_gates_own_policy_for_a_partial_scope():
     expected = db_runs.admission_block_reason(
-        now=KYIV_NOON, schedule=(9, 0), attempts_today=2, successful_today=False, unfinished=False, force=False,
+        now=KYIV_NOON, schedules=((9, 0),), attempts_today=2, successful_today=False, unfinished=False, force=False,
     )
     assert run_control.admission_preview(preview_db(attempts=2).connect, KYIV_NOON, scope="ours") == expected
 

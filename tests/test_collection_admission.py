@@ -22,8 +22,8 @@ def forbid_real_database(monkeypatch):
 
 
 def policy(**overrides):
-    arguments = dict(now=NOW, schedule=(9, 0), attempts_today=0,
-                     successful_today=False, unfinished=False, force=False)
+    arguments = dict(now=NOW, schedules=((9, 0),), attempts_today=0,
+                     successful_today=0, unfinished=False, force=False)
     arguments.update(overrides)
     return db_runs.admission_block_reason(**arguments)
 
@@ -45,15 +45,28 @@ def test_force_overrides_the_daily_attempt_limit():
 def test_force_also_overrides_already_succeeded_today():
     """Решение владельца 25.09.2026: кнопка «Собрать ещё раз» должна реально запускать сбор
     после уже успешного сегодня, а не упираться в ту же защиту."""
-    assert policy(successful_today=True, force=True) is None
+    assert policy(successful_today=1, force=True) is None
 
 
 def test_without_force_success_today_still_blocks():
-    assert policy(successful_today=True, force=False) is not None
+    assert policy(successful_today=1, force=False) is not None
+
+
+def test_second_slot_allows_a_second_real_collection_once_it_is_due():
+    """Владелец, 29.09.2026: второй наступивший слот отпирает второй настоящий сбор — первый
+    успех закрывает только первый слот, а не оба сразу."""
+    two_slots = dict(schedules=((9, 0), (10, 0)))
+    assert policy(**two_slots, successful_today=1, now=NOW) is None
+    assert policy(**two_slots, successful_today=2, now=NOW) is not None
+
+
+def test_second_slot_not_due_yet_still_blocks_a_second_collection():
+    only_first_due = dict(schedules=((9, 0), (23, 0)))
+    assert policy(**only_first_due, successful_today=1) is not None
 
 
 @pytest.mark.parametrize("override", [
-    {"unfinished": True}, {"schedule": None}, {"schedule": (23, 0)},
+    {"unfinished": True}, {"schedules": ()}, {"schedules": ((23, 0),)},
 ])
 @pytest.mark.parametrize("force", [False, True])
 def test_other_blocks_cannot_be_forced(override, force):
@@ -67,7 +80,8 @@ def test_schedule_uses_kyiv_not_utc():
 
 
 @pytest.mark.parametrize("override", [
-    {"now": datetime(2026, 9, 18)}, {"attempts_today": -1}, {"schedule": (24, 0)},
+    {"now": datetime(2026, 9, 18)}, {"attempts_today": -1}, {"successful_today": -1},
+    {"schedules": ((24, 0),)},
 ])
 def test_invalid_policy_input_fails(override):
     with pytest.raises(db_runs.RunStoreError):
@@ -171,8 +185,8 @@ def connect_fake(monkeypatch, rows, **kwargs):
     return conn
 
 
-def admission_rows(*, now=NOW, unfinished=False, count=0, success=False, result=(42,)):
-    return [(now,), (9, 0), (unfinished,), (count, success), result]
+def admission_rows(*, now=NOW, slot2=None, unfinished=False, count=0, success=0, result=(42,)):
+    return [(now,), (9, 0), slot2, (unfinished,), (count, success), result]
 
 
 def test_admission_lock_before_fresh_reads_and_commit_before_permission(monkeypatch):
@@ -190,7 +204,7 @@ def test_admission_lock_before_fresh_reads_and_commit_before_permission(monkeypa
 
 
 @pytest.mark.parametrize("override", [
-    {"unfinished": True}, {"count": 3}, {"success": True},
+    {"unfinished": True}, {"count": 3}, {"success": 1},
 ])
 def test_denial_does_not_register_attempt(monkeypatch, override):
     conn = connect_fake(monkeypatch, admission_rows(**override))
@@ -220,6 +234,8 @@ def test_unfinished_check_has_no_day_or_step_filter(monkeypatch):
 
 
 def test_daily_count_uses_kyiv_day_and_counts_all_parser_statuses(monkeypatch):
+    """Первое count(*) — все попытки за день, без фильтра по статусу; второе — только успехи,
+    через FILTER (WHERE status = 'done'), а не через сам WHERE строки."""
     near_midnight = datetime(2026, 9, 18, 21, 1, tzinfo=timezone.utc)
     conn = connect_fake(monkeypatch, admission_rows(now=near_midnight))
     db_runs.admit_parser_run(INVOCATION)
@@ -227,8 +243,9 @@ def test_daily_count_uses_kyiv_day_and_counts_all_parser_statuses(monkeypatch):
     assert count_query[2][0].isoformat() == "2026-09-19"
     assert count_query[2][1] == INVOCATION.scope
     assert "AT TIME ZONE 'Europe/Kyiv'" in count_query[1]
-    where = count_query[1].split("WHERE", 1)[1]
+    where = count_query[1].split("FROM bsr_radar.collection_runs", 1)[1]
     assert "step = 'parser'" in where and "status" not in where
+    assert "FILTER (WHERE status = 'done')" in count_query[1]
 
 
 def test_daily_count_and_success_are_scoped_independently(monkeypatch):

@@ -71,11 +71,14 @@ def dash(monkeypatch):
     st.cache_resource.clear()
 
 
-def overview(schedule=schedule_store.Schedule(9, 0), collected_today=False, runs=None):
+def overview(schedule=schedule_store.Schedule(9, 0), collected_today=False, runs=None,
+             schedule2=None, collected_count=None):
     if runs is None:
         started = NOW - timedelta(days=1, hours=-1)
         runs = [{"started_at": started, "finished_at": started + timedelta(minutes=12), "status": "done", "error": None}]
-    return schedule_store.Overview(schedule, collected_today, runs)
+    if collected_count is None:
+        collected_count = 1 if collected_today else 0
+    return schedule_store.Overview(schedule, collected_today, runs, schedule2, collected_count)
 
 
 def sign_in(monkeypatch, dash, user):
@@ -287,7 +290,7 @@ def record_saves(monkeypatch):
     calls = []
     monkeypatch.setattr(
         schedule_store, "save_schedule",
-        lambda connect, hour, minute, enabled, *, actor_role, actor: calls.append((enabled, actor_role, actor)),
+        lambda connect, hour, minute, enabled, *, slot=1, actor_role, actor: calls.append((enabled, actor_role, actor, slot)),
     )
     return calls
 
@@ -309,7 +312,7 @@ def test_without_a_team_password_management_is_open_and_shows_no_notice_or_name_
     assert not any("Дашборд показывает данные" in i.value or "Режим просмотра" in i.value for i in at.info)
     assert not any("Чтобы менять время" in c.value for c in at.caption)
     save(at)
-    assert calls == [(True, access.ROLE_EDITOR, "Команда")]
+    assert calls == [(True, access.ROLE_EDITOR, "Команда", 1), (False, access.ROLE_EDITOR, "Команда", 2)]
 
 
 def test_the_page_header_shows_only_the_last_collection_date(monkeypatch, dash):
@@ -408,15 +411,15 @@ def test_saving_time_passes_editor_role_and_the_name_to_the_store(monkeypatch, d
     calls = []
     monkeypatch.setattr(
         schedule_store, "save_schedule",
-        lambda connect, hour, minute, enabled, *, actor_role, actor: calls.append((hour, minute, enabled, actor_role, actor)),
+        lambda connect, hour, minute, enabled, *, slot=1, actor_role, actor: calls.append((hour, minute, enabled, slot, actor_role, actor)),
     )
     at = unlock(run())
     at.time_input(key="schedule_time").set_value(time(10, 30))
     [b for b in at.button if b.label == "Сохранить"][0].click()
     at.run(timeout=30)
     assert not at.exception
-    assert calls == [(10, 30, True, access.ROLE_EDITOR, "Аня")]
-    assert any("Сохранено: автосбор включён, 10:30 (Киев)" in s.value for s in at.success)
+    assert calls[0] == (10, 30, True, 1, access.ROLE_EDITOR, "Аня")
+    assert any("Сохранено: автосбор включён, слот 1 — 10:30 (Киев)" in s.value for s in at.success)
 
 
 def test_unchecking_the_switch_saves_autocollection_off(monkeypatch, dash):
@@ -424,13 +427,13 @@ def test_unchecking_the_switch_saves_autocollection_off(monkeypatch, dash):
     calls = []
     monkeypatch.setattr(
         schedule_store, "save_schedule",
-        lambda connect, hour, minute, enabled, *, actor_role, actor: calls.append(enabled),
+        lambda connect, hour, minute, enabled, *, slot=1, actor_role, actor: calls.append((enabled, slot)),
     )
     at = unlock(run())
     at.checkbox(key="schedule_enabled").uncheck()
     [b for b in at.button if b.label == "Сохранить"][0].click()
     at.run(timeout=30)
-    assert calls == [False]
+    assert calls == [(False, 1), (False, 2)]
     assert any("автосбор выключен" in s.value for s in at.success)
 
 

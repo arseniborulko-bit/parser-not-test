@@ -1482,14 +1482,22 @@ def _render_schedule_tab(actor: str | None, role: str | None) -> schedule_store.
         st.error(str(exc))
         return None
 
-    schedule = overview.schedule
-    if schedule is None:
+    slots = [s for s in (overview.schedule, overview.schedule2) if s is not None]
+    if not slots:
         st.info("Автосбор выключен: по расписанию данные не собираются.")
     else:
-        st.success(f"Автосбор включён: каждый день после {schedule.hour:02d}:{schedule.minute:02d} (Киев).")
-        upcoming = schedule_store.next_run(now, schedule, overview.collected_today)
-        if not upcoming.due_now:
-            st.caption(f"Следующий запуск: {upcoming.when:%d.%m в %H:%M} (Киев).")
+        parts = [f"после {s.hour:02d}:{s.minute:02d}" for s in sorted(slots, key=lambda s: (s.hour, s.minute))]
+        st.success(f"Автосбор включён: каждый день {' и '.join(parts)} (Киев).")
+        # Ранг слота среди включённых по времени — какой по счёту успех сегодня его закрывает
+        # (db_runs.admission_block_reason считает так же: наступивший слот номер N открыт, пока
+        # успехов сегодня меньше N).
+        captions = []
+        for rank, slot in enumerate(sorted(slots, key=lambda s: (s.hour, s.minute)), start=1):
+            upcoming = schedule_store.next_run(now, slot, overview.collected_count >= rank)
+            if not upcoming.due_now:
+                captions.append(f"{upcoming.when:%d.%m в %H:%M}")
+        if captions:
+            st.caption(f"Следующий запуск: {'; '.join(captions)} (Киев).")
     if any(run["status"] == "running" for run in overview.runs):
         st.warning("Сейчас идёт сбор данных.")
 
@@ -1498,18 +1506,27 @@ def _render_schedule_tab(actor: str | None, role: str | None) -> schedule_store.
         st.caption("Чтобы менять время, откройте «🔒 Управление» вверху страницы.")
         return overview
 
-    hour, minute = schedule_store.to_slot(schedule.hour, schedule.minute) if schedule else (9, 0)
+    hour1, minute1 = schedule_store.to_slot(overview.schedule.hour, overview.schedule.minute) if overview.schedule else (9, 0)
+    hour2, minute2 = schedule_store.to_slot(overview.schedule2.hour, overview.schedule2.minute) if overview.schedule2 else (18, 0)
     with st.form("schedule_form"):
-        chosen = st.time_input("Время сбора (по Киеву)", value=datetime(2000, 1, 1, hour, minute).time(), step=schedule_store.SLOT_MINUTES * 60, key="schedule_time")
-        enabled = st.checkbox("Автосбор включён", value=schedule is not None, key="schedule_enabled")
+        chosen1 = st.time_input("Время сбора 1 (по Киеву)", value=datetime(2000, 1, 1, hour1, minute1).time(), step=schedule_store.SLOT_MINUTES * 60, key="schedule_time")
+        enabled1 = st.checkbox("Слот 1 включён", value=overview.schedule is not None, key="schedule_enabled")
+        chosen2 = st.time_input("Время сбора 2 (по Киеву)", value=datetime(2000, 1, 1, hour2, minute2).time(), step=schedule_store.SLOT_MINUTES * 60, key="schedule_time2")
+        enabled2 = st.checkbox("Слот 2 включён", value=overview.schedule2 is not None, key="schedule_enabled2")
         submitted = st.form_submit_button("Сохранить")
     if submitted:
         try:
-            schedule_store.save_schedule(_connect, chosen.hour, chosen.minute, enabled, actor_role=role, actor=actor or "?")
+            schedule_store.save_schedule(_connect, chosen1.hour, chosen1.minute, enabled1, slot=1, actor_role=role, actor=actor or "?")
+            schedule_store.save_schedule(_connect, chosen2.hour, chosen2.minute, enabled2, slot=2, actor_role=role, actor=actor or "?")
         except (ValueError, access.AccessDenied, schedule_store.ScheduleStoreError) as exc:
             st.error(str(exc))
         else:
-            text = f"Сохранено: автосбор включён, {chosen:%H:%M} (Киев)." if enabled else "Сохранено: автосбор выключен."
+            parts = []
+            if enabled1:
+                parts.append(f"слот 1 — {chosen1:%H:%M}")
+            if enabled2:
+                parts.append(f"слот 2 — {chosen2:%H:%M}")
+            text = "Сохранено: автосбор включён, " + ", ".join(parts) + " (Киев)." if parts else "Сохранено: автосбор выключен."
             _set_flash("schedule_flash", "success", text)
             st.rerun()
     return overview

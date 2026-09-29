@@ -75,14 +75,14 @@ def admission_preview(connect: Connect, now: datetime, scope: str = "all", force
     schedule_rows, unfinished_rows, count_rows = dbutil.run_many(
         connect,
         [
-            ("SELECT hour, minute FROM bsr_radar.schedule WHERE id = 1;", (), True),
+            ("SELECT hour, minute FROM bsr_radar.schedule WHERE id IN (1, 2);", (), True),
             (
                 "SELECT EXISTS (SELECT 1 FROM bsr_radar.collection_runs WHERE status = 'running' AND started_at >= %s);",
                 (stale_before,),
                 True,
             ),
             (
-                "SELECT count(*), COALESCE(bool_or(status = 'done'), FALSE) FROM bsr_radar.collection_runs "
+                "SELECT count(*), count(*) FILTER (WHERE status = 'done') FROM bsr_radar.collection_runs "
                 "WHERE step = 'parser' AND (started_at AT TIME ZONE 'Europe/Kyiv')::date = %s AND scope = %s;",
                 (today, scope),
                 True,
@@ -91,11 +91,11 @@ def admission_preview(connect: Connect, now: datetime, scope: str = "all", force
         error=RunControlError,
         what=_WHAT,
     )
-    schedule = (schedule_rows[0][0], schedule_rows[0][1]) if schedule_rows else None
+    schedules = tuple((hour, minute) for hour, minute in schedule_rows)
     attempts, successful = count_rows[0]
     try:
         return db_runs.admission_block_reason(
-            now=now, schedule=schedule, attempts_today=attempts, successful_today=bool(successful),
+            now=now, schedules=schedules, attempts_today=attempts, successful_today=successful,
             unfinished=bool(unfinished_rows[0][0]), force=force,
         )
     except db_runs.RunStoreError as exc:

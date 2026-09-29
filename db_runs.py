@@ -6,7 +6,7 @@ import os
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import Mapping, Optional
+from typing import Mapping, Optional, Sequence, Tuple
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 
@@ -72,33 +72,42 @@ def invocation_from_environment(environment: Mapping[str, str]) -> Invocation:
     return Invocation("local", f"local:{uuid4().hex}", scope=scope)
 
 
-def admission_block_reason(*, now: datetime, schedule: Optional[tuple[int, int]],
-                           attempts_today: int, successful_today: bool,
+def admission_block_reason(*, now: datetime, schedules: Sequence[Tuple[int, int]],
+                           attempts_today: int, successful_today: int,
                            unfinished: bool, force: bool = False) -> Optional[str]:
     """Чистая политика допуска.
 
-    force снимает и дневной лимит попыток, и запрет повторного сбора после уже успешного сегодня —
-    решение владельца 25.09.2026: кнопка «Собрать ещё раз» должна реально запускать сбор, а не
-    упираться в ту же самую защиту. Это осознанный отказ от части защиты платных запросов: каждое
-    нажатие с force — это новый платный прогон, ограничения по числу нет.
+    До двух независимых слотов времени в сутки (владелец, 29.09.2026: второй слот должен
+    запускать настоящий второй сбор, а не просто резервное время). «Уже собрано сегодня» — не
+    булево, а счётчик успехов: сбор разрешён, пока успехов меньше, чем наступивших слотов — так
+    второй наступивший слот отпирает второй реальный сбор, а не блокируется первым же успехом.
+
+    force снимает и дневной лимит попыток, и запрет повторного сбора после того, как успехов
+    сегодня уже столько же, сколько наступивших слотов — решение владельца 25.09.2026: кнопка
+    «Собрать ещё раз» должна реально запускать сбор, а не упираться в ту же самую защиту. Это
+    осознанный отказ от части защиты платных запросов: каждое нажатие с force — это новый платный
+    прогон, ограничения по числу нет.
 
     force НЕ снимает: незавершённую попытку (защита от гонки при записи в Sheets, не про деньги)
-    и то, что расписание не задано или время ещё не наступило (когда собирать — решается отдельно).
+    и то, что расписание не задано или ни один слот ещё не наступил (когда собирать — решается
+    отдельно).
     """
-    if now.tzinfo is None or now.utcoffset() is None or attempts_today < 0:
+    if (now.tzinfo is None or now.utcoffset() is None
+            or attempts_today < 0 or successful_today < 0):
         raise RunStoreError("Некорректные данные для проверки допуска.")
     if unfinished:
         return "Есть незавершённая попытка (включая прошлые дни) — сбор заблокирован."
-    if successful_today and not force:
-        return "Сегодня уже был успешный сбор — пропуск."
-    if schedule is None:
+    if not schedules:
         return "Расписание в базе не задано — пропуск."
-    hour, minute = schedule
-    if not (0 <= hour <= 23 and 0 <= minute <= 59):
-        raise RunStoreError("Некорректное расписание; сбор запрещён.")
+    for hour, minute in schedules:
+        if not (0 <= hour <= 23 and 0 <= minute <= 59):
+            raise RunStoreError("Некорректное расписание; сбор запрещён.")
     local_now = now.astimezone(TZ)
-    if (local_now.hour, local_now.minute) < (hour, minute):
+    due_slots = sum(1 for hour, minute in schedules if (local_now.hour, local_now.minute) >= (hour, minute))
+    if due_slots == 0:
         return "Время сбора по Europe/Kyiv ещё не наступило — пропуск."
+    if successful_today >= due_slots and not force:
+        return "На все наступившие сегодня времена сбора уже есть успешный сбор — пропуск."
     if attempts_today >= DAILY_ATTEMPT_LIMIT and not force:
         return f"Лимит {DAILY_ATTEMPT_LIMIT} попытки за день Europe/Kyiv исчерпан — пропуск."
     return None
@@ -144,7 +153,10 @@ def admit_parser_run(invocation: Invocation) -> Admission:
         cur.execute("SELECT clock_timestamp();")
         now = cur.fetchone()[0]
         cur.execute("SELECT hour, minute FROM bsr_radar.schedule WHERE id = 1;")
-        schedule = cur.fetchone()
+        slot1 = cur.fetchone()
+        cur.execute("SELECT hour, minute FROM bsr_radar.schedule WHERE id = 2;")
+        slot2 = cur.fetchone()
+        schedules = tuple(slot for slot in (slot1, slot2) if slot is not None)
         # Зависшие попытки (никто не вызвал log_finish, например раннер упал) не
         # должны блокировать сбор на весь день — списываем их как ошибку.
         stale_before = now - timedelta(minutes=STALE_RUNNING_MINUTES)
@@ -161,7 +173,7 @@ def admit_parser_run(invocation: Invocation) -> Admission:
         """)
         unfinished = cur.fetchone()[0]
         cur.execute("""
-            SELECT count(*), COALESCE(bool_or(status = 'done'), FALSE)
+            SELECT count(*), count(*) FILTER (WHERE status = 'done')
             FROM bsr_radar.collection_runs
             WHERE step = 'parser'
               AND (started_at AT TIME ZONE 'Europe/Kyiv')::date = %s
@@ -169,7 +181,7 @@ def admit_parser_run(invocation: Invocation) -> Admission:
         """, (now.astimezone(TZ).date(), invocation.scope))
         attempts, successful = cur.fetchone()
         reason = admission_block_reason(
-            now=now, schedule=schedule, attempts_today=attempts,
+            now=now, schedules=schedules, attempts_today=attempts,
             successful_today=successful, unfinished=unfinished, force=invocation.force,
         )
         if reason:

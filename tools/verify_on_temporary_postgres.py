@@ -61,7 +61,8 @@ MIGRATIONS = {n: (PROJECT / "migrations" / n).read_text(encoding="utf-8")
               for n in ("001_collection_admission.sql", "002_dashboard_users.sql", "003_pair_changes.sql",
                         "004_snapshot_images.sql", "005_run_scope.sql",
                         "006_snapshot_marketplace_key.sql", "007_pair_changes_edit.sql",
-                        "008_asin_registry.sql", "009_snapshot_rating_reviews.sql")}
+                        "008_asin_registry.sql", "009_snapshot_rating_reviews.sql",
+                        "011_schedule_second_slot.sql")}
 
 
 def check(name: str, condition: object, extra: str = "") -> None:
@@ -84,7 +85,8 @@ def connect():
     return psycopg2.connect(URI)
 
 
-def reset(schema_sql: str = NEW_SCHEMA, schedule: tuple | None = (0, 0), migrations: bool = True) -> None:
+def reset(schema_sql: str = NEW_SCHEMA, schedule: tuple | None = (0, 0), migrations: bool = True,
+          schedule2: tuple | None = None) -> None:
     q("DROP SCHEMA IF EXISTS bsr_radar CASCADE;")
     q("CREATE SCHEMA bsr_radar;")
     q(schema_sql)
@@ -93,6 +95,8 @@ def reset(schema_sql: str = NEW_SCHEMA, schedule: tuple | None = (0, 0), migrati
             q(sql)
     if schedule:
         q("INSERT INTO bsr_radar.schedule (id, hour, minute) VALUES (1, %s, %s);", schedule)
+    if schedule2:
+        q("INSERT INTO bsr_radar.schedule (id, hour, minute) VALUES (2, %s, %s);", schedule2)
 
 
 def reset_old() -> None:
@@ -161,6 +165,45 @@ def section_schedule_and_users() -> None:
     schedule_store.save_schedule(connect, 9, 0, False, **editor)
     check("выключение без строки не падает", True)
 
+    schedule_store.save_schedule(connect, 9, 0, True, slot=1, **editor)
+    schedule_store.save_schedule(connect, 18, 0, True, slot=2, **editor)
+    ov2 = schedule_store.load_overview(connect, kyiv(2026, 9, 21, 8, 0))
+    check("второй слот сохраняется независимо от первого",
+          ov2.schedule == schedule_store.Schedule(9, 0) and ov2.schedule2 == schedule_store.Schedule(18, 0))
+    schedule_store.save_schedule(connect, 18, 0, False, slot=2, **editor)
+    check("выключение второго слота не трогает первый",
+          schedule_store.load_overview(connect, kyiv(2026, 9, 21, 8, 0)) == schedule_store.Overview(schedule_store.Schedule(9, 0), False, [], None, 0))
+    try:
+        schedule_store.save_schedule(connect, 9, 0, True, slot=3, **editor)
+        check("недопустимый номер слота отклоняется", False)
+    except ValueError:
+        check("недопустимый номер слота отклоняется", True)
+    schedule_store.save_schedule(connect, 9, 0, False, slot=1, **editor)
+
+    # Миграция 011 именно на старой схеме — так, как она пройдёт на боевой базе прямо сейчас.
+    reset(migrations=False, schedule=None)
+    q("ALTER TABLE bsr_radar.schedule DROP CONSTRAINT IF EXISTS schedule_two_slots;")
+    q("ALTER TABLE bsr_radar.schedule ADD CONSTRAINT schedule_single_row CHECK (id = 1);")
+    q("INSERT INTO bsr_radar.schedule (id, hour, minute) VALUES (1, 9, 0);")
+    try:
+        q("INSERT INTO bsr_radar.schedule (id, hour, minute) VALUES (2, 18, 0);")
+        check("до миграции 011 второй слот действительно запрещён (воспроизводим боевое состояние)", False)
+    except psycopg2.errors.CheckViolation:
+        check("до миграции 011 второй слот действительно запрещён (воспроизводим боевое состояние)", True)
+    q(MIGRATIONS["011_schedule_second_slot.sql"])
+    q(MIGRATIONS["011_schedule_second_slot.sql"])
+    q("INSERT INTO bsr_radar.schedule (id, hour, minute) VALUES (2, 18, 0);")
+    check("после миграции 011 второй слот разрешён и повтор миграции безопасен",
+          q("SELECT hour, minute FROM bsr_radar.schedule WHERE id = 2;")[0] == (18, 0))
+    check("первая строка (id=1) миграцией не тронута", q("SELECT hour, minute FROM bsr_radar.schedule WHERE id = 1;")[0] == (9, 0))
+    try:
+        q("INSERT INTO bsr_radar.schedule (id, hour, minute) VALUES (3, 0, 0);")
+        check("после миграции 011 третий слот по-прежнему запрещён", False)
+    except psycopg2.errors.CheckViolation:
+        check("после миграции 011 третий слот по-прежнему запрещён", True)
+
+    reset()  # обратно к полностью мигрированной схеме — секция ниже проверяет остальные таблицы.
+
     q("INSERT INTO bsr_radar.collection_runs (source, step, status, started_at, finished_at) VALUES "
       "('github_actions','parser','done','2026-09-20 22:30:00+00','2026-09-20 22:42:00+00'),"
       "('github_actions','sync','done','2026-09-20 22:43:00+00','2026-09-20 22:44:00+00'),"
@@ -180,10 +223,15 @@ def section_schedule_and_users() -> None:
     check("повторное добавление обновляет роль без дубля", access.active_user_roles(connect) == {"test@example.com": "admin"} and len(access.list_users(connect)) == 1)
     access.set_user_active(connect, "test@example.com", False, **admin)
     check("отключённый не попадает в активные", access.active_user_roles(connect) == {})
+
+    q("INSERT INTO bsr_radar.schedule (id, hour, minute) VALUES (2, 9, 0);")
+    check("второй слот (id=2) теперь допустим в расписании", q("SELECT count(*) FROM bsr_radar.schedule WHERE id = 2;")[0][0] == 1)
+    q("DELETE FROM bsr_radar.schedule WHERE id = 2;")
+
     for label, stmt, params in (
         ("CHECK: email только строчными", "INSERT INTO bsr_radar.dashboard_users (email, role) VALUES (%s, %s);", ("UPPER@EXAMPLE.COM", "editor")),
         ("CHECK: роль только admin/editor", "INSERT INTO bsr_radar.dashboard_users (email, role) VALUES (%s, %s);", ("x@example.com", "superuser")),
-        ("CHECK: в расписании допустима только строка id=1", "INSERT INTO bsr_radar.schedule (id, hour, minute) VALUES (2, 9, 0);", ()),
+        ("CHECK: в расписании допустима только строка id=3", "INSERT INTO bsr_radar.schedule (id, hour, minute) VALUES (3, 9, 0);", ()),
     ):
         try:
             q(stmt, params)
@@ -494,6 +542,34 @@ def section_admission() -> None:
           run_control.admission_preview(connect, datetime.now(schedule_store.TZ)) is not None)
     check("после успешного сбора обычный допуск отклонён, а force пропускает",
           not db_runs.admit_parser_run(gh(502)).should_run and db_runs.admit_parser_run(gh(503, force=True)).should_run)
+
+    print("\n== второй слот времени: реальный второй сбор в день ==")
+    reset(schedule=(0, 0), schedule2=(0, 0))
+    d1 = db_runs.admit_parser_run(gh(504))
+    check("оба слота наступили — первый сбор допущен", d1.should_run)
+    db_runs.claim_parser_run(d1.run_id, gh(504))
+    db_runs.log_finish(d1.run_id, "done")
+    d2 = db_runs.admit_parser_run(gh(505))
+    check("после первого успеха второй наступивший слот всё ещё открывает настоящий второй сбор", d2.should_run)
+    db_runs.claim_parser_run(d2.run_id, gh(505))
+    db_runs.log_finish(d2.run_id, "done")
+    d3 = db_runs.admit_parser_run(gh(506))
+    check("после двух успехов при двух наступивших слотах третий обычный запуск уже блокирован",
+          not d3.should_run and "наступивш" in d3.reason, d3.reason)
+    check("предпросмотр согласен: оба слота закрыты",
+          run_control.admission_preview(connect, datetime.now(schedule_store.TZ)) is not None)
+
+    kyiv_now = q("SELECT now() AT TIME ZONE 'Europe/Kyiv';")[0][0]
+    if (kyiv_now.hour, kyiv_now.minute) < (23, 58):
+        reset(schedule=(0, 0), schedule2=(23, 59))
+        d1 = db_runs.admit_parser_run(gh(507))
+        db_runs.claim_parser_run(d1.run_id, gh(507))
+        db_runs.log_finish(d1.run_id, "done")
+        d2 = db_runs.admit_parser_run(gh(508))
+        # Причина именно «уже есть успешный сбор» (наступивший слот всего один и он уже закрыт),
+        # а не «не наступило» — то была бы формулировка для нуля наступивших слотов.
+        check("второй слот, время которого ещё не наступило, не открывает второй сбор после первого успеха",
+              not d2.should_run and "уже есть успешный сбор" in d2.reason, d2.reason)
 
     for step in ("parser", "sync"):
         reset()
