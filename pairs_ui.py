@@ -657,6 +657,17 @@ def render_pairs_management(connect, pairs: pd.DataFrame, actor: str | None, rol
         _render_add(connect, actor or "?", role, max_active, key_prefix)
 
 
+def render_pairs_disable_restore(connect, pairs: pd.DataFrame, actor: str | None, role: str | None) -> None:
+    """Отключить пару или вернуть отключённую, со списком уже отключённых — «Управлять
+    существующими» показывает только активные пары, отключённых там не видно вообще (владелец,
+    29.09.2026: нужно видеть список того, что отключено, чтобы было что возвращать не по памяти)."""
+    _show_flash("pairs")
+    with st.expander("🗑 Убрать пары"):
+        _render_remove(connect, pairs, actor or "?", role)
+    with st.expander("↩ Вернуть отключённые"):
+        _render_restore(connect, pairs, actor or "?", role)
+
+
 def _asin_registry(pairs: pd.DataFrame) -> pd.DataFrame:
     """Все ASIN одним списком: каждый ASIN один раз, с ролью и числом пар, в которых он участвует.
 

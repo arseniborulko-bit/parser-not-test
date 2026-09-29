@@ -1668,6 +1668,7 @@ def main() -> None:
             collect_ui.render_spot_check(_secret("SCRAPINGDOG_TOKEN"), can_edit)
         if can_edit:
             pairs_ui.render_pairs_management(_connect, pairs, actor, manage_role, _max_active(), key_prefix="collect")
+            pairs_ui.render_pairs_disable_restore(_connect, pairs, actor, manage_role)
         collect_ui.render_run_block(
             _connect, pairs, _admission_preview_cached,
             _secret("GITHUB_DISPATCH_TOKEN"), _secret("GITHUB_REPO") or github_dispatch.DEFAULT_REPO, can_edit,
