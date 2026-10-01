@@ -14,6 +14,7 @@ import github_dispatch
 import pairs_store
 import run_control
 import spot_check
+import usage_log
 from schedule_store import TZ
 
 COOLDOWN_SECONDS = 120
@@ -29,7 +30,8 @@ def _spot_budget() -> spot_check.SpotBudget:
     return spot_check.SpotBudget()
 
 
-def _run_callback(connect, token: str, repo: str, can_edit: bool, scope: str = "all", force: bool = False) -> None:
+def _run_callback(connect, token: str, repo: str, can_edit: bool, scope: str = "all", force: bool = False,
+                  actor: Optional[str] = None, volume: Optional[int] = None) -> None:
     if not can_edit:
         _flash("error", "Запускать сбор могут только с открытым управлением.")
         return
@@ -52,6 +54,7 @@ def _run_callback(connect, token: str, repo: str, can_edit: bool, scope: str = "
         _flash("error", result.message)
         return
     st.session_state["collect_dispatched_at"] = _now_ts()
+    usage_log.record(connect, actor, f"collect_{scope}", volume, "ASIN")
     verb = "Повторный запуск" if force else "Запуск"
     _flash("success", f"{verb} отправлен в GitHub. Сбор начнётся в течение минуты и идёт около 10–20 минут; ход виден в «Последних запусках» ниже.")
 
@@ -68,7 +71,8 @@ def _scope_status(preview: Callable[[str], Optional[str]], token: str, can_edit:
 
 
 def _scope_button(connect, token: str, repo: str, can_edit: bool, cooling: bool, scope: str, label: str, key: str,
-                  reason: Optional[str], error: Optional[str], *, primary: bool = False) -> None:
+                  reason: Optional[str], error: Optional[str], *, primary: bool = False,
+                  actor: Optional[str] = None, volume: Optional[int] = None) -> None:
     # Решение владельца 25.09.2026: одна кнопка, а не отдельная вторая «Собрать ещё раз» рядом.
     # Если обычный допуск закрыт причиной политики (не ошибкой, не отсутствием токена/прав, не
     # кулдауном) — та же кнопка остаётся активной и при нажатии сама пробует со force=True.
@@ -79,7 +83,7 @@ def _scope_button(connect, token: str, repo: str, can_edit: bool, cooling: bool,
     st.button(
         label, key=key, use_container_width=True, type="primary" if primary else "secondary",
         disabled=blocked_by_infra,
-        on_click=_run_callback, args=(connect, token, repo, can_edit, scope, force),
+        on_click=_run_callback, args=(connect, token, repo, can_edit, scope, force, actor, volume),
     )
     if error:
         # Настоящая ошибка (например, база недоступна) — это не пояснение к политике блокировки,
@@ -88,7 +92,7 @@ def _scope_button(connect, token: str, repo: str, can_edit: bool, cooling: bool,
 
 
 def render_run_block(connect, pairs: pd.DataFrame, preview: Callable[[str], Optional[str]], token: str, repo: str,
-                     can_edit: bool) -> None:
+                     can_edit: bool, actor: Optional[str] = None) -> None:
     flash = st.session_state.pop("collect_flash", None)
     if flash:
         getattr(st, flash[0])(flash[1])
@@ -104,17 +108,19 @@ def render_run_block(connect, pairs: pd.DataFrame, preview: Callable[[str], Opti
     reason_all, error_all = _scope_status(preview, token, can_edit, cooling, "all")
     _scope_button(connect, token, repo, can_edit, cooling, "all",
                  f"🚀 Собрать всё ({positions.total}) — на серверах GitHub", "collect_run",
-                 reason_all, error_all, primary=True)
+                 reason_all, error_all, primary=True, actor=actor, volume=positions.total)
 
     left, right = st.columns(2)
     with left:
         reason_ours, error_ours = _scope_status(preview, token, can_edit, cooling, "ours")
         _scope_button(connect, token, repo, can_edit, cooling, "ours",
-                     f"Собрать наши ({positions.ours})", "collect_run_ours", reason_ours, error_ours)
+                     f"Собрать наши ({positions.ours})", "collect_run_ours", reason_ours, error_ours,
+                     actor=actor, volume=positions.ours)
     with right:
         reason_comp, error_comp = _scope_status(preview, token, can_edit, cooling, "competitors")
         _scope_button(connect, token, repo, can_edit, cooling, "competitors",
-                     f"Собрать конкурентов ({positions.competitors})", "collect_run_competitors", reason_comp, error_comp)
+                     f"Собрать конкурентов ({positions.competitors})", "collect_run_competitors", reason_comp, error_comp,
+                     actor=actor, volume=positions.competitors)
 
     if not can_edit:
         st.caption("Чтобы запускать сбор, откройте «🔒 Управление» вверху страницы.")
@@ -122,7 +128,7 @@ def render_run_block(connect, pairs: pd.DataFrame, preview: Callable[[str], Opti
         st.caption(f"Запуск отправлен {int(since)} с назад: сбор начнётся в течение минуты.")
 
 
-def render_spot_check(token: str, can_edit: bool) -> None:
+def render_spot_check(token: str, can_edit: bool, connect=None, actor: Optional[str] = None) -> None:
     if not token:
         return
     st.markdown('<p class="section-title">Точечная проверка</p>', unsafe_allow_html=True)
@@ -150,6 +156,8 @@ def render_spot_check(token: str, can_edit: bool) -> None:
                     st.session_state["spot_result"] = spot_check.run_spot_check(plan, token, budget)
             except (ValueError, spot_check.SpotBudgetError) as exc:
                 st.error(str(exc))
+            else:
+                usage_log.record(connect, actor, "spot_check", len(plan.items), "ASIN")
     st.caption(f"Осталось проверок: {budget.remaining()} (лимит {spot_check.HOUR_LIMIT} в час и {spot_check.DAY_LIMIT} в сутки на весь сайт).")
     rows = st.session_state.get("spot_result")
     if rows:

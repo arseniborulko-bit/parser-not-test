@@ -12,6 +12,7 @@ import access
 import asins_store
 import pairs_store
 from pairs_store import DOMAIN_BY_MARKET
+import usage_log
 from schedule_store import TZ
 
 log = logging.getLogger(__name__)
@@ -36,6 +37,12 @@ _ERRORS = (ValueError, access.AccessDenied, pairs_store.PairsStoreError)
 
 def _flash(kind: str, message: str, key_prefix: str = "pairs") -> None:
     st.session_state[f"{key_prefix}_flash"] = (kind, message)
+
+
+def _track(connect, actor: str, action: str, volume: int, unit: str = "пар") -> None:
+    """Строка в журнал использования — только когда действие действительно что-то изменило."""
+    if volume:
+        usage_log.record(connect, actor, action, volume, unit)
 
 
 def _show_flash(key_prefix: str = "pairs") -> None:
@@ -95,6 +102,7 @@ def _add_callback(connect, actor: str, role: str, max_active: int, key_prefix: s
         return
     if not failed:
         state[our_key] = ""
+    _track(connect, actor, "pairs_add", added + enabled)
     parts = []
     if added:
         parts.append(f"добавлено {added}")
@@ -113,6 +121,7 @@ def _toggle_callback(connect, keys, active: bool, actor: str, role: str, key_pre
         _flash("error", str(exc), key_prefix)
         return
     st.cache_data.clear()
+    _track(connect, actor, "pairs_enable" if active else "pairs_disable", changed)
     verb = "возвращено" if active else "отключено"
     _flash("success", f"Готово: {verb} {changed}. " + ("Пары попадут в ближайший сбор." if active else "В следующем сборе их уже не будет."), key_prefix)
 
@@ -257,6 +266,7 @@ def _edit_callback(connect, changes, actor: str, role: str) -> None:
             "error", f"Сохранено строк: {saved}, дальше ошибка — {exc}" if saved else str(exc),
         )
         return
+    _track(connect, actor, "pairs_edit", saved)
     st.session_state["pairs_flash"] = ("success", f"Сохранено строк: {saved}.")
 
 
@@ -331,6 +341,7 @@ def _save_pairs_grid_callback(connect, name_changes, active_changes: dict[bool, 
         _flash("error", f"Сохранено строк: {saved}, дальше ошибка — {exc}" if saved else str(exc), key_prefix)
         return
     st.cache_data.clear()
+    _track(connect, actor, "pairs_edit", saved_names + saved_active)
     _flash("success", f"Сохранено: названий {saved_names}, статусов {saved_active}.", key_prefix)
 
 
@@ -581,6 +592,7 @@ def _manage_callback(connect, actor: str, role: str, max_active: int, key_prefix
         return
     st.cache_data.clear()
     state.pop(original_key, None)  # следующий рендер соберёт текст заново из свежих пар
+    _track(connect, actor, "pairs_edit", added + enabled + disabled)
     parts = []
     if added:
         parts.append(f"добавлено {added}")
@@ -707,6 +719,7 @@ def _erase_callback(connect, pairs: pd.DataFrame, targets, actor: str, role: str
     except _ERRORS as exc:
         _flash("error", str(exc), key_prefix)
         return
+    _track(connect, actor, "pairs_disable", count)
     _flash("success", f"Отключено пар: {count}.", key_prefix)
 
 
@@ -716,6 +729,7 @@ def _add_asins_callback(connect, market: str, text: str, kind: str, actor: str, 
     except (*_ERRORS, asins_store.AsinStoreError) as exc:
         _flash("error", str(exc), key_prefix)
         return
+    _track(connect, actor, "asins_add", result["added"] + result["restored"], "ASIN")
     parts = []
     if result["added"]:
         parts.append(f"добавлено {result['added']}")
@@ -736,6 +750,7 @@ def _save_registry_callback(connect, changes, actor: str, role: str, key_prefix:
     except (*_ERRORS, asins_store.AsinStoreError) as exc:
         _flash("error", f"Сохранено строк: {saved}, дальше ошибка — {exc}" if saved else str(exc), key_prefix)
         return
+    _track(connect, actor, "asins_edit", saved, "ASIN")
     _flash("success", f"Сохранено строк: {saved}.", key_prefix)
 
 
@@ -745,6 +760,7 @@ def _drop_asins_callback(connect, keys, actor: str, role: str, key_prefix: str =
     except (*_ERRORS, asins_store.AsinStoreError) as exc:
         _flash("error", str(exc), key_prefix)
         return
+    _track(connect, actor, "asins_disable", count, "ASIN")
     _flash("success", f"Убрано ASIN: {count}.", key_prefix)
 
 

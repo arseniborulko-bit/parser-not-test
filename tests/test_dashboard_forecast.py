@@ -165,7 +165,123 @@ def test_the_forecast_tab_shows_charts_not_a_raw_table(dash, monkeypatch):  # no
     at = run()
     assert not at.exception
     assert at.get("vega_lite_chart"), "на вкладке должен быть хотя бы один график"
-    assert any(sb.key == "forecast_asin_pick" for sb in at.selectbox)
+    assert any(ms.key == "forecast_asins_Все страны" for ms in at.multiselect)
     assert not any("BSR сейчас" in str(df.value) for df in at.dataframe), (
         "числовая таблица прогноза должна быть заменена графиками"
     )
+
+
+def two_markets_with_names():
+    us = rows([300, 200, 100])
+    us["our_product"] = "Коврик для йоги"
+    ca = rows([500, 400, 300], asin="B0CAASIN01", comp="B0CACOMP01")
+    ca["marketplace"] = "CA"
+    ca["competitor_name"] = "Чужой коврик"
+    ca["comp_bsr"] = [900, 800, 700]
+    return pd.concat([us, ca], ignore_index=True)
+
+
+def asin_picker(at, market="Все страны"):
+    return [ms for ms in at.multiselect if ms.key == f"forecast_asins_{market}"][0]
+
+
+@pytest.fixture
+def drawn(dash, monkeypatch):  # noqa: F811
+    """Ряды, которые ушли в линейный график: сколько разных ASIN на нём нарисовано."""
+    seen = []
+    real = dash._asin_forecast_line_chart
+
+    def spy(series):
+        seen.append(series)
+        return real(series)
+
+    monkeypatch.setattr(dash, "_asin_forecast_line_chart", spy)
+    monkeypatch.setattr(dash, "load_snapshots", two_markets_with_names)
+    return lambda: set(seen[-1]["Метка"]) if seen else set()
+
+
+def test_the_country_picker_narrows_the_asin_list_to_that_country(dash, monkeypatch):  # noqa: F811
+    """Владелец, 01.10.2026: «нужно чтобы можно было находить по стране»."""
+    monkeypatch.setattr(dash, "load_snapshots", two_markets_with_names)
+    at = run()
+    assert not at.exception
+    country = [sb for sb in at.selectbox if sb.key == "forecast_market"][0]
+    assert country.options == ["Все страны", "CA", "US"]
+    assert len(asin_picker(at).options) == 3
+    country.set_value("CA")
+    at.run(timeout=30)
+    assert not at.exception
+    assert sorted(asin_picker(at, "CA").options) == [
+        "CA · B0CAASIN01 · Our", "CA · B0CACOMP01 · Чужой коврик",
+    ]
+
+
+def test_asins_can_be_found_by_product_name(dash, monkeypatch):  # noqa: F811
+    monkeypatch.setattr(dash, "load_snapshots", two_markets_with_names)
+    at = run()
+    assert "US · B000000001 · Коврик для йоги" in asin_picker(at).options
+
+
+def test_several_asins_can_be_picked_and_each_gets_its_own_line(drawn):
+    at = run()
+    picker = asin_picker(at)
+    picker.set_value(picker.options[:2])
+    at.run(timeout=30)
+    assert not at.exception
+    assert drawn() == set(picker.options[:2])
+
+
+def test_all_asins_of_a_country_can_be_picked_at_once(drawn):
+    """Владелец, 01.10.2026: «выбирать все асины»."""
+    at = run()
+    [sb for sb in at.selectbox if sb.key == "forecast_market"][0].set_value("CA")
+    at.run(timeout=30)
+    box = [cb for cb in at.checkbox if cb.key == "forecast_all_CA"][0]
+    assert box.label == "Выбрать все (2)"
+    box.check()
+    at.run(timeout=30)
+    assert not at.exception
+    assert not [ms for ms in at.multiselect if ms.key == "forecast_asins_CA"]
+    assert drawn() == {"CA · B0CAASIN01 · Our", "CA · B0CACOMP01 · Чужой коврик"}
+
+
+def test_an_empty_pick_asks_to_choose_instead_of_drawing_nothing(dash, monkeypatch):  # noqa: F811
+    monkeypatch.setattr(dash, "load_snapshots", two_markets_with_names)
+    at = run()
+    asin_picker(at).set_value([])
+    at.run(timeout=30)
+    assert any("Выберите хотя бы один ASIN" in info.value for info in at.info)
+
+
+def test_the_leaders_chart_follows_the_country():
+    table = dash_module._forecast_table(two_markets_with_names(), 30, 7)
+    assert set(table["Страна"]) == {"US", "CA"}
+
+
+def test_many_lines_use_a_log_scale_and_never_plot_zero():
+    """BSR разных ASIN отличается в сотни раз; прогноз, упёршийся в ноль, на лог-шкале — единица."""
+    data = two_markets_with_names()
+    series = dash_module._forecast_series_many(
+        data, 30, 30, {("US", "B000000001"): "a", ("CA", "B0CAASIN01"): "b"},
+    )
+    assert set(series["Метка"]) == {"a", "b"}
+    spec = dash_module._asin_forecast_line_chart(series).to_dict()
+    assert spec["encoding"]["y"]["scale"]["type"] == "log"
+    assert spec["encoding"]["color"]["field"] == "Метка"
+    plotted = [row["BSR"] for values in spec["datasets"].values() for row in values]
+    assert min(plotted) >= 1
+
+
+def test_the_many_series_matches_the_single_series_for_one_asin():
+    data = two_markets_with_names()
+    one = dash_module._asin_forecast_series(data, 30, 7, "B0CAASIN01", "CA")
+    many = dash_module._forecast_series_many(data, 30, 7, {("CA", "B0CAASIN01"): "x"})
+    assert list(many["BSR"]) == list(one["BSR"])
+    assert list(many["Тип"]) == list(one["Тип"])
+
+
+def test_a_long_product_name_is_shortened_in_the_label():
+    label = dash_module._forecast_label("US", "B000000001", "я" * 100)
+    assert label.startswith("US · B000000001 · ") and label.endswith("…")
+    assert len(label.split(" · ", 2)[2]) == dash_module._FORECAST_NAME_LENGTH
+    assert dash_module._forecast_label("US", "B000000001", None) == "US · B000000001"

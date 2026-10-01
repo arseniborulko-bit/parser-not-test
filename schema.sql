@@ -94,3 +94,18 @@ CREATE TABLE IF NOT EXISTS bsr_radar.telegram_subscribers (
     subscribed_at TIMESTAMPTZ,
     active BOOLEAN NOT NULL DEFAULT TRUE
 );
+
+-- Журнал использования инструментов: кто, когда, в каком инструменте и какой объём работы.
+-- Общая для всех инструментов команды, поэтому в схеме public (см. migrations/012).
+CREATE TABLE IF NOT EXISTS public.usage_logs (
+    id BIGSERIAL PRIMARY KEY,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    user_name TEXT NOT NULL,           -- email (вход через Google), имя (пароль команды) или «Команда»
+    tool_name TEXT NOT NULL,           -- 'Competitor BSR' и т.п.
+    action TEXT NOT NULL,              -- 'collect_all', 'spot_check', 'pairs_add' и т.п.
+    volume INTEGER CHECK (volume IS NULL OR volume >= 0),   -- объём работы: сколько ASIN, пар, строк
+    unit TEXT                          -- в чём измерен volume: 'ASIN', 'пар', 'строк'
+);
+
+CREATE INDEX IF NOT EXISTS usage_logs_tool_created_idx ON public.usage_logs (tool_name, created_at DESC);
+CREATE INDEX IF NOT EXISTS usage_logs_created_idx ON public.usage_logs (created_at DESC);

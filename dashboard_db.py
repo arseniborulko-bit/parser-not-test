@@ -33,6 +33,7 @@ import pairs_store
 import pairs_ui
 import run_control
 import schedule_store
+import usage_log
 
 load_dotenv()
 
@@ -626,8 +627,11 @@ GitHub, а проверка решает, пора ли: своё расписа
 не отмечая по одной.
 
 **Прогноз.** Два графика вместо таблицы чисел. Сверху — столбцы «Кто быстрее всего растёт»: у кого
-BSR падает быстрее всего за день (зелёные) и у кого растёт (красные). Снизу — график конкретного
-ASIN: фактическая история BSR сплошной линией и проекция на выбранный срок пунктиром. Изменение в
+BSR падает быстрее всего за день (зелёные) и у кого растёт (красные). Снизу — график выбранных
+ASIN: фактическая история BSR сплошной линией и проекция на выбранный срок пунктиром. Можно выбрать
+страну, найти ASIN по коду или названию, отметить несколько или «Выбрать все» сразу; когда
+линий несколько, шкала BSR логарифмическая — иначе товары с BSR 1 000 и 400 000 не поместились бы
+на одном графике. Изменение в
 день считается как медиана дневных изменений, а не как прямая по всем точкам: BSR скачет, и один
 выброс иначе задавал бы весь тренд. Это экстраполяция, а не предсказание — она не знает про акции,
 сезон и новинки. ASIN, у которого меньше трёх замеров за окно, в прогноз не попадает.
@@ -1126,16 +1130,11 @@ def _forecast_leaders_chart(table: pd.DataFrame) -> alt.Chart:
     ).properties(height=max(220, 26 * len(leaders)))
 
 
-def _asin_forecast_series(data: pd.DataFrame, window_days: int, horizon_days: int,
-                          asin: str, market: str) -> pd.DataFrame:
-    """История BSR одного ASIN за окно плюс прогнозная точка на горизонте — для линейного графика.
-
-    Последняя фактическая точка повторяется как начало прогнозной линии, чтобы пунктир
-    продолжал сплошную линию, а не висел отдельной точкой в воздухе."""
-    long = _forecast_long(data, window_days)
-    if long.empty:
-        return pd.DataFrame()
-    group = long[(long["ASIN"] == asin) & (long["Страна"] == market)].sort_values("Дата")
+def _series_from_group(group: pd.DataFrame, horizon_days: int) -> pd.DataFrame:
+    """История одного ASIN плюс прогнозная точка на горизонте. Последняя фактическая точка
+    повторяется как начало прогнозной линии, чтобы пунктир продолжал сплошную линию, а не висел
+    отдельной точкой в воздухе."""
+    group = group.sort_values("Дата")
     if len(group) < MIN_FORECAST_POINTS:
         return pd.DataFrame()
     slope = _trend(group["Дата"], group["Значение"])
@@ -1151,38 +1150,130 @@ def _asin_forecast_series(data: pd.DataFrame, window_days: int, horizon_days: in
     return pd.concat([fact, forecast], ignore_index=True)
 
 
+def _asin_forecast_series(data: pd.DataFrame, window_days: int, horizon_days: int,
+                          asin: str, market: str) -> pd.DataFrame:
+    """История BSR одного ASIN за окно плюс прогнозная точка на горизонте — для линейного графика."""
+    long = _forecast_long(data, window_days)
+    if long.empty:
+        return pd.DataFrame()
+    return _series_from_group(long[(long["ASIN"] == asin) & (long["Страна"] == market)], horizon_days)
+
+
+def _forecast_series_many(data: pd.DataFrame, window_days: int, horizon_days: int,
+                          labels: dict[tuple[str, str], str]) -> pd.DataFrame:
+    """То же для нескольких ASIN сразу (ключ — (страна, ASIN)); у каждой линии своя «Метка».
+    Срез по дням строится один раз на все ASIN, а не заново на каждый: при «Все ASIN» их сотни."""
+    long = _forecast_long(data, window_days)
+    if long.empty or not labels:
+        return pd.DataFrame()
+    long = long[[key in labels for key in zip(long["Страна"], long["ASIN"])]]
+    parts = []
+    for (asin, market), group in long.groupby(["ASIN", "Страна"]):
+        series = _series_from_group(group, horizon_days)
+        if not series.empty:
+            parts.append(series.assign(**{"Метка": labels[(market, asin)]}))
+    return pd.concat(parts, ignore_index=True) if parts else pd.DataFrame()
+
+
+# Больше линий легенда не вмещает — тогда какая линия чья, видно по подсказке при наведении.
+_FORECAST_LEGEND_MAX = 12
+
+
 def _asin_forecast_line_chart(series: pd.DataFrame) -> alt.Chart:
-    return alt.Chart(series).mark_line(point=True, color="#1f6feb").encode(
+    lines = series["Метка"].nunique() if "Метка" in series else 1
+    if lines <= 1:
+        return alt.Chart(series).mark_line(point=True, color="#1f6feb").encode(
+            x=alt.X("Дата:T", title=None),
+            y=alt.Y("BSR:Q", title="BSR", scale=alt.Scale(zero=False)),
+            strokeDash=alt.StrokeDash("Тип:N", sort=["Факт", "Прогноз"], legend=alt.Legend(title=None)),
+            tooltip=["Дата:T", alt.Tooltip("BSR:Q", format=",.0f", title="BSR"), "Тип"],
+        ).properties(height=320)
+    # У разных ASIN BSR отличается в сотни раз (1 200 и 450 000): на обычной шкале все, кроме
+    # самых больших, слиплись бы в линию у нуля. Логарифмической шкале нужен BSR от 1 —
+    # прогноз, упёршийся в ноль, рисуем на единице.
+    chart_data = series.assign(BSR=series["BSR"].clip(lower=1))
+    legend = alt.Legend(title=None) if lines <= _FORECAST_LEGEND_MAX else None
+    return alt.Chart(chart_data).mark_line(point=lines <= _FORECAST_LEGEND_MAX).encode(
         x=alt.X("Дата:T", title=None),
-        y=alt.Y("BSR:Q", title="BSR", scale=alt.Scale(zero=False)),
+        y=alt.Y("BSR:Q", title="BSR (логарифмическая шкала)", scale=alt.Scale(type="log")),
+        color=alt.Color("Метка:N", legend=legend),
+        detail="Метка:N",
         strokeDash=alt.StrokeDash("Тип:N", sort=["Факт", "Прогноз"], legend=alt.Legend(title=None)),
-        tooltip=["Дата:T", alt.Tooltip("BSR:Q", format=",.0f", title="BSR"), "Тип"],
-    ).properties(height=320)
+        tooltip=["Метка", "Дата:T", alt.Tooltip("BSR:Q", format=",.0f", title="BSR"), "Тип"],
+    ).properties(height=420)
+
+
+def _forecast_names(data: pd.DataFrame) -> dict[tuple[str, str], str]:
+    """Название для подписи ASIN (наш товар или конкурент): последнее непустое по дате сбора —
+    чтобы ASIN можно было найти в списке и по названию, а не только по коду."""
+    names: dict[tuple[str, str], str] = {}
+    if "marketplace" not in data:
+        return names
+    frame = data.sort_values("snapshot_date") if "snapshot_date" in data else data
+    for asin_column, name_column in (("our_asin", "our_product"), ("comp_asin", "competitor_name")):
+        if asin_column not in frame or name_column not in frame:
+            continue
+        for market, asin, name in zip(frame["marketplace"], frame[asin_column], frame[name_column]):
+            if isinstance(name, str) and name.strip():
+                names[(market, asin)] = " ".join(name.split())
+    return names
+
+
+_FORECAST_NAME_LENGTH = 40
+_ALL_MARKETS = "Все страны"
+
+
+def _forecast_label(market: str, asin: str, name: str | None) -> str:
+    label = f"{market} · {asin}"
+    if name:
+        label += " · " + (name if len(name) <= _FORECAST_NAME_LENGTH else name[:_FORECAST_NAME_LENGTH - 1] + "…")
+    return label
 
 
 def _render_forecast(data: pd.DataFrame) -> None:
     if data.empty or "snapshot_date" not in data:
         st.info("Нет данных для прогноза.")
         return
-    controls = st.columns(2)
+    controls = st.columns(3)
     window = controls[0].selectbox("Считать по", list(_FORECAST_WINDOWS), index=1, key="forecast_window")
     horizon = controls[1].selectbox("Прогноз на", list(_FORECAST_HORIZONS), key="forecast_horizon")
     window_days, horizon_days = _FORECAST_WINDOWS[window], _FORECAST_HORIZONS[horizon]
 
     table = _forecast_table(data, window_days, horizon_days)
+    markets = sorted(table["Страна"].dropna().unique()) if not table.empty else []
+    market = controls[2].selectbox("Страна", [_ALL_MARKETS] + markets, key="forecast_market")
     if table.empty:
         st.info(f"Недостаточно замеров: для прогноза нужно хотя бы {MIN_FORECAST_POINTS} дня с данными.")
         return
+    if market != _ALL_MARKETS:
+        table = table[table["Страна"] == market].reset_index(drop=True)
 
     st.markdown('<p class="section-title">Кто быстрее всего растёт</p>', unsafe_allow_html=True)
     st.altair_chart(_forecast_leaders_chart(table), use_container_width=True)
 
     st.markdown('<p class="section-title">История и прогноз по ASIN</p>', unsafe_allow_html=True)
-    labels = [f"{market} · {asin}" for market, asin in zip(table["Страна"], table["ASIN"])]
-    label_keys = dict(zip(labels, zip(table["Страна"], table["ASIN"])))
-    picked = st.selectbox("ASIN", labels, key="forecast_asin_pick")
-    market, asin = label_keys[picked]
-    series = _asin_forecast_series(data, window_days, horizon_days, asin, market)
+    names = _forecast_names(data)
+    label_keys = {
+        _forecast_label(row_market, asin, names.get((row_market, asin))): (row_market, asin)
+        for row_market, asin in zip(table["Страна"], table["ASIN"])
+    }
+    labels = list(label_keys)
+    # Ключи виджетов зависят от страны: у каждой страны свой список ASIN, и выбор из одной
+    # страны не должен оставаться в списке другой.
+    pick_all = st.checkbox(f"Выбрать все ({len(labels)})", key=f"forecast_all_{market}")
+    if pick_all:
+        picked = labels
+    else:
+        picked = st.multiselect(
+            "ASIN", labels, default=labels[:1], key=f"forecast_asins_{market}",
+            placeholder="Введите ASIN или название",
+        )
+    if not picked:
+        st.info("Выберите хотя бы один ASIN.")
+        return
+    series = _forecast_series_many(
+        data, window_days, horizon_days, {label_keys[label]: label for label in picked},
+    )
     if series.empty:
         st.info("Недостаточно данных для графика.")
         return
@@ -1372,9 +1463,27 @@ def _secret_is_nested(name: str) -> bool:
     return False
 
 
+def _corporate_domains() -> tuple[frozenset, str]:
+    """(домены рабочей почты, причина блокировки). Оба пустые — секрета CORPORATE_EMAIL_DOMAINS нет,
+    почту не спрашиваем. Секрет задан, но доменов в нём не нашлось, — управление закрыто."""
+    raw = _secret("CORPORATE_EMAIL_DOMAINS")
+    if raw:
+        domains = access.parse_domain_list(raw)
+        if not domains:
+            return frozenset(), "Управление закрыто: в секрете CORPORATE_EMAIL_DOMAINS нет ни одного домена почты."
+        return domains, ""
+    if _secret_is_nested("CORPORATE_EMAIL_DOMAINS"):
+        return frozenset(), "Управление закрыто: строка CORPORATE_EMAIL_DOMAINS стоит внутри секции секретов. Поднимите её выше первой секции в квадратных скобках."
+    return frozenset(), ""
+
+
 def _team_password_state() -> tuple[str, str]:
-    """('open', '') — секрета нет, управление открыто всем, у кого есть ссылка; ('password', пароль);
+    """('open', '') — секретов нет, управление открыто всем, у кого есть ссылка; ('password', пароль);
+    ('email', '') — пароля нет, но задан CORPORATE_EMAIL_DOMAINS: управление после ввода рабочей почты;
     ('locked', причина) — секрет задан неправильно, управление закрыто (не открываем по ошибке)."""
+    _, domains_problem = _corporate_domains()
+    if domains_problem:
+        return "locked", domains_problem
     password = _secret("TEAM_PASSWORD")
     if password:
         if len(password) < access.MIN_PASSWORD_LENGTH:
@@ -1382,6 +1491,8 @@ def _team_password_state() -> tuple[str, str]:
         return "password", password
     if _secret_is_nested("TEAM_PASSWORD"):
         return "locked", "Управление закрыто: строка TEAM_PASSWORD стоит внутри секции секретов. Поднимите её выше первой секции в квадратных скобках."
+    if _corporate_domains()[0]:
+        return "email", ""
     return "open", ""
 
 
@@ -1423,22 +1534,29 @@ def _render_unlock_box() -> None:
             st.caption(detail)
             return
         password = detail
+        domains, _ = _corporate_domains()
+        needs_password = state == "password"
         with st.form("unlock_form"):
-            who = st.text_input("Ваше имя", key="unlock_name")
-            typed = st.text_input("Пароль команды", type="password", key="unlock_password")
+            who = st.text_input("Рабочая почта" if domains else "Ваше имя", key="unlock_name")
+            typed = st.text_input("Пароль команды", type="password", key="unlock_password") if needs_password else None
             submitted = st.form_submit_button("Открыть управление")
         if not submitted:
             return
         limiter = _login_limiter()
-        if not limiter.allowed():
+        if needs_password and not limiter.allowed():
             st.error(f"Слишком много неудачных попыток. Повторите через {limiter.retry_after() // 60 + 1} мин.")
             return
-        clean = access.clean_actor_name(who)
-        if clean is None:
+        # Домены в подсказке не называем: сайт публичный, а подсказка объяснила бы постороннему, что вписать.
+        clean = access.corporate_email(who, domains) if domains else access.clean_actor_name(who)
+        if clean is None and domains:
+            st.error("Укажите свою рабочую (корпоративную) почту: личные адреса не подходят.")
+        elif clean is None:
             st.error("Укажите имя (2–40 символов): оно попадёт в журнал изменений.")
-        elif access.password_matches(typed, password):
-            limiter.record_success()
+        elif not needs_password or access.password_matches(typed, password):
+            if needs_password:
+                limiter.record_success()
             st.session_state["manager_name"] = clean
+            usage_log.record(_connect, clean, "login")
             st.rerun()
         else:
             limiter.record_failure()
@@ -1521,6 +1639,7 @@ def _render_schedule_tab(actor: str | None, role: str | None) -> schedule_store.
         except (ValueError, access.AccessDenied, schedule_store.ScheduleStoreError) as exc:
             st.error(str(exc))
         else:
+            usage_log.record(_connect, actor, "schedule_save")
             parts = []
             if enabled1:
                 parts.append(f"слот 1 — {chosen1:%H:%M}")
@@ -1530,6 +1649,61 @@ def _render_schedule_tab(actor: str | None, role: str | None) -> schedule_store.
             _set_flash("schedule_flash", "success", text)
             st.rerun()
     return overview
+
+
+_USAGE_DAYS = 30
+_USAGE_LOG_ROWS = 200
+_USAGE_ACTION_LABELS = {
+    "collect_all": "Сбор: всё", "collect_ours": "Сбор: наши", "collect_competitors": "Сбор: конкуренты",
+    "login": "Вход в управление", "spot_check": "Точечная проверка", "schedule_save": "Время автосбора",
+    "pairs_add": "Пары: добавление", "pairs_enable": "Пары: возврат", "pairs_disable": "Пары: отключение",
+    "pairs_edit": "Пары: правка", "asins_add": "ASIN: добавление", "asins_edit": "ASIN: правка",
+    "asins_disable": "ASIN: удаление", "export_csv": "Выгрузка CSV", "export_excel": "Выгрузка Excel",
+}
+
+
+def _usage_summary_table(rows: list[dict]) -> pd.DataFrame:
+    return pd.DataFrame([
+        {
+            "Кто": entry["user_name"],
+            "Действий": entry["actions"],
+            "Активных дней": entry["days"],
+            "Последнее действие (Киев)": entry["last_at"].astimezone(schedule_store.TZ).strftime("%d.%m %H:%M"),
+        }
+        for entry in usage_log.summarize(rows)
+    ])
+
+
+def _usage_log_table(rows: list[dict]) -> pd.DataFrame:
+    return pd.DataFrame([
+        {
+            "Когда (Киев)": row["created_at"].astimezone(schedule_store.TZ).strftime("%d.%m %H:%M"),
+            "Кто": row["user_name"],
+            "Что": _USAGE_ACTION_LABELS.get(row["action"], row["action"]),
+            "Объём": f"{row['volume']} {row['unit'] or ''}".strip() if row["volume"] is not None else "",
+        }
+        for row in rows[:_USAGE_LOG_ROWS]
+    ])
+
+
+def _render_usage() -> None:
+    """Кто и как пользуется дашбордом. Читает базу только при включённом переключателе: журнал нужен
+    изредка, а лишний запрос на каждую перерисовку страницы — нет."""
+    if not st.toggle(f"📊 Использование за {_USAGE_DAYS} дней", key="usage_show"):
+        return
+    try:
+        if not usage_log.log_exists(_connect):
+            st.caption("Журнал использования ещё не подключён: действия выполняются, но пока не записываются.")
+            return
+        rows = usage_log.recent(_connect, _USAGE_DAYS)
+    except usage_log.UsageLogError as exc:
+        st.error(str(exc))
+        return
+    if not rows:
+        st.caption("Действий пока не было.")
+        return
+    st.dataframe(_usage_summary_table(rows), use_container_width=True, hide_index=True)
+    st.dataframe(_usage_log_table(rows), use_container_width=True, hide_index=True)
 
 
 def _render_auth_bar(user: dict, email: str | None, role: str | None) -> None:
@@ -1682,16 +1856,19 @@ def main() -> None:
             st.markdown('<p class="section-title">Автосбор</p>', unsafe_allow_html=True)
             overview = _render_schedule_tab(actor, manage_role)
         with right:
-            collect_ui.render_spot_check(_secret("SCRAPINGDOG_TOKEN"), can_edit)
+            collect_ui.render_spot_check(_secret("SCRAPINGDOG_TOKEN"), can_edit, _connect, actor)
         if can_edit:
             pairs_ui.render_pairs_management(_connect, pairs, actor, manage_role, _max_active(), key_prefix="collect")
             pairs_ui.render_pairs_disable_restore(_connect, pairs, actor, manage_role)
         collect_ui.render_run_block(
             _connect, pairs, _admission_preview_cached,
             _secret("GITHUB_DISPATCH_TOKEN"), _secret("GITHUB_REPO") or github_dispatch.DEFAULT_REPO, can_edit,
+            actor,
         )
         if overview is not None:
             _render_recent_runs(overview, can_edit)
+        if can_edit:
+            _render_usage()
 
     with how_tab:
         _render_how_it_works(pairs, shown_history)
@@ -1705,11 +1882,13 @@ def main() -> None:
         st.download_button(
             "⬇ CSV", current.to_csv(index=False).encode("utf-8-sig"),
             file_name="current.csv", mime="text/csv",
+            on_click=usage_log.record, args=(_connect, actor, "export_csv", len(current), "строк"),
         )
     with download_right:
         st.download_button(
             "⬇ Excel с цветами", _current_to_excel_bytes(current),
             file_name="current.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            on_click=usage_log.record, args=(_connect, actor, "export_excel", len(current), "строк"),
         )
 
 

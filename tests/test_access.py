@@ -358,3 +358,34 @@ def test_successful_login_clears_earlier_failures():
     for _ in range(4):
         limiter.record_failure()
     assert limiter.allowed()
+
+
+@pytest.mark.parametrize("raw, expected", [
+    ("maximumstores.online", {"maximumstores.online"}),
+    (" @Company.com, sub.company.org;other.io ", {"company.com", "sub.company.org", "other.io"}),
+    ("company", set()),
+    ("", set()),
+    (None, set()),
+    ("a@b.com", set()),
+])
+def test_corporate_domains_are_read_from_a_comma_separated_secret(raw, expected):
+    assert access.parse_domain_list(raw) == expected
+
+
+@pytest.mark.parametrize("value, expected", [
+    ("  Anna@Company.com ", "anna@company.com"),
+    ("anna@gmail.com", None),
+    ("anna@mail.company.com", None),
+    ("anna@evilcompany.com", None),
+    ("anna@company.com.evil.io", None),
+    ("company.com", None),
+    ("anna@", None),
+    ("Аня", None),
+    (None, None),
+])
+def test_only_an_address_on_the_exact_corporate_domain_counts(value, expected):
+    assert access.corporate_email(value, {"company.com"}) == expected
+
+
+def test_without_configured_domains_no_address_is_corporate():
+    assert access.corporate_email("anna@company.com", frozenset()) is None

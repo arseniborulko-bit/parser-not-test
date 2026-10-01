@@ -22,6 +22,7 @@ ROLE_EDITOR = "editor"
 _RANK = {ROLE_EDITOR: 1, ROLE_ADMIN: 2}
 
 _EMAIL_RE = re.compile(r"^[^@\s,;]+@[^@\s,;]+\.[^@\s,;]+$")
+_DOMAIN_RE = re.compile(r"^[a-z0-9-]+(\.[a-z0-9-]+)+$")
 _MAX_EMAIL_LENGTH = 254
 MIN_PASSWORD_LENGTH = 8
 
@@ -48,6 +49,22 @@ def parse_email_list(text: object) -> frozenset:
         return frozenset()
     found = (normalize_email(part) for part in re.split(r"[,;\s]+", text))
     return frozenset(email for email in found if email)
+
+
+def parse_domain_list(text: object) -> frozenset:
+    """Домены рабочей почты из секрета: через запятую или пробел, «@» в начале необязателен."""
+    if not isinstance(text, str):
+        return frozenset()
+    found = (part.lower().lstrip("@") for part in re.split(r"[,;\s]+", text))
+    return frozenset(domain for domain in found if _DOMAIN_RE.match(domain))
+
+
+def corporate_email(value: object, domains: Iterable[str]) -> Optional[str]:
+    """Адрес на одном из рабочих доменов. Домен сверяется целиком: поддомен и похожее имя не подходят."""
+    email = normalize_email(value)
+    if email is None or email.rsplit("@", 1)[1] not in set(domains):
+        return None
+    return email
 
 
 def verified_email(user: Optional[Mapping]) -> Optional[str]:
