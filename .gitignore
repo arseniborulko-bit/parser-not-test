@@ -7,6 +7,9 @@ arseniy-sheets-key.json.json
 # Виртуальное окружение / кэш Python
 .venv/
 .venv-pg/
+# Окружение для Mac (.venv выше сделан на Windows) и личные настройки VS Code
+.venv-mac/
+.vscode/
 __pycache__/
 *.pyc
 
