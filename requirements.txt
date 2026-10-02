@@ -1,6 +1,8 @@
 streamlit>=1.42
 altair>=5.0
 Authlib>=1.3.2
+# Без httpx вход через Google падает с «Internal server error»: Authlib подключает его для st.login.
+httpx>=0.28
 gspread>=6.1
 google-auth>=2.30
 pandas>=2.2

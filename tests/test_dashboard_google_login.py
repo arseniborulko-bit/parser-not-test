@@ -166,3 +166,12 @@ def test_no_token_or_secret_is_ever_shown(monkeypatch, dash):  # noqa: F811
     at = run()
     shown = " ".join([m.value for m in at.markdown] + [c.value for c in at.caption] + [i.value for i in at.info])
     assert "SECRET" not in shown
+
+
+def test_the_google_login_dependencies_are_installed_and_listed():
+    """st.login строит OAuth-клиента через Authlib + httpx. Без httpx кнопка «Войти через Google» вела
+    на «Internal server error» (так и случилось на сайте 02.10.2026): httpx — прямая зависимость."""
+    from authlib.integrations import starlette_client  # noqa: F401
+
+    requirements = (PROJECT / "requirements.txt").read_text(encoding="utf-8").lower()
+    assert "authlib" in requirements and "httpx" in requirements

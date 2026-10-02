@@ -765,6 +765,10 @@ Google-аккаунтом `@maximumstores.online` и записывать вхо
 - Используется нативный вход Streamlit (`st.login`/`st.logout`/`st.user`), `st.experimental_user`
   в проекте не было. Токены (`st.user.tokens`, `expose_tokens`) не включаются и не читаются.
 
+**Зависимость `httpx`** (`requirements.txt`): без неё Authlib не строит OAuth-клиента, и кнопка
+«Войти через Google» на сайте вела на «Internal server error» (02.10.2026, воспроизведено локально,
+с `httpx` — переход на accounts.google.com).
+
 **Права** (решение владельца 01.10.2026): любой вошедший сотрудник — редактор (`EMPLOYEE_ROLE`
 в `dashboard_db.py`): пары, время сбора, запуск сбора; админы — по-прежнему `ADMIN_EMAILS` и
 `dashboard_users`. Почта сотрудника подписывает журнал пар и журнал использования. Сверху справа —
