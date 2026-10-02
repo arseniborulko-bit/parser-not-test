@@ -95,10 +95,17 @@ def _current_user() -> dict:
         return {}
 
 
+# Права любого вошедшего сотрудника. Решение владельца 01.10.2026: все сотрудники могут всё — пары,
+# время сбора, запуск сбора; админы (вкладка «Пользователи») — по-прежнему из ADMIN_EMAILS и базы.
+# None — сотрудник только смотрит, пока ему не дадут роль или он не откроет «🔒 Управление».
+EMPLOYEE_ROLE: str | None = access.ROLE_EDITOR
+
+
 def _resolve_access() -> tuple[dict, str | None, str | None]:
-    """(данные пользователя, подтверждённый email, роль); роль None — управлять нельзя."""
+    """(данные пользователя, почта сотрудника, роль). Почта None — это не сотрудник (или вход не
+    выполнен): дальше _require_employee дашборд не пустит. Роль None — управлять нельзя."""
     user = _current_user()
-    email = access.verified_email(user)
+    email = access.employee_email(user)
     if email is None:
         return user, None, None
     admin_emails = access.parse_email_list(_secret("ADMIN_EMAILS"))
@@ -107,8 +114,62 @@ def _resolve_access() -> tuple[dict, str | None, str | None]:
         try:
             db_roles = access.active_user_roles(_connect)
         except access.AccessStoreError as exc:
-            st.warning(f"{exc} Доступ к управлению временно закрыт.")
-    return user, email, access.resolve_role(user, admin_emails, db_roles)
+            if EMPLOYEE_ROLE is None:
+                st.warning(f"{exc} Доступ к управлению временно закрыт.")
+    return user, email, access.resolve_role(user, admin_emails, db_roles) or EMPLOYEE_ROLE
+
+
+@st.cache_resource
+def _login_registry() -> access.LoginRegistry:
+    return access.LoginRegistry()
+
+
+def _record_login_once(user: dict, email: str) -> None:
+    """Пишет вход в bsr_radar.login_log один раз на настоящий вход, а не на каждую перерисовку:
+    в пределах сессии — по session_state, между вкладками и обновлениями страницы — по отпечатку входа
+    (sub + время выдачи входа Google). Ошибка записи вход не ломает: попытка одна, причина — в логе."""
+    key = access.login_key(user, email)
+    session_key = key or f"{email}:session"
+    if st.session_state.get("login_recorded") == session_key:
+        return
+    st.session_state["login_recorded"] = session_key
+    if key is not None and not _login_registry().first_time(key):
+        return
+    access.record_login(_connect, email)
+
+
+def _render_brand() -> None:
+    # Одним блоком, а не двумя отдельными абзацами: иначе Streamlit ставит между ними
+    # собственный отступ и значок с названием расходятся по высоте.
+    st.markdown(
+        '<div class="brand">'
+        '<span class="brand-mark">📡</span>'
+        '<div><p class="brand-title">Competitor BSR</p>'
+        '<p class="brand-subtitle">Мониторинг Amazon-конкурентов и аналитика портфеля</p></div>'
+        '</div>',
+        unsafe_allow_html=True,
+    )
+
+
+def _require_employee(user: dict, email: str | None) -> None:
+    """Проверка входа — до любых данных и действий. Не сотрудник — st.stop(): дальше main() не идёт,
+    ни один запрос к базе за данными дашборда не выполняется. Вход не настроен — дашборд закрыт,
+    а не открыт (решение владельца 01.10.2026)."""
+    if not _auth_configured():
+        _render_brand()
+        st.error("Вход через Google не настроен: в Secrets нет полной секции [auth]. Дашборд закрыт.")
+        st.stop()
+    if not user.get("is_logged_in"):
+        _render_brand()
+        st.info(f"Дашборд доступен только сотрудникам. Войдите рабочим Google-аккаунтом @{access.EMPLOYEE_DOMAIN}.")
+        st.button("Войти через Google", on_click=st.login, key="login_btn", type="primary")
+        st.stop()
+    if email is None:
+        _render_brand()
+        st.error(f"Доступ только для сотрудников {access.EMPLOYEE_DOMAIN}")
+        st.button("Выйти", on_click=st.logout, key="logout_btn")
+        st.stop()
+    _record_login_once(user, email)
 
 
 PROJECT_DIR = Path(__file__).resolve().parent
@@ -1706,26 +1767,20 @@ def _render_usage() -> None:
     st.dataframe(_usage_log_table(rows), use_container_width=True, hide_index=True)
 
 
-def _render_auth_bar(user: dict, email: str | None, role: str | None) -> None:
-    if not _auth_configured():
-        return
-    if not user.get("is_logged_in"):
-        st.button("Войти через Google", on_click=st.login, key="login_btn")
-        return
-    if email is None:
-        note = "Вход выполнен, но Google не подтвердил email — доступ к управлению закрыт."
-    else:
-        status = _ROLE_LABELS.get(role, "нет доступа к управлению — попросите админа добавить этот email")
-        note = f"{email} · {status}"
-    st.markdown(f'<div class="section-note">{escape(note)}</div>', unsafe_allow_html=True)
+def _render_auth_bar(user: dict, email: str, role: str | None) -> None:
+    """Кто вошёл: имя из Google, почта, роль — и «Выйти». Сюда попадает только сотрудник."""
+    name = user.get("name")
+    name_line = f"<strong>{escape(' '.join(name.split()))}</strong><br>" if isinstance(name, str) and name.strip() else ""
+    status = _ROLE_LABELS.get(role, "только просмотр")
+    st.markdown(f'<div class="section-note">{name_line}{escape(email)} · {escape(status)}</div>', unsafe_allow_html=True)
     st.button("Выйти", on_click=st.logout, key="logout_btn")
 
 
 def _render_users_panel(actor_email: str, actor_role: str) -> None:
     _show_flash("users_flash")
     st.markdown(
-        '<p class="section-note">Просмотр открыт всем. Управлять могут только люди из этого списка '
-        "(вход через Google) и админы из секрета ADMIN_EMAILS.</p>",
+        '<p class="section-note">Дашборд открыт всем сотрудникам (вход через Google). Роль из этого списка '
+        "важнее общей роли сотрудника; админы из секрета ADMIN_EMAILS — админы всегда.</p>",
         unsafe_allow_html=True,
     )
     try:
@@ -1776,18 +1831,10 @@ def _render_users_panel(actor_email: str, actor_role: str) -> None:
 def main() -> None:
     _apply_design()
     user, email, role = _resolve_access()
+    _require_employee(user, email)
     left, right = st.columns([3, 2])
     with left:
-        # Одним блоком, а не двумя отдельными абзацами: иначе Streamlit ставит между ними
-        # собственный отступ и значок с названием расходятся по высоте.
-        st.markdown(
-            '<div class="brand">'
-            '<span class="brand-mark">📡</span>'
-            '<div><p class="brand-title">Competitor BSR</p>'
-            '<p class="brand-subtitle">Мониторинг Amazon-конкурентов и аналитика портфеля</p></div>'
-            '</div>',
-            unsafe_allow_html=True,
-        )
+        _render_brand()
     with right:
         _render_auth_bar(user, email, role)
         if role is None and not _management_open():

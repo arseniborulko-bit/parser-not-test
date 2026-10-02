@@ -1,6 +1,7 @@
 """Роли дашборда и список пользователей. Без Streamlit — чтобы правила доступа проверялись тестами.
 
 Вход выполняет Streamlit (Google, OIDC); здесь только решение, что этому человеку можно.
+Дашборд целиком открыт только сотрудникам (employee_email); журнал входов — record_login.
 Админы-«затравка» берутся из секрета ADMIN_EMAILS, остальные — из bsr_radar.dashboard_users.
 Всё неподтверждённое (нет письма, email не подтверждён, нет в списке, база недоступна) — без прав.
 """
@@ -8,14 +9,20 @@
 from __future__ import annotations
 
 import hmac
+import logging
 import re
 import threading
 import time
-from collections import deque
+from collections import OrderedDict, deque
 from typing import Callable, Iterable, List, Mapping, Optional
 
 import dbutil
 from dbutil import Connect
+
+log = logging.getLogger(__name__)
+
+# Дашборд открыт только рабочим Google-аккаунтам этого домена (не секрет: это не пароль, а правило).
+EMPLOYEE_DOMAIN = "maximumstores.online"
 
 ROLE_ADMIN = "admin"
 ROLE_EDITOR = "editor"
@@ -74,6 +81,19 @@ def verified_email(user: Optional[Mapping]) -> Optional[str]:
     if user.get("email_verified") is not True:
         return None
     return normalize_email(user.get("email"))
+
+
+def employee_email(user: Optional[Mapping], domain: str = EMPLOYEE_DOMAIN) -> Optional[str]:
+    """Почта сотрудника или None. Нужно всё сразу: вход выполнен, Google подтвердил почту, адрес ровно на
+    домене компании (поддомен и «…@domain.attacker.com» не подходят) и аккаунт — рабочий аккаунт этого
+    домена (claim hd, его Google ставит только аккаунтам Google Workspace)."""
+    email = verified_email(user)
+    if email is None or corporate_email(email, {domain}) is None:
+        return None
+    hosted = user.get("hd")
+    if not isinstance(hosted, str) or hosted.strip().lower() != domain:
+        return None
+    return email
 
 
 def resolve_role(user: Optional[Mapping], admin_emails: Iterable[str], db_roles: Mapping[str, str]) -> Optional[str]:
@@ -151,6 +171,51 @@ def _run(connect: Connect, sql: str, params: tuple = (), *, fetch: bool = False)
     return dbutil.run_sql(
         connect, sql, params, fetch=fetch, error=AccessStoreError, what="Операция со списком пользователей",
     )
+
+
+def login_key(user: Optional[Mapping], email: str) -> Optional[str]:
+    """Отпечаток одного входа через Google: кто (sub) и когда Google выдал вход (iat). Перерисовка
+    страницы, обновление вкладки и вторая вкладка дают тот же ключ, новый вход после «Выйти» — новый.
+    Сами токены не используются. Нет iat — None: тогда повторы отсеиваются только в пределах сессии."""
+    issued = (user or {}).get("iat")
+    if isinstance(issued, bool) or not isinstance(issued, (int, float, str)) or str(issued).strip() == "":
+        return None
+    subject = (user or {}).get("sub")
+    who = subject if isinstance(subject, str) and subject.strip() else email
+    return f"{who}:{issued}"
+
+
+class LoginRegistry:
+    """Входы, уже записанные этим процессом сервера (общие для всех сессий). Ограничен по размеру:
+    самые старые ключи забываются — в худшем случае после перезапуска вход запишется ещё раз."""
+
+    def __init__(self, max_size: int = 5000):
+        self._seen: OrderedDict = OrderedDict()
+        self._max_size = max_size
+        self._lock = threading.Lock()
+
+    def first_time(self, key: str) -> bool:
+        with self._lock:
+            if key in self._seen:
+                return False
+            self._seen[key] = None
+            while len(self._seen) > self._max_size:
+                self._seen.popitem(last=False)
+            return True
+
+
+def record_login(connect: Connect, email: str) -> bool:
+    """Строка в журнал входов. Ошибка не мешает войти: возвращает False, причина — только в логе сервера
+    и без текста драйвера (в нём бывают параметры подключения)."""
+    clean = normalize_email(email)
+    if clean is None:
+        return False
+    try:
+        _run(connect, "INSERT INTO bsr_radar.login_log (email) VALUES (%s);", (clean,))
+    except AccessStoreError as exc:
+        log.warning("Журнал входов: вход %s не записан — %s", clean, exc)
+        return False
+    return True
 
 
 def active_user_roles(connect: Connect) -> dict:

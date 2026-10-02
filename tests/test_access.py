@@ -389,3 +389,67 @@ def test_only_an_address_on_the_exact_corporate_domain_counts(value, expected):
 
 def test_without_configured_domains_no_address_is_corporate():
     assert access.corporate_email("anna@company.com", frozenset()) is None
+
+
+WORKSPACE = {"is_logged_in": True, "email_verified": True, "hd": "maximumstores.online"}
+
+
+@pytest.mark.parametrize("user, expected", [
+    ({**WORKSPACE, "email": "user@maximumstores.online"}, "user@maximumstores.online"),
+    ({**WORKSPACE, "email": " User@MaximumStores.Online ", "hd": "MaximumStores.online"}, "user@maximumstores.online"),
+    ({**WORKSPACE, "email": "user@gmail.com", "hd": None}, None),
+    ({**WORKSPACE, "email": "user@maximumstores.online.attacker.com"}, None),
+    ({**WORKSPACE, "email": "user@evil-maximumstores.online"}, None),
+    ({**WORKSPACE, "email": "user@mail.maximumstores.online"}, None),
+    ({**WORKSPACE, "email": "user@maximumstores.online@gmail.com"}, None),
+    ({**WORKSPACE, "email": "user@maximumstores.online", "hd": None}, None),
+    ({**WORKSPACE, "email": "user@maximumstores.online", "hd": "attacker.com"}, None),
+    ({**WORKSPACE, "email": "user@maximumstores.online", "email_verified": False}, None),
+    ({**WORKSPACE, "email": "user@maximumstores.online", "email_verified": "true"}, None),
+    ({**WORKSPACE, "email": "user@maximumstores.online", "is_logged_in": False}, None),
+    ({**WORKSPACE, "email": None}, None),
+    ({**WORKSPACE}, None),
+    ({}, None),
+    (None, None),
+])
+def test_only_a_verified_workspace_account_on_the_company_domain_is_an_employee(user, expected):
+    assert access.employee_email(user) == expected
+
+
+def test_login_key_identifies_one_google_login_without_tokens():
+    user = {"sub": "100", "iat": 1_700_000_000, "email": "a@maximumstores.online"}
+    assert access.login_key(user, "a@maximumstores.online") == "100:1700000000"
+    assert access.login_key({**user, "iat": 1_700_000_999}, "a@maximumstores.online") != access.login_key(user, "a@maximumstores.online")
+    assert access.login_key({"iat": 5}, "a@maximumstores.online") == "a@maximumstores.online:5"
+    for missing in ({"sub": "100"}, {"sub": "100", "iat": None}, {"sub": "100", "iat": ""}, {"sub": "100", "iat": True}):
+        assert access.login_key(missing, "a@maximumstores.online") is None
+
+
+def test_the_login_registry_reports_each_key_once_and_stays_bounded():
+    registry = access.LoginRegistry(max_size=2)
+    assert registry.first_time("a") is True
+    assert registry.first_time("a") is False
+    assert registry.first_time("b") is True
+    assert registry.first_time("c") is True
+    assert registry.first_time("a") is True, "самый старый ключ забыт, размер ограничен"
+
+
+def test_record_login_writes_only_the_email_with_a_parameterized_query():
+    db = FakeDb()
+    assert access.record_login(db.connect, " Anna@MaximumStores.online ") is True
+    sql, params = db.executed[0]
+    assert sql == "INSERT INTO bsr_radar.login_log (email) VALUES (%s);"
+    assert params == ("anna@maximumstores.online",)
+    assert db.commits == 1
+
+
+def test_a_failed_login_record_does_not_raise_or_leak_driver_details(caplog):
+    db = FakeDb(fail_execute="password=hunter2 host=db.internal")
+    assert access.record_login(db.connect, "anna@maximumstores.online") is False
+    assert "hunter2" not in caplog.text
+
+
+def test_a_malformed_email_is_not_recorded():
+    db = FakeDb()
+    assert access.record_login(db.connect, "not an email") is False
+    assert db.connects == 0

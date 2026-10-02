@@ -34,6 +34,20 @@ def logged_in(email, verified=True):
     return {"is_logged_in": True, "email": email, "email_verified": verified}
 
 
+EMPLOYEE_EMAIL = "anna@maximumstores.online"
+
+
+def employee(email=EMPLOYEE_EMAIL, **claims):
+    """Вошедший сотрудник: так Google отдаёт рабочий аккаунт Google Workspace (hd — домен компании)."""
+    return {**logged_in(email), "hd": "maximumstores.online", "sub": "100", "iat": 1_700_000_000,
+            "name": "Анна", **claims}
+
+
+# Настоящие _auth_configured/_current_user: фикстура подменяет их «вошедшим сотрудником», а тесты самих
+# этих функций возвращают оригиналы.
+REAL: dict = {}
+
+
 @pytest.fixture
 def dash(monkeypatch):
     import dotenv
@@ -66,6 +80,16 @@ def dash(monkeypatch):
     monkeypatch.setattr(module, "load_competitor_pairs", lambda: pd.DataFrame([PAIR_ROW]))
     monkeypatch.setattr(module, "_now", lambda: NOW)
     monkeypatch.setattr(module, "_admission_preview_cached", lambda scope="all": None)
+    # Дашборд открыт только вошедшему сотруднику: по умолчанию тесты работают от его имени. Роль
+    # сотрудника по умолчанию снята (EMPLOYEE_ROLE = None), чтобы проверять и «🔒 Управление»
+    # (пароль команды, открытое управление); боевую настройку — все сотрудники редакторы — проверяют
+    # тесты в test_dashboard_google_login.py.
+    REAL.setdefault("_auth_configured", module._auth_configured)
+    REAL.setdefault("_current_user", module._current_user)
+    monkeypatch.setattr(module, "_auth_configured", lambda: True)
+    monkeypatch.setattr(module, "_current_user", lambda: employee())
+    monkeypatch.setattr(module, "EMPLOYEE_ROLE", None)
+    monkeypatch.setattr(access, "record_login", lambda connect, email: True)
     monkeypatch.setattr(schedule_store, "load_overview", lambda connect, now: overview())
     yield module
     st.cache_resource.clear()
@@ -109,6 +133,7 @@ FULL_AUTH = {
 def test_auth_is_configured_only_with_every_required_key(monkeypatch, dash):
     import streamlit as st
 
+    monkeypatch.setattr(dash, "_auth_configured", REAL["_auth_configured"])
     monkeypatch.setattr(st, "secrets", {"auth": dict(FULL_AUTH)})
     assert dash._auth_configured() is True
     for missing in FULL_AUTH:
@@ -126,13 +151,28 @@ def test_signed_in_user_data_is_ignored_while_auth_is_not_configured(monkeypatch
 
     class FakeUser:
         def to_dict(self):
-            return logged_in("boss@x.com")
+            return employee()
 
+    monkeypatch.setattr(dash, "_auth_configured", REAL["_auth_configured"])
+    monkeypatch.setattr(dash, "_current_user", REAL["_current_user"])
     monkeypatch.setattr(st, "secrets", {})
     monkeypatch.setattr(st, "user", FakeUser())
     assert dash._current_user() == {}
     monkeypatch.setattr(st, "secrets", {"auth": dict(FULL_AUTH)})
-    assert dash._current_user() == logged_in("boss@x.com")
+    assert dash._current_user() == employee()
+
+
+def test_broken_user_data_counts_as_not_signed_in(monkeypatch, dash):
+    import streamlit as st
+
+    class BrokenUser:
+        def to_dict(self):
+            raise RuntimeError("oauth state lost")
+
+    monkeypatch.setattr(dash, "_current_user", REAL["_current_user"])
+    monkeypatch.setattr(st, "secrets", {"auth": dict(FULL_AUTH)})
+    monkeypatch.setattr(st, "user", BrokenUser())
+    assert dash._current_user() == {}
 
 
 def test_secret_prefers_environment_then_streamlit_secrets_then_empty(monkeypatch, dash):
@@ -147,35 +187,27 @@ def test_secret_prefers_environment_then_streamlit_secrets_then_empty(monkeypatc
     assert dash._secret("ADMIN_EMAILS") == ""
 
 
-def test_without_auth_configuration_dashboard_stays_public_and_read_only(dash):
+def test_signed_in_employee_without_a_role_sees_data_and_their_name(dash):
     at = run()
     assert not at.exception
     assert [t.label for t in at.tabs] == PUBLIC_TABS
-    assert not buttons(at, "login_btn") and not buttons(at, "logout_btn")
-    assert any("Режим просмотра" in info.value for info in at.info)
-
-
-def test_anonymous_visitor_sees_login_button_and_public_tabs(monkeypatch, dash):
-    sign_in(monkeypatch, dash, {"is_logged_in": False})
-    at = run()
-    assert not at.exception
-    assert len(buttons(at, "login_btn")) == 1
-    assert [t.label for t in at.tabs] == PUBLIC_TABS
+    assert "Анна" in page_text(at) and f"{EMPLOYEE_EMAIL} · только просмотр" in page_text(at)
+    assert len(buttons(at, "logout_btn")) == 1 and not buttons(at, "login_btn")
 
 
 def test_editor_from_database_sees_role_but_no_admin_tab(monkeypatch, dash):
-    sign_in(monkeypatch, dash, logged_in("Ed@X.com"))
-    monkeypatch.setattr(access, "active_user_roles", lambda connect: {"ed@x.com": "editor"})
+    sign_in(monkeypatch, dash, employee("Ed@MaximumStores.online"))
+    monkeypatch.setattr(access, "active_user_roles", lambda connect: {"ed@maximumstores.online": "editor"})
     at = run()
     assert not at.exception
-    assert "ed@x.com · редактор" in page_text(at)
+    assert "ed@maximumstores.online · редактор" in page_text(at)
     assert len(buttons(at, "logout_btn")) == 1
     assert [t.label for t in at.tabs] == PUBLIC_TABS
 
 
 def test_admin_from_secret_gets_users_tab_without_database_lookup(monkeypatch, dash):
-    monkeypatch.setenv("ADMIN_EMAILS", "Boss@X.com")
-    sign_in(monkeypatch, dash, logged_in("boss@x.com"))
+    monkeypatch.setenv("ADMIN_EMAILS", "Boss@MaximumStores.online")
+    sign_in(monkeypatch, dash, employee("boss@maximumstores.online"))
 
     def must_not_be_called(connect):
         raise AssertionError("админу из секрета база для роли не нужна")
@@ -185,36 +217,39 @@ def test_admin_from_secret_gets_users_tab_without_database_lookup(monkeypatch, d
     at = run()
     assert not at.exception
     assert [t.label for t in at.tabs] == ADMIN_TABS
-    assert "boss@x.com · админ" in page_text(at)
+    assert "boss@maximumstores.online · админ" in page_text(at)
     assert any("В базе пока никого нет" in info.value for info in at.info)
 
 
-def test_signed_in_stranger_has_no_management_access(monkeypatch, dash):
-    sign_in(monkeypatch, dash, logged_in("stranger@x.com"))
-    monkeypatch.setattr(access, "active_user_roles", lambda connect: {"ed@x.com": "editor"})
+def test_an_outside_admin_from_the_secret_is_still_not_let_in(monkeypatch, dash):
+    """ADMIN_EMAILS не обходит проверку домена: дашборд — только для сотрудников."""
+    monkeypatch.setenv("ADMIN_EMAILS", "boss@x.com")
+    sign_in(monkeypatch, dash, {**logged_in("boss@x.com"), "hd": "x.com"})
+
+    def must_not_be_called(connect):
+        raise AssertionError("не сотрудник не должен доходить до базы")
+
+    monkeypatch.setattr(access, "active_user_roles", must_not_be_called)
     at = run()
-    assert not at.exception
-    assert "нет доступа к управлению" in page_text(at)
-    assert [t.label for t in at.tabs] == PUBLIC_TABS
+    assert not at.exception and not at.tabs
+    assert any("Доступ только для сотрудников maximumstores.online" in e.value for e in at.error)
 
 
 def test_unverified_email_never_gets_access_even_if_listed_as_admin(monkeypatch, dash):
-    monkeypatch.setenv("ADMIN_EMAILS", "boss@x.com")
-    sign_in(monkeypatch, dash, logged_in("boss@x.com", verified=False))
+    monkeypatch.setenv("ADMIN_EMAILS", EMPLOYEE_EMAIL)
+    sign_in(monkeypatch, dash, employee(email_verified=False))
 
     def must_not_be_called(connect):
         raise AssertionError("неподтверждённый email не должен доходить до базы")
 
     monkeypatch.setattr(access, "active_user_roles", must_not_be_called)
     at = run()
-    assert not at.exception
-    assert "не подтвердил email" in page_text(at)
-    assert [t.label for t in at.tabs] == PUBLIC_TABS
+    assert not at.exception and not at.tabs
+    assert any("Доступ только для сотрудников" in e.value for e in at.error)
 
 
 def test_unavailable_user_list_fails_closed_and_page_still_renders(monkeypatch, dash):
-    sign_in(monkeypatch, dash, logged_in("ed@x.com"))
-
+    """Сотрудник без общей роли (EMPLOYEE_ROLE = None) и без доступа к списку — только просмотр."""
     def broken(connect):
         raise access.AccessStoreError("Операция со списком пользователей не подтверждена (OperationalError).")
 
@@ -223,12 +258,12 @@ def test_unavailable_user_list_fails_closed_and_page_still_renders(monkeypatch, 
     assert not at.exception
     assert any("Доступ к управлению временно закрыт" in w.value for w in at.warning)
     assert [t.label for t in at.tabs] == PUBLIC_TABS
-    assert "нет доступа к управлению" in page_text(at)
+    assert "только просмотр" in page_text(at)
 
 
 def test_admin_adds_user_through_the_form_with_admin_rights(monkeypatch, dash):
-    monkeypatch.setenv("ADMIN_EMAILS", "boss@x.com")
-    sign_in(monkeypatch, dash, logged_in("boss@x.com"))
+    monkeypatch.setenv("ADMIN_EMAILS", "boss@maximumstores.online")
+    sign_in(monkeypatch, dash, employee("boss@maximumstores.online"))
     monkeypatch.setattr(access, "list_users", lambda connect: [])
     calls = []
 
@@ -243,13 +278,13 @@ def test_admin_adds_user_through_the_form_with_admin_rights(monkeypatch, dash):
     [b for b in at.button if b.label == "Добавить или обновить"][0].click()
     at.run(timeout=30)
     assert not at.exception
-    assert calls == [("New@X.com", access.ROLE_ADMIN, access.ROLE_ADMIN, "boss@x.com")]
+    assert calls == [("New@X.com", access.ROLE_ADMIN, access.ROLE_ADMIN, "boss@maximumstores.online")]
     assert any("Сохранено: new@x.com" in s.value for s in at.success)
 
 
 def test_form_shows_validation_error_instead_of_crashing(monkeypatch, dash):
-    monkeypatch.setenv("ADMIN_EMAILS", "boss@x.com")
-    sign_in(monkeypatch, dash, logged_in("boss@x.com"))
+    monkeypatch.setenv("ADMIN_EMAILS", "boss@maximumstores.online")
+    sign_in(monkeypatch, dash, employee("boss@maximumstores.online"))
     monkeypatch.setattr(access, "list_users", lambda connect: [])
     at = run()
     at.text_input(key="add_user_email").input("not-an-email")
@@ -493,9 +528,9 @@ def test_schedule_store_outage_is_reported_and_the_rest_of_the_page_works(monkey
 
 
 def test_google_admin_manages_schedule_without_the_team_password(monkeypatch, dash):
-    monkeypatch.setenv("ADMIN_EMAILS", "boss@x.com")
+    monkeypatch.setenv("ADMIN_EMAILS", "boss@maximumstores.online")
     monkeypatch.setattr(access, "list_users", lambda connect: [])
-    sign_in(monkeypatch, dash, logged_in("boss@x.com"))
+    sign_in(monkeypatch, dash, employee("boss@maximumstores.online"))
     at = run()
     assert not at.exception
     assert len(time_inputs(at)) == 1
