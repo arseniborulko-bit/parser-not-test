@@ -1882,11 +1882,6 @@ def _render_journal(journal: LoginJournal | str, email: str, role: str | None) -
 
 def _render_users_panel(actor_email: str, actor_role: str) -> None:
     _show_flash("users_flash")
-    st.markdown(
-        '<p class="section-note">Дашборд открыт всем сотрудникам (вход через Google). Роль из этого списка '
-        "важнее общей роли сотрудника; админы из секрета ADMIN_EMAILS — админы всегда.</p>",
-        unsafe_allow_html=True,
-    )
     try:
         users = access.list_users(_connect)
     except access.AccessStoreError as exc:
