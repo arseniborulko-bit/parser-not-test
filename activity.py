@@ -107,16 +107,19 @@ def time_by_employee(session_table: pd.DataFrame) -> pd.DataFrame:
 
 def sections(rows: Iterable[dict], all_sections: Iterable[str]) -> pd.DataFrame:
     """По разделу: opens — сколько раз открывали, employees — сколько разных людей, share — в скольких
-    процентах страниц (сессий) его открывали хоть раз. Неоткрытые разделы тоже в списке, с нулями:
+    процентах страниц (сессий) его открывали хоть раз, last — когда открывали последний раз (UTC). Неоткрытые разделы тоже в списке, с нулями:
     по ним и видно, что можно убрать."""
     events = pd.DataFrame(list(rows), columns=["session_id", "email", "at", "section"])
     total_sessions = events["session_id"].nunique()
-    opened = events.dropna(subset=["section"])
+    opened = events.dropna(subset=["section"]).assign(at=lambda frame: pd.to_datetime(frame["at"], utc=True))
     stats = opened.groupby("section").agg(
         opens=("section", "count"), employees=("email", "nunique"), pages=("session_id", "nunique"),
+        last=("at", "max"),
     )
     order = list(dict.fromkeys([*all_sections, *stats.index]))
-    result = stats.reindex(order, fill_value=0).rename_axis("section").reset_index()
+    result = stats.reindex(order).rename_axis("section").reset_index()
+    for column in ("opens", "employees", "pages"):
+        result[column] = result[column].fillna(0).astype(int)
     result["share"] = (result["pages"] / total_sessions * 100).round().astype(int) if total_sessions else 0
     result = result.drop(columns="pages")
     return result.sort_values("opens", ascending=False, kind="stable", ignore_index=True)

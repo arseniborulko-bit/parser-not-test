@@ -1,5 +1,5 @@
-"""Журнал использования в дашборде (Streamlit AppTest): что записывается при действиях и что видно в блоке
-«Использование». Настоящей базы нет — usage_log подменён."""
+"""Журнал использования в дашборде (Streamlit AppTest): что записывается при действиях и что видно во вкладке
+«Журнал» (раздел «Кто что меняет»). Настоящей базы нет — usage_log подменён."""
 
 from datetime import datetime, timezone
 
@@ -11,7 +11,7 @@ import pairs_ui
 import schedule_store
 import spot_check
 import usage_log
-from test_dashboard_access import TEAM_PASSWORD, dash, run, unlock  # noqa: F401
+from test_dashboard_access import JOURNAL, TEAM_PASSWORD, dash, run, run_on_tab, unlock  # noqa: F401
 from test_dashboard_collect import DOG_TOKEN, collect_env, fake_scraping_module, run_button, submit_spot  # noqa: F401
 
 
@@ -109,74 +109,70 @@ def test_a_failed_pair_change_is_not_recorded(monkeypatch, recorded):
     assert recorded == []
 
 
-def usage_toggle(at):
-    return [t for t in at.toggle if t.key == "usage_show"]
 
-
-def usage_tables(at):
-    return [d.value for d in at.dataframe if "Кто" in d.value.columns]
+def journal_tables(at):
+    return [d.value for d in at.tabs[-1].dataframe]
 
 
 def forbid_reading(monkeypatch):
     def must_not_be_called(*args, **kwargs):
-        raise AssertionError("журнал читается без включённого переключателя")
+        raise AssertionError("журнал правок читается только на вкладке «Журнал»")
 
     monkeypatch.setattr(usage_log, "log_exists", must_not_be_called)
     monkeypatch.setattr(usage_log, "recent", must_not_be_called)
 
 
-def test_the_usage_block_is_hidden_from_viewers(monkeypatch, dash):  # noqa: F811
-    forbid_reading(monkeypatch)
-    at = run()
-    assert not at.exception and not usage_toggle(at)
-
-
-def test_the_usage_block_does_not_read_the_database_until_switched_on(monkeypatch, dash):  # noqa: F811
+def test_the_usage_toggle_is_gone_from_the_collect_tab(monkeypatch, dash):  # noqa: F811
     forbid_reading(monkeypatch)
     at = unlock(run())
-    assert not at.exception and len(usage_toggle(at)) == 1
-    assert not usage_tables(at)
-
-
-def test_switched_on_it_shows_the_summary_by_person_and_the_log(monkeypatch, dash):  # noqa: F811
-    rows = [
-        {"created_at": datetime(2026, 9, 21, 6, 30, tzinfo=timezone.utc), "user_name": "Аня",
-         "action": "collect_all", "volume": 621, "unit": "ASIN"},
-        {"created_at": datetime(2026, 9, 20, 6, 0, tzinfo=timezone.utc), "user_name": "Аня",
-         "action": "schedule_save", "volume": None, "unit": None},
-        {"created_at": datetime(2026, 9, 20, 5, 0, tzinfo=timezone.utc), "user_name": "Боря",
-         "action": "something_new", "volume": 3, "unit": "пар"},
-    ]
-    monkeypatch.setattr(usage_log, "log_exists", lambda connect: True)
-    monkeypatch.setattr(usage_log, "recent", lambda connect, days: rows)
-    at = unlock(run())
-    usage_toggle(at)[0].set_value(True)
-    at.run(timeout=30)
     assert not at.exception
-    summary, log = usage_tables(at)
-    assert summary.to_dict("records") == [
-        {"Кто": "Аня", "Действий": 2, "Активных дней": 2, "Последнее действие (Киев)": "21.09 09:30"},
-        {"Кто": "Боря", "Действий": 1, "Активных дней": 1, "Последнее действие (Киев)": "20.09 08:00"},
+    assert not [t for t in at.toggle if t.key == "usage_show"]
+
+
+USAGE_ROWS = [
+    {"created_at": datetime(2026, 9, 21, 6, 30, tzinfo=timezone.utc), "user_name": "anna@maximumstores.online",
+     "action": "collect_all", "volume": 621, "unit": "ASIN"},
+    {"created_at": datetime(2026, 9, 20, 6, 0, tzinfo=timezone.utc), "user_name": "anna@maximumstores.online",
+     "action": "schedule_save", "volume": None, "unit": None},
+    {"created_at": datetime(2026, 9, 20, 5, 0, tzinfo=timezone.utc), "user_name": "Боря",
+     "action": "pairs_add", "volume": 3, "unit": "пар"},
+    {"created_at": datetime(2026, 9, 19, 5, 0, tzinfo=timezone.utc), "user_name": "Боря",
+     "action": "pairs_edit", "volume": 1, "unit": "пар"},
+    {"created_at": datetime(2026, 9, 19, 4, 0, tzinfo=timezone.utc), "user_name": "Вера",
+     "action": "export_excel", "volume": 10, "unit": "строк"},
+    {"created_at": datetime(2026, 9, 19, 3, 0, tzinfo=timezone.utc), "user_name": "Вера",
+     "action": "login", "volume": None, "unit": None},
+]
+
+
+def test_the_journal_shows_who_edits_runs_and_exports(monkeypatch, dash):  # noqa: F811
+    monkeypatch.setattr(usage_log, "log_exists", lambda connect: True)
+    monkeypatch.setattr(usage_log, "recent", lambda connect, days: USAGE_ROWS)
+    at = run_on_tab(JOURNAL)
+    assert not at.exception
+    changes = next(t for t in journal_tables(at) if "Правок" in t.columns)
+    assert changes.to_dict("records") == [
+        {"Сотрудник": "Боря", "Правок": 2, "Запусков": 0, "Выгрузок": 0, "Последняя правка": "20.09 08:00"},
+        {"Сотрудник": "anna", "Правок": 1, "Запусков": 1, "Выгрузок": 0, "Последняя правка": "20.09 09:00"},
+        {"Сотрудник": "Вера", "Правок": 0, "Запусков": 0, "Выгрузок": 1, "Последняя правка": "—"},
     ]
-    assert log.to_dict("records") == [
-        {"Когда (Киев)": "21.09 09:30", "Кто": "Аня", "Что": "Сбор: всё", "Объём": "621 ASIN"},
-        {"Когда (Киев)": "20.09 09:00", "Кто": "Аня", "Что": "Время автосбора", "Объём": ""},
-        {"Когда (Киев)": "20.09 08:00", "Кто": "Боря", "Что": "something_new", "Объём": "3 пар"},
-    ]
+    log = next(t for t in journal_tables(at) if "Что" in t.columns)
+    assert log.to_dict("records")[0] == {"Когда (Киев)": "21.09 09:30", "Кто": "anna", "Что": "Сбор: всё",
+                                         "Объём": "621 ASIN"}
 
 
 def test_without_the_table_it_says_the_journal_is_not_connected_yet(monkeypatch, dash):  # noqa: F811
     monkeypatch.setattr(usage_log, "log_exists", lambda connect: False)
-    at = unlock(run())
-    usage_toggle(at)[0].set_value(True)
-    at.run(timeout=30)
+    at = run_on_tab(JOURNAL)
     assert not at.exception and not at.error
-    assert any("ещё не подключён" in c.value for c in at.caption)
+    assert any("ещё не подключён" in i.value for i in at.tabs[-1].info)
 
 
 def test_an_unavailable_database_is_reported_without_crashing(monkeypatch, dash):  # noqa: F811
-    at = unlock(run())
-    usage_toggle(at)[0].set_value(True)
-    at.run(timeout=30)
+    def broken(connect):
+        raise usage_log.UsageLogError("Операция с журналом использования не подтверждена (OperationalError).")
+
+    monkeypatch.setattr(usage_log, "log_exists", broken)
+    at = run_on_tab(JOURNAL)
     assert not at.exception
-    assert any("журналом использования" in e.value for e in at.error)
+    assert any("журналом использования" in e.value for e in at.tabs[-1].error)

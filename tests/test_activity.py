@@ -2,6 +2,8 @@
 
 from datetime import datetime, timedelta, timezone
 
+import pandas as pd
+
 import activity
 from test_access import FakeDb
 
@@ -39,12 +41,15 @@ def test_time_by_employee_sums_averages_and_counts_short_sessions():
 def test_sections_count_opens_people_and_share_and_keep_unopened_ones():
     rows = [event("s1", "a", 0, "Текущее"), event("s1", "a", 1, "Прогноз"), event("s1", "a", 2, "Прогноз"),
             event("s2", "b", 0, "Текущее"), event("s2", "b", 1)]
-    table = activity.sections(rows, ["Текущее", "История", "Прогноз"]).to_dict("records")
-    assert table == [
+    table = activity.sections(rows, ["Текущее", "История", "Прогноз"])
+    assert table.drop(columns="last").to_dict("records") == [
         {"section": "Текущее", "opens": 2, "employees": 2, "share": 100},
         {"section": "Прогноз", "opens": 2, "employees": 1, "share": 50},
         {"section": "История", "opens": 0, "employees": 0, "share": 0},
     ]
+    last = dict(zip(table["section"], table["last"]))
+    assert last["Прогноз"] == T0 + timedelta(minutes=2)
+    assert pd.isna(last["История"])
 
 
 def test_empty_journal_gives_empty_tables():

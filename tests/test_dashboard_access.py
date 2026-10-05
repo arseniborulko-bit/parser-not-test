@@ -95,6 +95,9 @@ def dash(monkeypatch):
     import activity
 
     monkeypatch.setattr(activity, "table_exists", lambda connect: False)
+    import usage_log
+
+    monkeypatch.setattr(usage_log, "log_exists", lambda connect: False)
     monkeypatch.setattr(schedule_store, "load_overview", lambda connect, now: overview())
     yield module
     st.cache_resource.clear()
@@ -716,3 +719,35 @@ def test_the_journal_shows_time_spent_and_sections(monkeypatch, dash, actions):
     sections = next(f for f in frames if "Раздел" in f)
     assert dict(zip(sections["Раздел"], sections["Открытий"]))["📈 Прогноз"] == 1
     assert dict(zip(sections["Раздел"], sections["Открытий"]))["📅 История"] == 0
+
+
+def test_weekly_users_count_distinct_people_from_the_first_week_of_the_journal(dash):
+    rows = [
+        {"email": "anna@maximumstores.online", "logged_in_at": at_kyiv(8, 10)},   # пн 07.09 — неделя 07.09
+        {"email": "anna@maximumstores.online", "logged_in_at": at_kyiv(9, 10)},
+        {"email": "boss@maximumstores.online", "logged_in_at": at_kyiv(10, 10)},
+        {"email": "anna@maximumstores.online", "logged_in_at": at_kyiv(21, 7)},   # пн 21.09 — текущая
+    ]
+    weekly = dash._login_journal(rows, NOW.date()).weekly
+    assert weekly.to_dict("records") == [
+        {"week": "07.09", "users": 2}, {"week": "14.09", "users": 0}, {"week": "21.09 (идёт)", "users": 1},
+    ]
+
+
+def test_weekly_users_go_back_at_most_twelve_weeks(dash):
+    old = [{"email": "a@maximumstores.online", "logged_in_at": at_kyiv(21, 7) - timedelta(weeks=30)}]
+    assert len(dash._login_journal(old, NOW.date()).weekly) == 12
+
+
+def test_the_summary_covers_thirty_days_although_weeks_need_more_history(dash):
+    rows = LOGINS + [{"email": "old@maximumstores.online", "logged_in_at": at_kyiv(21, 7) - timedelta(days=40)}]
+    journal = dash._login_journal(rows, NOW.date())
+    assert "old" not in list(journal.summary["email"]) and "old" not in list(journal.log["email"])
+    assert journal.period_days == 30
+
+
+def test_the_journal_draws_the_weekly_chart(monkeypatch, dash):
+    monkeypatch.setattr(access, "recent_logins", lambda connect, days=30, limit=5000: LOGINS)
+    at = run_on_tab(JOURNAL)
+    assert not at.exception
+    assert "Сотрудников со входом по неделям" in journal_text(at)

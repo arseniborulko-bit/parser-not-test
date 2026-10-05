@@ -16,7 +16,7 @@ import sys
 import time
 import uuid
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from html import escape
 from pathlib import Path
 from typing import Iterable
@@ -1729,48 +1729,16 @@ _USAGE_ACTION_LABELS = {
 }
 
 
-def _usage_summary_table(rows: list[dict]) -> pd.DataFrame:
-    return pd.DataFrame([
-        {
-            "Кто": entry["user_name"],
-            "Действий": entry["actions"],
-            "Активных дней": entry["days"],
-            "Последнее действие (Киев)": entry["last_at"].astimezone(schedule_store.TZ).strftime("%d.%m %H:%M"),
-        }
-        for entry in usage_log.summarize(rows)
-    ])
-
-
 def _usage_log_table(rows: list[dict]) -> pd.DataFrame:
     return pd.DataFrame([
         {
             "Когда (Киев)": row["created_at"].astimezone(schedule_store.TZ).strftime("%d.%m %H:%M"),
-            "Кто": row["user_name"],
+            "Кто": _short_name(row["user_name"]),
             "Что": _USAGE_ACTION_LABELS.get(row["action"], row["action"]),
             "Объём": f"{row['volume']} {row['unit'] or ''}".strip() if row["volume"] is not None else "",
         }
         for row in rows[:_USAGE_LOG_ROWS]
     ])
-
-
-def _render_usage() -> None:
-    """Кто и как пользуется дашбордом. Читает базу только при включённом переключателе: журнал нужен
-    изредка, а лишний запрос на каждую перерисовку страницы — нет."""
-    if not st.toggle(f"📊 Использование за {_USAGE_DAYS} дней", key="usage_show"):
-        return
-    try:
-        if not usage_log.log_exists(_connect):
-            st.caption("Журнал использования ещё не подключён: действия выполняются, но пока не записываются.")
-            return
-        rows = usage_log.recent(_connect, _USAGE_DAYS)
-    except usage_log.UsageLogError as exc:
-        st.error(str(exc))
-        return
-    if not rows:
-        st.caption("Действий пока не было.")
-        return
-    st.dataframe(_usage_summary_table(rows), use_container_width=True, hide_index=True)
-    st.dataframe(_usage_log_table(rows), use_container_width=True, hide_index=True)
 
 
 def _render_auth_bar(user: dict, email: str, role: str | None) -> None:
@@ -1783,6 +1751,7 @@ def _render_auth_bar(user: dict, email: str, role: str | None) -> None:
 
 
 _JOURNAL_DAYS = 30
+_JOURNAL_WEEKS = 12
 
 
 @dataclass
@@ -1791,6 +1760,7 @@ class LoginJournal:
     summary: pd.DataFrame
     log: pd.DataFrame
     period_days: int
+    weekly: pd.DataFrame | None = None
 
 
 def _login_journal(rows: list, today, days: int = _JOURNAL_DAYS) -> LoginJournal:
@@ -1799,12 +1769,17 @@ def _login_journal(rows: list, today, days: int = _JOURNAL_DAYS) -> LoginJournal
     «Активность» — в сколько из дней периода он заходил хотя бы раз."""
     log = pd.DataFrame(rows, columns=["email", "logged_in_at"])
     if log.empty:
-        return LoginJournal(pd.DataFrame(), log, 0)
-    # Домен у всех один и тот же — без него таблицы читаются легче и помещаются в узкую панель.
-    log["email"] = log["email"].str.removesuffix(f"@{access.EMPLOYEE_DOMAIN}")
+        return LoginJournal(pd.DataFrame(), log, 0, pd.DataFrame())
+    # Домен у всех один и тот же — без него таблицы читаются легче.
+    log["email"] = log["email"].map(_short_name)
     log["logged_in_at"] = pd.to_datetime(log["logged_in_at"], utc=True).dt.tz_convert(schedule_store.TZ)
     log["day"] = log["logged_in_at"].dt.date
+    weekly = _weekly_users(log, today)
     period_days = max(1, min(days, (today - log["day"].min()).days + 1))
+    # Неделям нужна история длиннее периода; сводка и список — только за последние days дней.
+    log = log[log["day"] > today - timedelta(days=days)].reset_index(drop=True)
+    if log.empty:
+        return LoginJournal(pd.DataFrame(), log.drop(columns="day"), period_days, weekly)
     summary = log.groupby("email").agg(
         logins=("logged_in_at", "count"), active_days=("day", "nunique"), last=("logged_in_at", "max"),
     ).reset_index()
@@ -1814,13 +1789,37 @@ def _login_journal(rows: list, today, days: int = _JOURNAL_DAYS) -> LoginJournal
     summary["last"] = summary["last"].dt.strftime("%d.%m %H:%M")
     log = log.drop(columns="day").sort_values("logged_in_at", ascending=False, ignore_index=True)
     log["logged_in_at"] = log["logged_in_at"].dt.strftime("%d.%m.%Y %H:%M")
-    return LoginJournal(summary, log, period_days)
+    return LoginJournal(summary, log, period_days, weekly)
+
+
+def _weekly_users(log: pd.DataFrame, today, weeks: int = _JOURNAL_WEEKS) -> pd.DataFrame:
+    """Сколько разных сотрудников входило за каждую неделю (с понедельника, по Киеву). Начинается с
+    недели первого записанного входа — пустые недели до начала журнала выглядели бы как «никого»."""
+    week_of = lambda day: day - timedelta(days=day.weekday())  # noqa: E731
+    this_week = week_of(today)
+    first = max(min(week_of(day) for day in log["day"]), this_week - timedelta(weeks=weeks - 1))
+    starts = [first + timedelta(weeks=i) for i in range((this_week - first).days // 7 + 1)]
+    users = log.assign(week=log["day"].map(week_of)).groupby("week")["email"].nunique()
+    return pd.DataFrame({
+        "week": [start.strftime("%d.%m") + (" (идёт)" if start == this_week else "") for start in starts],
+        "users": [int(users.get(start, 0)) for start in starts],
+    })
+
+
+def _weekly_users_chart(weekly: pd.DataFrame) -> alt.Chart:
+    return alt.Chart(weekly).mark_bar(
+        color="#168ed0", cornerRadiusTopLeft=4, cornerRadiusTopRight=4, size=26,
+    ).encode(
+        x=alt.X("week:O", sort=list(weekly["week"]), title="Неделя с", axis=alt.Axis(labelAngle=0)),
+        y=alt.Y("users:Q", title="Сотрудников", axis=alt.Axis(tickMinStep=1, format="d")),
+        tooltip=[alt.Tooltip("week:O", title="Неделя с"), alt.Tooltip("users:Q", title="Сотрудников")],
+    ).properties(height=220)
 
 
 def _load_login_journal() -> LoginJournal | str:
     """Журнал или текст ошибки: недоступный журнал не должен ломать дашборд."""
     try:
-        rows = access.recent_logins(_connect, _JOURNAL_DAYS)
+        rows = access.recent_logins(_connect, _JOURNAL_WEEKS * 7)
     except access.AccessStoreError as exc:
         return str(exc)
     return _login_journal(rows, _now().date())
@@ -1910,21 +1909,93 @@ def _render_sections(rows: list) -> None:
         unsafe_allow_html=True,
     )
     table = activity.sections(rows, TAB_TITLES)
+    table["last"] = [
+        moment.tz_convert(schedule_store.TZ).strftime("%d.%m %H:%M") if pd.notna(moment) else "—"
+        for moment in table["last"]
+    ]
     st.dataframe(
         table.rename(columns={
             "section": "Раздел", "opens": "Открытий", "employees": "Сотрудников", "share": "В % сессий",
+            "last": "Последний раз",
         }),
         use_container_width=True, hide_index=True,
         column_config={"В % сессий": st.column_config.ProgressColumn(format="%d%%", min_value=0, max_value=100)},
     )
 
 
-def _render_journal(journal: LoginJournal | str, actions: list | str | None, email: str, role: str | None) -> None:
+# Что считается правкой, а что запуском или выгрузкой. Вход по паролю команды — не правка, в счёт не идёт.
+_USAGE_KINDS = {
+    "edits": {"schedule_save", "pairs_add", "pairs_enable", "pairs_disable", "pairs_edit",
+              "asins_add", "asins_edit", "asins_disable"},
+    "runs": {"collect_all", "collect_ours", "collect_competitors", "spot_check"},
+    "exports": {"export_csv", "export_excel"},
+}
+
+
+def _changes_by_person(rows: list[dict]) -> pd.DataFrame:
+    """По сотруднику: правок, запусков, выгрузок и когда была последняя правка. Больше правок — выше."""
+    people: dict[str, dict] = {}
+    for row in rows:
+        kind = next((name for name, actions in _USAGE_KINDS.items() if row["action"] in actions), None)
+        if kind is None:
+            continue
+        entry = people.setdefault(_short_name(row["user_name"]),
+                                  {"edits": 0, "runs": 0, "exports": 0, "last_edit": None})
+        entry[kind] += 1
+        if kind == "edits" and (entry["last_edit"] is None or row["created_at"] > entry["last_edit"]):
+            entry["last_edit"] = row["created_at"]
+    ordered = sorted(people.items(), key=lambda item: (-item[1]["edits"], -item[1]["runs"], item[0]))
+    return pd.DataFrame([
+        {
+            "Сотрудник": name, "Правок": entry["edits"], "Запусков": entry["runs"], "Выгрузок": entry["exports"],
+            "Последняя правка": entry["last_edit"].astimezone(schedule_store.TZ).strftime("%d.%m %H:%M")
+            if entry["last_edit"] else "—",
+        }
+        for name, entry in ordered
+    ], columns=["Сотрудник", "Правок", "Запусков", "Выгрузок", "Последняя правка"])
+
+
+def _load_usage() -> list | str | None:
+    """Журнал действий-правок (public.usage_logs); None — таблицы ещё нет; текст — ошибка."""
+    try:
+        if not usage_log.log_exists(_connect):
+            return None
+        return usage_log.recent(_connect, _JOURNAL_DAYS)
+    except usage_log.UsageLogError as exc:
+        return str(exc)
+
+
+def _render_changes(rows: list | str | None) -> None:
+    st.markdown('<p class="section-title">Кто что меняет</p>', unsafe_allow_html=True)
+    st.markdown(
+        f'<p class="section-note">За {_JOURNAL_DAYS} дн. Правки — пары, ASIN, время автосбора; запуски — '
+        "сбор и точечная проверка (тратят лимит ScrapingDog); выгрузки — CSV и Excel. Просмотры сюда не входят.</p>",
+        unsafe_allow_html=True,
+    )
+    if rows is None:
+        st.info("Журнал правок ещё не подключён: действия выполняются, но пока не записываются.")
+        return
+    if isinstance(rows, str):
+        st.error(rows)
+        return
+    table = _changes_by_person(rows)
+    if table.empty:
+        st.info("Правок и запусков пока не было.")
+        return
+    st.dataframe(table, use_container_width=True, hide_index=True)
+    with st.expander("Все действия по времени"):
+        st.dataframe(_usage_log_table(rows), use_container_width=True, hide_index=True)
+
+
+def _render_journal(journal: LoginJournal | str, actions: list | str | None, email: str, role: str | None,
+                    usage: list | str | None = None) -> None:
     """Вкладка «Журнал»: входы, время и разделы видят все сотрудники, управление ролями — только админ."""
     if isinstance(journal, str):
         st.error(journal)
-    elif journal.summary.empty:
+    elif journal.summary.empty and (journal.weekly is None or journal.weekly.empty):
         st.info("Входов пока не записано.")
+    elif journal.summary.empty:
+        st.info(f"За {journal.period_days} дн. входов не было.")
     else:
         st.markdown('<p class="section-title">Кто пользуется дашбордом</p>', unsafe_allow_html=True)
         st.markdown(
@@ -1945,6 +2016,10 @@ def _render_journal(journal: LoginJournal | str, actions: list | str | None, ema
             },
         )
 
+    if isinstance(journal, LoginJournal) and journal.weekly is not None and not journal.weekly.empty:
+        st.markdown('<p class="section-title">Сотрудников со входом по неделям</p>', unsafe_allow_html=True)
+        st.altair_chart(_weekly_users_chart(journal.weekly), use_container_width=True)
+
     if actions is None:
         st.info("Время в дашборде и открытые разделы начнут считаться после подключения таблицы "
                 "bsr_radar.session_events (миграция 014).")
@@ -1953,6 +2028,7 @@ def _render_journal(journal: LoginJournal | str, actions: list | str | None, ema
     else:
         _render_time_spent(actions)
         _render_sections(actions)
+    _render_changes(usage)
 
     if isinstance(journal, LoginJournal) and not journal.log.empty:
         st.markdown('<p class="section-title">Все входы</p>', unsafe_allow_html=True)
@@ -2095,8 +2171,6 @@ def main() -> None:
         )
         if overview is not None:
             _render_recent_runs(overview, can_edit)
-        if can_edit:
-            _render_usage()
 
     with how_tab:
         _render_how_it_works(pairs, shown_history)
@@ -2104,7 +2178,7 @@ def main() -> None:
     with journal_tab:
         # Журнал читает базу, поэтому только когда вкладка открыта, а не при каждом действии.
         if journal_tab.open:
-            _render_journal(_load_login_journal(), _load_activity(), email, role)
+            _render_journal(_load_login_journal(), _load_activity(), email, role, _load_usage())
 
     download_left, download_right, _ = st.columns([1, 1, 4])
     with download_left:
