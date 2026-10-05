@@ -463,3 +463,30 @@ def test_recent_logins_reads_a_period_newest_first_with_a_limit():
     sql, params = db.executed[0]
     assert "FROM bsr_radar.login_log" in sql and "ORDER BY logged_in_at DESC" in sql
     assert "make_interval(days => %s)" in sql and params == (30, 50)
+
+
+def test_only_an_admin_can_change_the_allowed_list_and_only_with_a_work_address():
+    db = FakeDb()
+    with pytest.raises(access.AccessDenied):
+        access.add_allowed(db.connect, "a@maximumstores.online", actor_role=access.ROLE_EDITOR, actor_email="e@x")
+    with pytest.raises(access.AccessDenied):
+        access.remove_allowed(db.connect, "a@maximumstores.online", actor_role=None)
+    for bad in ("a@gmail.com", "a@maximumstores.online.evil.com", "not-an-email"):
+        with pytest.raises(ValueError):
+            access.add_allowed(db.connect, bad, actor_role=access.ROLE_ADMIN, actor_email="boss@x")
+    assert db.executed == []
+
+
+def test_add_allowed_normalizes_and_ignores_duplicates():
+    db = FakeDb()
+    assert access.add_allowed(db.connect, " V.Tereshyn@MaximumStores.online ", actor_role=access.ROLE_ADMIN,
+                              actor_email="boss@x") == "v.tereshyn@maximumstores.online"
+    sql, params = db.executed[0]
+    assert "bsr_radar.allowed_users" in sql and "ON CONFLICT (email) DO NOTHING" in sql
+    assert params == ("v.tereshyn@maximumstores.online", "boss@x")
+
+
+def test_removing_an_address_that_is_not_listed_is_reported():
+    with pytest.raises(ValueError):
+        access.remove_allowed(FakeDb(rowcount=0).connect, "a@maximumstores.online", actor_role=access.ROLE_ADMIN)
+    access.remove_allowed(FakeDb(rowcount=1).connect, "a@maximumstores.online", actor_role=access.ROLE_ADMIN)

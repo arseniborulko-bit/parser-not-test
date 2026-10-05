@@ -98,6 +98,7 @@ def dash(monkeypatch):
     import usage_log
 
     monkeypatch.setattr(usage_log, "log_exists", lambda connect: False)
+    monkeypatch.setattr(access, "allowed_table_exists", lambda connect: False)
     monkeypatch.setattr(schedule_store, "load_overview", lambda connect, now: overview())
     yield module
     st.cache_resource.clear()
@@ -752,3 +753,73 @@ def test_the_journal_draws_the_weekly_chart(monkeypatch, dash):
     at = run_on_tab(JOURNAL)
     assert not at.exception
     assert "Сотрудников со входом по неделям" in journal_text(at)
+
+
+# Scorecard: «сейчас» — NOW (21.09 08:00 Киев). Допущены трое; за 7 дней зашли anna и boss,
+# неделей раньше — только anna; чужой (не из списка) в процент не попадает.
+ALLOWED = ["anna@maximumstores.online", "boss@maximumstores.online", "carl@maximumstores.online"]
+SCORE_LOGINS = [
+    {"email": "anna@maximumstores.online", "logged_in_at": at_kyiv(20, 9)},
+    {"email": "Boss@maximumstores.online", "logged_in_at": at_kyiv(15, 9)},
+    {"email": "stranger@maximumstores.online", "logged_in_at": at_kyiv(19, 9)},
+    {"email": "anna@maximumstores.online", "logged_in_at": at_kyiv(10, 9)},
+]
+
+
+def test_scorecard_counts_only_allowed_people_over_the_last_seven_days(dash):
+    card = dash._scorecard(SCORE_LOGINS, ALLOWED, NOW)
+    assert (card.seen, card.total, card.pct, card.last_pct, card.delta) == (2, 3, 67, 33, 34)
+    assert (card.start, card.end) == ("15.09", "21.09")
+    assert card.by_dates.to_dict("records") == [
+        {"date": "14.09", "users": 1, "pct": 33},
+        {"date": "21.09 (сейчас)", "users": 2, "pct": 67},
+    ]
+
+
+def test_without_allowed_people_there_is_no_scorecard(dash):
+    assert dash._scorecard(SCORE_LOGINS, [], NOW) is None
+
+
+def test_the_journal_shows_the_scorecard_card_with_a_green_badge(monkeypatch, dash):
+    monkeypatch.setattr(access, "recent_logins", lambda connect, days=30, limit=5000: SCORE_LOGINS)
+    monkeypatch.setattr(access, "allowed_table_exists", lambda connect: True)
+    monkeypatch.setattr(access, "list_allowed", lambda connect: ALLOWED)
+    at = run_on_tab(JOURNAL)
+    assert not at.exception
+    text = journal_text(at)
+    assert "Для Scorecard — эта неделя" in text and "67%" in text and "+34%" in text and "#166534" in text
+    assert "2 из 3 допущенных зашли" in text and "прошлая неделя — 33%" in text
+    assert "% для Scorecard по датам" in text
+    assert "Допущенные для Scorecard" not in text  # список ведёт только админ
+
+
+def test_a_drop_gets_a_red_badge(monkeypatch, dash):
+    monkeypatch.setattr(access, "recent_logins", lambda connect, days=30, limit=5000: [SCORE_LOGINS[-1]])
+    monkeypatch.setattr(access, "allowed_table_exists", lambda connect: True)
+    monkeypatch.setattr(access, "list_allowed", lambda connect: ALLOWED)
+    text = journal_text(run_on_tab(JOURNAL))
+    assert "-33%" in text and "#991b1b" in text
+
+
+def test_without_the_allowed_table_there_is_no_card_for_employees(dash):
+    text = journal_text(run_on_tab(JOURNAL))
+    assert "Scorecard" not in text
+
+
+def test_admin_manages_the_allowed_list(monkeypatch, dash):
+    monkeypatch.setenv("ADMIN_EMAILS", "boss@maximumstores.online")
+    sign_in(monkeypatch, dash, employee("boss@maximumstores.online"))
+    monkeypatch.setattr(access, "list_users", lambda connect: [])
+    monkeypatch.setattr(access, "allowed_table_exists", lambda connect: True)
+    stored = ["anna@maximumstores.online"]
+    monkeypatch.setattr(access, "list_allowed", lambda connect: list(stored))
+    added = []
+    monkeypatch.setattr(access, "add_allowed",
+                        lambda connect, email, actor_role, actor_email: added.append((email, actor_role, actor_email)) or email)
+    at = run_on_tab(JOURNAL)
+    assert "Допущенные для Scorecard" in journal_text(at)
+    at.text_input(key="allowed_add_email").input("v.tereshyn@maximumstores.online")
+    next(b for b in at.button if b.label == "Добавить").click()
+    at.run()
+    assert not at.exception
+    assert added == [("v.tereshyn@maximumstores.online", "admin", "boss@maximumstores.online")]

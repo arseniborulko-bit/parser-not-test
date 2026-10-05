@@ -233,6 +233,37 @@ def recent_logins(connect: Connect, days: int = 30, limit: int = 5000) -> List[d
     return [{"email": email, "logged_in_at": logged_in_at} for email, logged_in_at in rows]
 
 
+def allowed_table_exists(connect: Connect) -> bool:
+    """Список допущенных для Scorecard необязателен: пока миграции 015 нет, карточки просто нет."""
+    return bool(_run(connect, "SELECT to_regclass('bsr_radar.allowed_users') IS NOT NULL;", fetch=True)[0][0])
+
+
+def list_allowed(connect: Connect) -> List[str]:
+    rows = _run(connect, "SELECT email FROM bsr_radar.allowed_users ORDER BY email;", fetch=True)
+    return [email for (email,) in rows]
+
+
+def add_allowed(connect: Connect, email: str, *, actor_role: Optional[str], actor_email: str) -> str:
+    """Допустить для Scorecard. Только рабочий адрес: другие на дашборд не входят и в процент не попадут."""
+    require_role(actor_role, ROLE_ADMIN)
+    clean = corporate_email(email, {EMPLOYEE_DOMAIN})
+    if clean is None:
+        raise ValueError(f"Нужен рабочий адрес @{EMPLOYEE_DOMAIN}.")
+    _run(
+        connect,
+        "INSERT INTO bsr_radar.allowed_users (email, added_by) VALUES (%s, %s) ON CONFLICT (email) DO NOTHING;",
+        (clean, actor_email),
+    )
+    return clean
+
+
+def remove_allowed(connect: Connect, email: str, *, actor_role: Optional[str]) -> None:
+    require_role(actor_role, ROLE_ADMIN)
+    clean = normalize_email(email)
+    if clean is None or _run(connect, "DELETE FROM bsr_radar.allowed_users WHERE email = %s;", (clean,)) != 1:
+        raise ValueError("Такого адреса в списке нет.")
+
+
 def active_user_roles(connect: Connect) -> dict:
     rows = _run(connect, "SELECT email, role FROM bsr_radar.dashboard_users WHERE active;", fetch=True)
     return {email: role for email, role in rows if role in _RANK}

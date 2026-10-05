@@ -241,6 +241,15 @@ def _apply_design() -> None:
         две строки) Streamlit растягивает все карточки в ряду по высоте самой высокой — и у
         остальных внизу появлялось пустое место. Убираем фиксированную высоту и padding, чтобы
         карточки были размером с содержимое, а не с самую длинную деталь. */
+        .scorecard { display: flex; justify-content: space-between; align-items: center; gap: 1rem; flex-wrap: wrap;
+            background: #ffffff; border: 1px solid #e5e7eb; border-radius: 15px; padding: 1.2rem 1.4rem; margin: .4rem 0 1rem; }
+        .scorecard p { margin: 0; }
+        .scorecard-label { color: #64748b; font-size: .88rem; margin-bottom: .35rem !important; }
+        .scorecard-main { display: flex; align-items: baseline; gap: .6rem; }
+        .scorecard-value { font-size: 2.5rem; font-weight: 800; line-height: 1; color: #111827; }
+        .scorecard-badge { font-size: .82rem; font-weight: 650; padding: .15rem .5rem; border-radius: 6px; }
+        .scorecard-side { text-align: right; color: #334155; font-size: .9rem; }
+        .scorecard-muted { color: #94a3b8; font-size: .8rem; margin-top: .25rem !important; }
         .metric-card { background: #ffffff; border: 1px solid #e5e7eb; border-radius: 15px; padding: .7rem .9rem; box-shadow: 0 1px 2px rgba(15,23,42,.025); }
         .metric-label { color: #64748b; font-size: .7rem; letter-spacing: .065em; text-transform: uppercase; }
         .metric-value { color: #111827; font-size: 1.5rem; font-weight: 800; line-height: 1.2; margin: .15rem 0; }
@@ -1816,13 +1825,141 @@ def _weekly_users_chart(weekly: pd.DataFrame) -> alt.Chart:
     ).properties(height=220)
 
 
-def _load_login_journal() -> LoginJournal | str:
-    """Журнал или текст ошибки: недоступный журнал не должен ломать дашборд."""
+def _load_logins() -> list | str:
+    """Входы за _JOURNAL_WEEKS недель или текст ошибки: недоступный журнал не должен ломать дашборд."""
     try:
-        rows = access.recent_logins(_connect, _JOURNAL_WEEKS * 7)
+        return access.recent_logins(_connect, _JOURNAL_WEEKS * 7)
     except access.AccessStoreError as exc:
         return str(exc)
-    return _login_journal(rows, _now().date())
+
+
+def _load_allowed() -> list | str | None:
+    """Допущенные для Scorecard; None — таблицы ещё нет (миграция 015); текст — ошибка."""
+    try:
+        if not access.allowed_table_exists(_connect):
+            return None
+        return access.list_allowed(_connect)
+    except access.AccessStoreError as exc:
+        return str(exc)
+
+
+@dataclass
+class Scorecard:
+    """Доля допущенных, заходивших за последние 7 дней, и то же неделей раньше. by_dates — та же доля
+    с шагом в неделю назад (старые сверху), для таблицы «% для Scorecard по датам»."""
+    pct: int
+    last_pct: int
+    seen: int
+    total: int
+    start: str
+    end: str
+    by_dates: pd.DataFrame
+
+    @property
+    def delta(self) -> int:
+        return self.pct - self.last_pct
+
+
+def _scorecard(rows: list, allowed: Iterable[str], now: datetime, weeks: int = _JOURNAL_WEEKS) -> Scorecard | None:
+    """% = уникальные допущенные, входившие за 7 дней до момента / всего допущенных × 100. Считаются только
+    люди из списка: зашедший не из списка не поднимает процент выше 100."""
+    allowed = {email for email in (access.normalize_email(item) for item in allowed) if email}
+    if not allowed:
+        return None
+    logins = [
+        (access.normalize_email(row["email"]), pd.Timestamp(row["logged_in_at"]).tz_convert("UTC"))
+        for row in rows
+    ]
+    now = pd.Timestamp(now).tz_convert("UTC")
+    week = pd.Timedelta(days=7)
+
+    def seen_by(end) -> int:
+        return len({email for email, at in logins if email in allowed and end - week < at <= end})
+
+    def percent(count: int) -> int:
+        return round(100 * count / len(allowed))
+
+    first = min((at for _, at in logins), default=now)
+    dates = []
+    for k in range(weeks):
+        end = now - k * week
+        if k and end <= first:
+            break
+        count = seen_by(end)
+        dates.append({
+            "date": end.tz_convert(schedule_store.TZ).strftime("%d.%m") + (" (сейчас)" if k == 0 else ""),
+            "users": count, "pct": percent(count),
+        })
+    this_week, last_week = seen_by(now), seen_by(now - week)
+    kyiv = now.tz_convert(schedule_store.TZ)
+    return Scorecard(
+        pct=percent(this_week), last_pct=percent(last_week), seen=this_week, total=len(allowed),
+        start=(kyiv - pd.Timedelta(days=6)).strftime("%d.%m"), end=kyiv.strftime("%d.%m"),
+        by_dates=pd.DataFrame(dates[::-1], columns=["date", "users", "pct"]),
+    )
+
+
+def _render_scorecard_card(card: Scorecard) -> None:
+    if card.delta > 0:
+        badge = ("#dcfce7", "#166534", f"+{card.delta}%")
+    elif card.delta < 0:
+        badge = ("#fee2e2", "#991b1b", f"{card.delta}%")
+    else:
+        badge = ("#eef0f4", "#475569", "0%")
+    st.markdown(
+        '<div class="scorecard">'
+        '<div><p class="scorecard-label">Для Scorecard — эта неделя</p>'
+        f'<div class="scorecard-main"><span class="scorecard-value">{card.pct}%</span>'
+        f'<span class="scorecard-badge" style="background:{badge[0]};color:{badge[1]}">{badge[2]}</span></div></div>'
+        f'<div class="scorecard-side"><p>{card.seen} из {card.total} допущенных зашли</p>'
+        f'<p class="scorecard-muted">неделя {card.start} – {card.end} · прошлая неделя — {card.last_pct}%</p></div>'
+        '</div>',
+        unsafe_allow_html=True,
+    )
+
+
+def _render_scorecard_dates(card: Scorecard) -> None:
+    st.markdown('<p class="section-title">% для Scorecard по датам</p>', unsafe_allow_html=True)
+    st.dataframe(
+        card.by_dates.rename(columns={"date": "Дата колонки Scorecard", "users": "Зашли", "pct": "%"}),
+        use_container_width=True, hide_index=True,
+        column_config={"%": st.column_config.ProgressColumn(format="%d%%", min_value=0, max_value=100)},
+    )
+
+
+def _render_allowed_admin(allowed: list | str | None, actor_email: str, actor_role: str) -> None:
+    """Список допущенных для Scorecard — только админ. Вход на сайт он не ограничивает."""
+    st.markdown('<p class="section-title">Допущенные для Scorecard</p>', unsafe_allow_html=True)
+    if allowed is None:
+        st.caption("Таблица bsr_radar.allowed_users ещё не создана (миграция 015).")
+        return
+    if isinstance(allowed, str):
+        st.error(allowed)
+        return
+    _show_flash("allowed_flash")
+    if allowed:
+        st.dataframe(pd.DataFrame({"Почта": allowed}), use_container_width=True, hide_index=True)
+    with st.form("allowed_add_form", clear_on_submit=True):
+        new_email = st.text_input(f"Добавить (рабочий адрес @{access.EMPLOYEE_DOMAIN})", key="allowed_add_email")
+        if st.form_submit_button("Добавить"):
+            try:
+                saved = access.add_allowed(_connect, new_email, actor_role=actor_role, actor_email=actor_email)
+            except (ValueError, access.AccessDenied, access.AccessStoreError) as exc:
+                st.error(str(exc))
+            else:
+                _set_flash("allowed_flash", "success", f"Добавлен: {saved}")
+                st.rerun()
+    if allowed:
+        with st.form("allowed_remove_form"):
+            target = st.selectbox("Убрать из списка", allowed, key="allowed_remove_email")
+            if st.form_submit_button("Убрать"):
+                try:
+                    access.remove_allowed(_connect, target, actor_role=actor_role)
+                except (ValueError, access.AccessDenied, access.AccessStoreError) as exc:
+                    st.error(str(exc))
+                else:
+                    _set_flash("allowed_flash", "success", f"Убран: {target}")
+                    st.rerun()
 
 
 TAB_TITLES = ["📋 Текущее состояние", "📅 История", "📈 Прогноз", "🥊 Пары конкурентов",
@@ -1982,9 +2119,21 @@ def _render_changes(rows: list | str | None) -> None:
         st.dataframe(_usage_log_table(rows), use_container_width=True, hide_index=True)
 
 
+def _render_journal_tab(email: str, role: str | None) -> None:
+    logins, allowed = _load_logins(), _load_allowed()
+    journal = logins if isinstance(logins, str) else _login_journal(logins, _now().date())
+    card = _scorecard(logins, allowed, _now()) if isinstance(logins, list) and isinstance(allowed, list) else None
+    if isinstance(allowed, str) and role != access.ROLE_ADMIN:
+        allowed = None  # ошибку списка допущенных видит админ в своём разделе; остальным она ни к чему
+    _render_journal(journal, _load_activity(), email, role, _load_usage(), card, allowed)
+
+
 def _render_journal(journal: LoginJournal | str, actions: list | str | None, email: str, role: str | None,
-                    usage: list | str | None = None) -> None:
+                    usage: list | str | None = None, card: Scorecard | None = None,
+                    allowed: list | str | None = None) -> None:
     """Вкладка «Журнал»: входы, время и разделы видят все сотрудники, управление ролями — только админ."""
+    if card is not None:
+        _render_scorecard_card(card)
     if isinstance(journal, str):
         st.error(journal)
     elif journal.summary.empty and (journal.weekly is None or journal.weekly.empty):
@@ -2008,6 +2157,8 @@ def _render_journal(journal: LoginJournal | str, actions: list | str | None, ema
     if isinstance(journal, LoginJournal) and journal.weekly is not None and not journal.weekly.empty:
         st.markdown('<p class="section-title">Сотрудников со входом по неделям</p>', unsafe_allow_html=True)
         st.altair_chart(_weekly_users_chart(journal.weekly), use_container_width=True)
+    if card is not None:
+        _render_scorecard_dates(card)
 
     # actions is None — таблицы журнала действий (миграция 014) ещё нет: разделы просто не показываются.
     if isinstance(actions, str):
@@ -2024,6 +2175,7 @@ def _render_journal(journal: LoginJournal | str, actions: list | str | None, ema
             use_container_width=True, hide_index=True,
         )
     if role == access.ROLE_ADMIN:
+        _render_allowed_admin(allowed, email, role)
         st.markdown('<p class="section-title">Пользователи и роли</p>', unsafe_allow_html=True)
         _render_users_panel(email, role)
 
@@ -2165,7 +2317,7 @@ def main() -> None:
     with journal_tab:
         # Журнал читает базу, поэтому только когда вкладка открыта, а не при каждом действии.
         if journal_tab.open:
-            _render_journal(_load_login_journal(), _load_activity(), email, role, _load_usage())
+            _render_journal_tab(email, role)
 
     download_left, download_right, _ = st.columns([1, 1, 4])
     with download_left:
