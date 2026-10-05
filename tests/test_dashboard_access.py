@@ -92,6 +92,9 @@ def dash(monkeypatch):
     monkeypatch.setattr(module, "EMPLOYEE_ROLE", None)
     monkeypatch.setattr(access, "record_login", lambda connect, email: True)
     monkeypatch.setattr(access, "recent_logins", lambda connect, days=30, limit=5000: [])
+    import activity
+
+    monkeypatch.setattr(activity, "table_exists", lambda connect: False)
     monkeypatch.setattr(schedule_store, "load_overview", lambda connect, now: overview())
     yield module
     st.cache_resource.clear()
@@ -216,7 +219,7 @@ def test_admin_from_secret_gets_users_tab_without_database_lookup(monkeypatch, d
 
     monkeypatch.setattr(access, "active_user_roles", must_not_be_called)
     monkeypatch.setattr(access, "list_users", lambda connect: [])
-    at = run()
+    at = run_on_tab(JOURNAL)
     assert not at.exception
     assert [t.label for t in at.tabs] == ADMIN_TABS
     assert "boss@maximumstores.online · админ" in page_text(at)
@@ -274,7 +277,7 @@ def test_admin_adds_user_through_the_form_with_admin_rights(monkeypatch, dash):
         return access.normalize_email(email)
 
     monkeypatch.setattr(access, "add_user", fake_add_user)
-    at = run()
+    at = run_on_tab(JOURNAL)
     at.text_input(key="add_user_email").input("New@X.com")
     at.selectbox(key="add_user_role").select(access.ROLE_ADMIN)
     [b for b in at.button if b.label == "Добавить или обновить"][0].click()
@@ -288,7 +291,7 @@ def test_form_shows_validation_error_instead_of_crashing(monkeypatch, dash):
     monkeypatch.setenv("ADMIN_EMAILS", "boss@maximumstores.online")
     sign_in(monkeypatch, dash, employee("boss@maximumstores.online"))
     monkeypatch.setattr(access, "list_users", lambda connect: [])
-    at = run()
+    at = run_on_tab(JOURNAL)
     at.text_input(key="add_user_email").input("not-an-email")
     [b for b in at.button if b.label == "Добавить или обновить"][0].click()
     at.run(timeout=30)
@@ -549,12 +552,9 @@ def test_the_current_state_query_only_counts_active_pairs():
 
 
 
-def sidebar_text(at):
-    return " ".join(m.value for m in at.sidebar.markdown) + " ".join(c.value for c in at.sidebar.caption)
 
-
-def at_kyiv(day, hour):
-    return datetime(2026, 9, day, hour, 0, tzinfo=schedule_store.TZ).astimezone(timezone.utc)
+def at_kyiv(day, hour, minute=0):
+    return datetime(2026, 9, day, hour, minute, tzinfo=schedule_store.TZ).astimezone(timezone.utc)
 
 
 # Журнал ведётся с 12.09 (первый вход), «сегодня» — 21.09 (NOW): период 10 дней.
@@ -564,6 +564,18 @@ LOGINS = [
     {"email": "anna@maximumstores.online", "logged_in_at": at_kyiv(20, 18)},
     {"email": "boss@maximumstores.online", "logged_in_at": at_kyiv(12, 10)},
 ]
+JOURNAL = "📒 Журнал"
+
+
+def run_on_tab(tab, timeout=30):
+    at = AppTest.from_string(SCRIPT)
+    at.session_state["main_tab"] = tab
+    return at.run(timeout=timeout)
+
+
+def journal_text(at):
+    tab = at.tabs[-1]
+    return " ".join([m.value for m in tab.markdown] + [i.value for i in tab.info] + [e.value for e in tab.error])
 
 
 def test_journal_counts_logins_share_and_activity_per_employee(dash):
@@ -574,7 +586,8 @@ def test_journal_counts_logins_share_and_activity_per_employee(dash):
         ("anna", 3, 75, 2, 20, "21.09 07:00"),
         ("boss", 1, 25, 1, 10, "12.09 10:00"),
     ]
-    assert list(journal.log["logged_in_at"]) == ["21.09.2026 07:00", "20.09.2026 18:00", "20.09.2026 09:00", "12.09.2026 10:00"]
+    assert list(journal.log["logged_in_at"]) == [
+        "21.09.2026 07:00", "20.09.2026 18:00", "20.09.2026 09:00", "12.09.2026 10:00"]
 
 
 def test_the_period_is_capped_at_thirty_days(dash):
@@ -587,40 +600,43 @@ def test_an_empty_journal_is_not_an_error(dash):
     assert journal.summary.empty and journal.period_days == 0
 
 
-def test_every_employee_sees_the_journal_tab_and_sidebar_but_not_role_management(monkeypatch, dash):
+def test_there_is_no_sidebar_any_more(dash):
+    at = run()
+    assert not at.exception
+    assert len(at.sidebar.markdown) == 0 and len(at.sidebar.dataframe) == 0
+
+
+def test_every_employee_sees_the_journal_but_not_role_management(monkeypatch, dash):
     monkeypatch.setattr(access, "recent_logins", lambda connect, days=30, limit=5000: LOGINS)
 
     def must_not_be_called(connect):
         raise AssertionError("список ролей — только админу")
 
     monkeypatch.setattr(access, "list_users", must_not_be_called)
-    at = run()
+    at = run_on_tab(JOURNAL)
     assert not at.exception
     assert [t.label for t in at.tabs] == PUBLIC_TABS
-    assert "Служебное" in sidebar_text(at)
-    assert list(at.sidebar.dataframe[0].value["Сотрудник"]) == ["anna", "boss"]
-    journal_tab = at.tabs[-1]
-    summary = journal_tab.dataframe[0].value
+    summary = at.tabs[-1].dataframe[0].value
     assert list(summary["Доля входов, %"]) == [75, 25]
     assert list(summary["Активность, %"]) == [20, 10]
-    assert "Пользователи и роли" not in " ".join(m.value for m in journal_tab.markdown)
+    assert "Пользователи и роли" not in journal_text(at)
+
+
+def test_the_journal_reads_the_database_only_when_its_tab_is_open(monkeypatch, dash):
+    def must_not_be_called(connect, days=30, limit=5000):
+        raise AssertionError("журнал читается только на своей вкладке")
+
+    monkeypatch.setattr(access, "recent_logins", must_not_be_called)
+    assert not run().exception
 
 
 def test_admin_also_manages_roles_in_the_journal_tab(monkeypatch, dash):
     monkeypatch.setenv("ADMIN_EMAILS", "boss@maximumstores.online")
     sign_in(monkeypatch, dash, employee("boss@maximumstores.online"))
     monkeypatch.setattr(access, "list_users", lambda connect: [])
-    at = run()
+    at = run_on_tab(JOURNAL)
     assert not at.exception
-    assert "Пользователи и роли" in " ".join(m.value for m in at.tabs[-1].markdown)
-
-
-def test_the_sidebar_is_collapsed_until_the_arrow_is_clicked():
-    import dashboard_db
-    from pathlib import Path
-
-    source = Path(dashboard_db.__file__).read_text(encoding="utf-8")
-    assert 'initial_sidebar_state="collapsed"' in source
+    assert "Пользователи и роли" in journal_text(at)
 
 
 def test_a_broken_login_log_does_not_break_the_page(monkeypatch, dash):
@@ -628,8 +644,75 @@ def test_a_broken_login_log_does_not_break_the_page(monkeypatch, dash):
         raise access.AccessStoreError("Журнал недоступен.")
 
     monkeypatch.setattr(access, "recent_logins", broken)
-    at = run()
+    at = run_on_tab(JOURNAL)
     assert not at.exception
-    assert [e.value for e in at.sidebar.error] == ["Журнал недоступен."]
     assert [e.value for e in at.tabs[-1].error] == ["Журнал недоступен."]
     assert [t.label for t in at.tabs] == PUBLIC_TABS
+
+
+@pytest.fixture
+def actions(monkeypatch, dash):
+    """Журнал действий подключён; записи складываются в список вместо базы."""
+    import activity
+
+    written = []
+    monkeypatch.setattr(activity, "table_exists", lambda connect: True)
+    monkeypatch.setattr(activity, "record",
+                        lambda connect, session_id, email, section=None: written.append((session_id, email, section)))
+    return written
+
+
+def test_opening_the_page_records_the_first_section(actions):
+    at = run()
+    assert not at.exception
+    assert [(email, section) for _, email, section in actions] == [(EMPLOYEE_EMAIL, PUBLIC_TABS[0])]
+
+
+def test_switching_tabs_records_the_new_section_in_the_same_session(actions):
+    at = run()
+    at.session_state["main_tab"] = "📈 Прогноз"
+    at.run()
+    assert not at.exception
+    assert [section for _, _, section in actions] == [PUBLIC_TABS[0], "📈 Прогноз"]
+    assert len({session for session, _, _ in actions}) == 1
+
+
+def test_quick_clicks_on_the_same_tab_are_not_written_every_time(actions):
+    at = run()
+    at.run()
+    at.run()
+    assert len(actions) == 1
+
+
+def test_without_the_activity_table_nothing_is_written_and_the_journal_says_so(monkeypatch, dash):
+    import activity
+
+    def must_not_be_called(*args, **kwargs):
+        raise AssertionError("без таблицы писать нельзя")
+
+    monkeypatch.setattr(activity, "record", must_not_be_called)
+    at = run_on_tab(JOURNAL)
+    assert not at.exception
+    assert "миграция 014" in journal_text(at)
+
+
+def test_the_journal_shows_time_spent_and_sections(monkeypatch, dash, actions):
+    import activity
+
+    events = [
+        {"session_id": "s1", "email": "anna@maximumstores.online", "at": at_kyiv(20, 9, 0), "section": PUBLIC_TABS[0]},
+        {"session_id": "s1", "email": "anna@maximumstores.online", "at": at_kyiv(20, 9, 10), "section": "📈 Прогноз"},
+        {"session_id": "s2", "email": "boss@maximumstores.online", "at": at_kyiv(20, 10, 0), "section": PUBLIC_TABS[0]},
+    ]
+    monkeypatch.setattr(activity, "recent", lambda connect, days=30, limit=50000: events)
+    at = run_on_tab(JOURNAL)
+    assert not at.exception
+    text = journal_text(at)
+    assert "Сколько времени проводят" in text and "Какие разделы открывают" in text
+    frames = [frame.value for frame in at.tabs[-1].dataframe]
+    time_table = next(f for f in frames if "В среднем" in f)
+    assert list(time_table["Сотрудник"]) == ["anna", "boss"]
+    assert list(time_table["Всего"]) == ["10 мин", "0 сек"]
+    sections = next(f for f in frames if "Раздел" in f)
+    assert dict(zip(sections["Раздел"], sections["Открытий"]))["📈 Прогноз"] == 1
+    assert dict(zip(sections["Раздел"], sections["Открытий"]))["📅 История"] == 0

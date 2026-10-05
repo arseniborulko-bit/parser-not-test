@@ -13,6 +13,8 @@ import os
 import re
 import subprocess
 import sys
+import time
+import uuid
 from dataclasses import dataclass
 from datetime import datetime
 from html import escape
@@ -27,6 +29,7 @@ import streamlit as st
 from dotenv import load_dotenv
 
 import access
+import activity
 import collect_ui
 import github_dispatch
 import pairs_store
@@ -181,11 +184,7 @@ AMAZON_DOMAINS = {
     "ES": "es", "IT": "it", "MX": "com.mx", "JP": "co.jp", "AU": "com.au",
 }
 
-# Служебная боковая панель свёрнута: от неё видна одна стрелка слева вверху.
-st.set_page_config(
-    page_title="Competitor BSR — мониторинг конкурентов", page_icon="📡", layout="wide",
-    initial_sidebar_state="collapsed",
-)
+st.set_page_config(page_title="Competitor BSR — мониторинг конкурентов", page_icon="📡", layout="wide")
 
 
 # Прятать ли собственную шапку Streamlit («Share», «Fork», значок GitHub, меню приложения).
@@ -1827,26 +1826,101 @@ def _load_login_journal() -> LoginJournal | str:
     return _login_journal(rows, _now().date())
 
 
-def _render_login_sidebar(journal: LoginJournal | str) -> None:
-    """Служебная боковая панель: коротко, кто заходил. Свёрнута до стрелки слева вверху."""
-    with st.sidebar:
-        st.markdown("### 🛠 Служебное")
-        if isinstance(journal, str):
-            st.error(journal)
-            return
-        if journal.summary.empty:
-            st.caption("Входов пока не записано.")
-            return
-        st.caption(f"Кто заходил за {journal.period_days} дн. Подробно — во вкладке «📒 Журнал».")
-        st.dataframe(
-            journal.summary[["email", "logins", "last"]].rename(
-                columns={"email": "Сотрудник", "logins": "Входов", "last": "Последний"}),
-            use_container_width=True, hide_index=True,
-        )
+TAB_TITLES = ["📋 Текущее состояние", "📅 История", "📈 Прогноз", "🥊 Пары конкурентов",
+              "⚙ Сбор и управление", "ℹ️ Как это работает", "📒 Журнал"]
+_TAB_KEY = "main_tab"
+# Действия чаще раза в 15 секунд в журнал не пишутся (кроме открытия раздела): на время сессии
+# это почти не влияет, а базу на каждый клик не дёргает.
+_ACTIVITY_PING_SECONDS = 15
 
 
-def _render_journal(journal: LoginJournal | str, email: str, role: str | None) -> None:
-    """Вкладка «Журнал»: входы и проценты видят все сотрудники, управление ролями — только админ."""
+@st.cache_resource(ttl=600)
+def _activity_on() -> bool:
+    """Есть ли таблица журнала действий (миграция 014). Проверяется раз в 10 минут, а не на каждое действие."""
+    try:
+        return activity.table_exists(_connect)
+    except activity.ActivityError:
+        return False
+
+
+def _record_activity(email: str) -> None:
+    """Действие на странице — строка в журнал. Сессия — эта открытая страница; раздел — открытая вкладка
+    (её Streamlit сообщает через key вкладок). Сбой журнала работе не мешает."""
+    if not _activity_on():
+        return
+    state = st.session_state
+    if "activity_session" not in state:
+        state["activity_session"] = uuid.uuid4().hex
+    section = state.get(_TAB_KEY) or TAB_TITLES[0]
+    now = time.monotonic()
+    if section != state.get("activity_section"):
+        state["activity_section"] = section
+    elif now - state.get("activity_at", -_ACTIVITY_PING_SECONDS) < _ACTIVITY_PING_SECONDS:
+        return
+    else:
+        section = None
+    state["activity_at"] = now
+    activity.record(_connect, state["activity_session"], email, section)
+
+
+def _load_activity() -> list | str | None:
+    """Строки журнала действий; None — журнал ещё не подключён; текст — ошибка."""
+    if not _activity_on():
+        return None
+    try:
+        return activity.recent(_connect, _JOURNAL_DAYS)
+    except activity.ActivityError as exc:
+        return str(exc)
+
+
+def _short_name(email: str) -> str:
+    return email.removesuffix(f"@{access.EMPLOYEE_DOMAIN}")
+
+
+def _render_time_spent(rows: list) -> None:
+    st.markdown('<p class="section-title">Сколько времени проводят</p>', unsafe_allow_html=True)
+    st.markdown(
+        '<p class="section-note">Сессия — от первого до последнего действия на открытой странице '
+        "(клик, фильтр, вкладка); перерыв больше 30 минут начинает новую. Открыл и закрыл — «0 сек»; "
+        "если человек только читает, ничего не нажимая, это время не видно.</p>",
+        unsafe_allow_html=True,
+    )
+    table = activity.time_by_employee(activity.sessions(rows))
+    if table.empty:
+        st.info("Сессий пока не записано.")
+        return
+    for column in ("avg", "longest", "total"):
+        table[column] = table[column].map(activity.format_duration)
+    table["email"] = table["email"].map(_short_name)
+    st.dataframe(
+        table.rename(columns={
+            "email": "Сотрудник", "sessions": "Сессий", "avg": "В среднем", "longest": "Самая долгая",
+            "total": "Всего", "short": "Короче минуты",
+        }),
+        use_container_width=True, hide_index=True,
+    )
+
+
+def _render_sections(rows: list) -> None:
+    st.markdown('<p class="section-title">Какие разделы открывают</p>', unsafe_allow_html=True)
+    st.markdown(
+        '<p class="section-note">«В % сессий» — в скольких открытиях дашборда раздел смотрели хоть раз. '
+        f"«{TAB_TITLES[0]}» открывается сам при входе, поэтому у него всегда больше. Разделы с нулём "
+        "никто не открывал — кандидаты, чтобы убрать.</p>",
+        unsafe_allow_html=True,
+    )
+    table = activity.sections(rows, TAB_TITLES)
+    st.dataframe(
+        table.rename(columns={
+            "section": "Раздел", "opens": "Открытий", "employees": "Сотрудников", "share": "В % сессий",
+        }),
+        use_container_width=True, hide_index=True,
+        column_config={"В % сессий": st.column_config.ProgressColumn(format="%d%%", min_value=0, max_value=100)},
+    )
+
+
+def _render_journal(journal: LoginJournal | str, actions: list | str | None, email: str, role: str | None) -> None:
+    """Вкладка «Журнал»: входы, время и разделы видят все сотрудники, управление ролями — только админ."""
     if isinstance(journal, str):
         st.error(journal)
     elif journal.summary.empty:
@@ -1870,6 +1944,17 @@ def _render_journal(journal: LoginJournal | str, email: str, role: str | None) -
                 "Активность, %": st.column_config.ProgressColumn(format="%d%%", min_value=0, max_value=100),
             },
         )
+
+    if actions is None:
+        st.info("Время в дашборде и открытые разделы начнут считаться после подключения таблицы "
+                "bsr_radar.session_events (миграция 014).")
+    elif isinstance(actions, str):
+        st.error(actions)
+    else:
+        _render_time_spent(actions)
+        _render_sections(actions)
+
+    if isinstance(journal, LoginJournal) and not journal.log.empty:
         st.markdown('<p class="section-title">Все входы</p>', unsafe_allow_html=True)
         st.dataframe(
             journal.log.rename(columns={"email": "Сотрудник", "logged_in_at": "Когда"}),
@@ -1931,8 +2016,7 @@ def main() -> None:
     _apply_design()
     user, email, role = _resolve_access()
     _require_employee(user, email)
-    journal = _load_login_journal()
-    _render_login_sidebar(journal)
+    _record_activity(email)
     left, right = st.columns([3, 2])
     with left:
         _render_brand()
@@ -1977,9 +2061,7 @@ def main() -> None:
 
     _render_overview(shown)
 
-    tab_titles = ["📋 Текущее состояние", "📅 История", "📈 Прогноз", "🥊 Пары конкурентов",
-                  "⚙ Сбор и управление", "ℹ️ Как это работает", "📒 Журнал"]
-    tabs = st.tabs(tab_titles)
+    tabs = st.tabs(TAB_TITLES, key=_TAB_KEY, on_change="rerun")
     current_tab, history_tab, forecast_tab, pairs_tab, schedule_tab, how_tab, journal_tab = tabs
 
     with current_tab:
@@ -2020,7 +2102,9 @@ def main() -> None:
         _render_how_it_works(pairs, shown_history)
 
     with journal_tab:
-        _render_journal(journal, email, role)
+        # Журнал читает базу, поэтому только когда вкладка открыта, а не при каждом действии.
+        if journal_tab.open:
+            _render_journal(_load_login_journal(), _load_activity(), email, role)
 
     download_left, download_right, _ = st.columns([1, 1, 4])
     with download_left:
