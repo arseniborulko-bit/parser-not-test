@@ -687,7 +687,7 @@ def test_quick_clicks_on_the_same_tab_are_not_written_every_time(actions):
     assert len(actions) == 1
 
 
-def test_without_the_activity_table_nothing_is_written_and_the_journal_says_so(monkeypatch, dash):
+def test_without_the_activity_table_nothing_is_written_and_its_sections_are_hidden(monkeypatch, dash):
     import activity
 
     def must_not_be_called(*args, **kwargs):
@@ -696,7 +696,8 @@ def test_without_the_activity_table_nothing_is_written_and_the_journal_says_so(m
     monkeypatch.setattr(activity, "record", must_not_be_called)
     at = run_on_tab(JOURNAL)
     assert not at.exception
-    assert "миграция 014" in journal_text(at)
+    text = journal_text(at)
+    assert "Сколько времени проводят" not in text and "Какие разделы открывают" not in text and "014" not in text
 
 
 def test_the_journal_shows_time_spent_and_sections(monkeypatch, dash, actions):

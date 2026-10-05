@@ -1967,11 +1967,6 @@ def _load_usage() -> list | str | None:
 
 def _render_changes(rows: list | str | None) -> None:
     st.markdown('<p class="section-title">Кто что меняет</p>', unsafe_allow_html=True)
-    st.markdown(
-        f'<p class="section-note">За {_JOURNAL_DAYS} дн. Правки — пары, ASIN, время автосбора; запуски — '
-        "сбор и точечная проверка (тратят лимит ScrapingDog); выгрузки — CSV и Excel. Просмотры сюда не входят.</p>",
-        unsafe_allow_html=True,
-    )
     if rows is None:
         st.info("Журнал правок ещё не подключён: действия выполняются, но пока не записываются.")
         return
@@ -2014,12 +2009,10 @@ def _render_journal(journal: LoginJournal | str, actions: list | str | None, ema
         st.markdown('<p class="section-title">Сотрудников со входом по неделям</p>', unsafe_allow_html=True)
         st.altair_chart(_weekly_users_chart(journal.weekly), use_container_width=True)
 
-    if actions is None:
-        st.info("Время в дашборде и открытые разделы начнут считаться после подключения таблицы "
-                "bsr_radar.session_events (миграция 014).")
-    elif isinstance(actions, str):
+    # actions is None — таблицы журнала действий (миграция 014) ещё нет: разделы просто не показываются.
+    if isinstance(actions, str):
         st.error(actions)
-    else:
+    elif actions is not None:
         _render_time_spent(actions)
         _render_sections(actions)
     _render_changes(usage)
