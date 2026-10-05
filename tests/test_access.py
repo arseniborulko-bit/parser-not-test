@@ -453,3 +453,12 @@ def test_a_malformed_email_is_not_recorded():
     db = FakeDb()
     assert access.record_login(db.connect, "not an email") is False
     assert db.connects == 0
+
+
+def test_recent_logins_reads_newest_first_with_a_limit():
+    when = "2026-10-05 09:00+00"
+    db = FakeDb(rows=[("a@x.com", when)])
+    assert access.recent_logins(db.connect, 50) == [{"email": "a@x.com", "logged_in_at": when}]
+    sql, params = db.executed[0]
+    assert "FROM bsr_radar.login_log" in sql and "ORDER BY logged_in_at DESC" in sql
+    assert params == (50,)

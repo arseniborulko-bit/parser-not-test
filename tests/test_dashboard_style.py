@@ -30,8 +30,8 @@ def test_disabled_buttons_inside_tabs_look_disabled(dash):  # noqa: F811
     assert re.search(r'stTabs"\] button:disabled\s*\{[^}]*opacity: \.45 !important', style_of(run()))
 
 
-SELECTORS = ('header\\[data-testid="stHeader"\\]', '\\[data-testid="stToolbar"\\]',
-             '\\[data-testid="stToolbarActions"\\]')
+SELECTORS = ('\\[data-testid="stToolbarActions"\\]', '\\[data-testid="stMainMenu"\\]',
+             '\\[data-testid="stAppDeployButton"\\]')
 
 
 def test_hiding_the_streamlit_header_is_one_switch(dash, monkeypatch):  # noqa: F811
@@ -71,3 +71,13 @@ def test_tab_styling_does_not_leak_onto_every_button_inside_a_tab(dash):  # noqa
         assert not re.search(r'stTabs"\]\s+button\s*(,|\{|$)', selector), (
             f"оформление вкладки красит все кнопки внутри вкладки: {selector.strip()}"
         )
+
+
+def test_hiding_the_header_keeps_the_arrow_that_opens_the_sidebar(dash, monkeypatch):  # noqa: F811
+    """Стрелка разворота боковой панели лежит внутри stHeader > stToolbar: прятать их целиком нельзя."""
+    monkeypatch.setattr(dash, "HIDE_STREAMLIT_CHROME", True)
+    css = style_of(run())
+    for container in ('header\\[data-testid="stHeader"\\]', '\\[data-testid="stToolbar"\\]',
+                      'stExpandSidebarButton'):
+        assert not re.search(container + r'[^{]*\{[^}]*display: none', css), container
+    assert re.search(r'stExpandSidebarButton"\]\s*\{[^}]*pointer-events: auto', css)

@@ -181,7 +181,11 @@ AMAZON_DOMAINS = {
     "ES": "es", "IT": "it", "MX": "com.mx", "JP": "co.jp", "AU": "com.au",
 }
 
-st.set_page_config(page_title="Competitor BSR — мониторинг конкурентов", page_icon="📡", layout="wide")
+# Боковая панель (служебная, только админам) свёрнута: от неё видна одна стрелка слева вверху.
+st.set_page_config(
+    page_title="Competitor BSR — мониторинг конкурентов", page_icon="📡", layout="wide",
+    initial_sidebar_state="collapsed",
+)
 
 
 # Прятать ли собственную шапку Streamlit («Share», «Fork», значок GitHub, меню приложения).
@@ -194,13 +198,16 @@ HIDE_STREAMLIT_CHROME = True
 
 # Проверено на живом сайте: кнопка «Fork» лежит в
 # header[data-testid="stHeader"] > [data-testid="stToolbar"] > stToolbarActions.
-# Прячем колонтитул целиком, чтобы не зависеть от того, в каком из этих узлов
-# Streamlit разместит кнопку в следующей версии.
+# Шапку целиком не прячем: в том же stToolbar лежит стрелка, разворачивающая боковую панель
+# (stExpandSidebarButton), а display: none у родителя спрятал бы и её. Поэтому шапка прозрачная
+# и не перехватывает клики, а прячутся только кнопки «Share»/«Fork», меню и «Deploy».
 _CHROME_CSS = """
 <style>
-header[data-testid="stHeader"], .stAppHeader { display: none !important; }
-[data-testid="stToolbar"], .stAppToolbar,
-[data-testid="stToolbarActions"], [data-testid="stToolbarActionButton"] { display: none !important; }
+header[data-testid="stHeader"], .stAppHeader { background: transparent !important; pointer-events: none; }
+[data-testid="stDecoration"],
+[data-testid="stToolbarActions"], [data-testid="stToolbarActionButton"],
+[data-testid="stMainMenu"], [data-testid="stAppDeployButton"] { display: none !important; }
+[data-testid="stExpandSidebarButton"] { pointer-events: auto; }
 </style>
 """
 
@@ -1776,6 +1783,44 @@ def _render_auth_bar(user: dict, email: str, role: str | None) -> None:
     st.button("Выйти", on_click=st.logout, key="logout_btn")
 
 
+_LOGINS_SHOWN = 200
+
+
+def _render_admin_sidebar() -> None:
+    """Служебная боковая панель админа: кто и когда входил (bsr_radar.login_log). Свёрнута до стрелки;
+    остальным сотрудникам её нет совсем — пустую боковую панель Streamlit не рисует."""
+    with st.sidebar:
+        st.markdown("### 🛠 Служебное")
+        st.caption(f"Кто заходил в дашборд — последние {_LOGINS_SHOWN} входов, время киевское.")
+        try:
+            rows = access.recent_logins(_connect, _LOGINS_SHOWN)
+        except access.AccessStoreError as exc:
+            st.error(str(exc))
+            return
+        if not rows:
+            st.caption("Входов пока не записано.")
+            return
+        log = pd.DataFrame(rows)
+        # Домен у всех один и тот же — без него таблица помещается в узкую панель.
+        log["email"] = log["email"].str.removesuffix(f"@{access.EMPLOYEE_DOMAIN}")
+        log["logged_in_at"] = pd.to_datetime(log["logged_in_at"], utc=True).dt.tz_convert(schedule_store.TZ)
+        summary = (
+            log.groupby("email")["logged_in_at"].agg(["count", "max"]).sort_values("max", ascending=False)
+            .reset_index()
+        )
+        summary["max"] = summary["max"].dt.strftime("%d.%m %H:%M")
+        st.dataframe(
+            summary.rename(columns={"email": "Почта", "count": "Входов", "max": "Последний"}),
+            use_container_width=True, hide_index=True,
+        )
+        with st.expander("Все входы по времени"):
+            log["logged_in_at"] = log["logged_in_at"].dt.strftime("%d.%m %H:%M")
+            st.dataframe(
+                log.rename(columns={"email": "Почта", "logged_in_at": "Когда"}),
+                use_container_width=True, hide_index=True,
+            )
+
+
 def _render_users_panel(actor_email: str, actor_role: str) -> None:
     _show_flash("users_flash")
     st.markdown(
@@ -1832,6 +1877,8 @@ def main() -> None:
     _apply_design()
     user, email, role = _resolve_access()
     _require_employee(user, email)
+    if role == access.ROLE_ADMIN:
+        _render_admin_sidebar()
     left, right = st.columns([3, 2])
     with left:
         _render_brand()

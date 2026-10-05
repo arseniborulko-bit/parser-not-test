@@ -1,7 +1,7 @@
 """Дашборд целиком (Streamlit AppTest) с подменёнными данными и правами: без Google, без настоящей базы."""
 
 import importlib
-from datetime import date, datetime, time, timedelta
+from datetime import date, datetime, time, timedelta, timezone
 
 import pandas as pd
 import psycopg2
@@ -544,3 +544,58 @@ def test_the_current_state_query_only_counts_active_pairs():
 
     source = inspect.getsource(dashboard_db.load_current.__wrapped__ if hasattr(dashboard_db.load_current, "__wrapped__") else dashboard_db.load_current)
     assert "JOIN bsr_radar.competitor_pairs" in source and "p.active" in source
+
+
+def sidebar_text(at):
+    return " ".join(m.value for m in at.sidebar.markdown) + " ".join(c.value for c in at.sidebar.caption)
+
+
+def test_admin_sees_who_logged_in_in_the_sidebar(monkeypatch, dash):
+    monkeypatch.setenv("ADMIN_EMAILS", "boss@maximumstores.online")
+    sign_in(monkeypatch, dash, employee("boss@maximumstores.online"))
+    monkeypatch.setattr(access, "list_users", lambda connect: [])
+    monkeypatch.setattr(access, "recent_logins", lambda connect, limit: [
+        {"email": "anna@maximumstores.online", "logged_in_at": datetime(2026, 10, 5, 6, 30, tzinfo=timezone.utc)},
+        {"email": "boss@maximumstores.online", "logged_in_at": datetime(2026, 10, 4, 7, 0, tzinfo=timezone.utc)},
+        {"email": "anna@maximumstores.online", "logged_in_at": datetime(2026, 10, 3, 7, 0, tzinfo=timezone.utc)},
+    ])
+    at = run()
+    assert not at.exception
+    assert "Служебное" in sidebar_text(at)
+    summary = at.sidebar.dataframe[0].value
+    assert list(summary["Почта"]) == ["anna", "boss"]  # общий домен не повторяется
+    assert list(summary["Входов"]) == [2, 1]
+    assert summary["Последний"][0] == "05.10 09:30"  # киевское время
+
+
+def test_the_sidebar_is_collapsed_until_the_arrow_is_clicked():
+    import dashboard_db
+    from pathlib import Path
+
+    source = Path(dashboard_db.__file__).read_text(encoding="utf-8")
+    assert 'initial_sidebar_state="collapsed"' in source
+
+
+def test_a_broken_login_log_does_not_break_the_admin_page(monkeypatch, dash):
+    monkeypatch.setenv("ADMIN_EMAILS", "boss@maximumstores.online")
+    sign_in(monkeypatch, dash, employee("boss@maximumstores.online"))
+    monkeypatch.setattr(access, "list_users", lambda connect: [])
+
+    def broken(connect, limit):
+        raise access.AccessStoreError("Журнал недоступен.")
+
+    monkeypatch.setattr(access, "recent_logins", broken)
+    at = run()
+    assert not at.exception
+    assert [e.value for e in at.sidebar.error] == ["Журнал недоступен."]
+    assert [t.label for t in at.tabs] == ADMIN_TABS
+
+
+def test_an_ordinary_employee_has_no_sidebar_and_no_login_list(monkeypatch, dash):
+    def must_not_be_called(connect, limit):
+        raise AssertionError("журнал входов читается только для админа")
+
+    monkeypatch.setattr(access, "recent_logins", must_not_be_called)
+    at = run()
+    assert not at.exception
+    assert len(at.sidebar.markdown) == 0 and len(at.sidebar.dataframe) == 0

@@ -218,6 +218,17 @@ def record_login(connect: Connect, email: str) -> bool:
     return True
 
 
+def recent_logins(connect: Connect, limit: int = 200) -> List[dict]:
+    """Последние входы из журнала, новые сверху: для служебной панели админа."""
+    rows = _run(
+        connect,
+        "SELECT email, logged_in_at FROM bsr_radar.login_log ORDER BY logged_in_at DESC, id DESC LIMIT %s;",
+        (int(limit),),
+        fetch=True,
+    )
+    return [{"email": email, "logged_in_at": logged_in_at} for email, logged_in_at in rows]
+
+
 def active_user_roles(connect: Connect) -> dict:
     rows = _run(connect, "SELECT email, role FROM bsr_radar.dashboard_users WHERE active;", fetch=True)
     return {email: role for email, role in rows if role in _RANK}
