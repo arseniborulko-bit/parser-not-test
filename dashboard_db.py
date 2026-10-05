@@ -96,7 +96,7 @@ def _current_user() -> dict:
 
 
 # Права любого вошедшего сотрудника. Решение владельца 01.10.2026: все сотрудники могут всё — пары,
-# время сбора, запуск сбора; админы (вкладка «Пользователи») — по-прежнему из ADMIN_EMAILS и базы.
+# время сбора, запуск сбора; админы (вкладка «Журнал», раздел «Пользователи и роли») — по-прежнему из ADMIN_EMAILS и базы.
 # None — сотрудник только смотрит, пока ему не дадут роль или он не откроет «🔒 Управление».
 EMPLOYEE_ROLE: str | None = access.ROLE_EDITOR
 
@@ -181,7 +181,7 @@ AMAZON_DOMAINS = {
     "ES": "es", "IT": "it", "MX": "com.mx", "JP": "co.jp", "AU": "com.au",
 }
 
-# Боковая панель (служебная, только админам) свёрнута: от неё видна одна стрелка слева вверху.
+# Служебная боковая панель свёрнута: от неё видна одна стрелка слева вверху.
 st.set_page_config(
     page_title="Competitor BSR — мониторинг конкурентов", page_icon="📡", layout="wide",
     initial_sidebar_state="collapsed",
@@ -1783,42 +1783,101 @@ def _render_auth_bar(user: dict, email: str, role: str | None) -> None:
     st.button("Выйти", on_click=st.logout, key="logout_btn")
 
 
-_LOGINS_SHOWN = 200
+_JOURNAL_DAYS = 30
 
 
-def _render_admin_sidebar() -> None:
-    """Служебная боковая панель админа: кто и когда входил (bsr_radar.login_log). Свёрнута до стрелки;
-    остальным сотрудникам её нет совсем — пустую боковую панель Streamlit не рисует."""
+@dataclass
+class LoginJournal:
+    """Входы за период: сводка по сотрудникам (с процентами) и сами входы, время киевское."""
+    summary: pd.DataFrame
+    log: pd.DataFrame
+    period_days: int
+
+
+def _login_journal(rows: list, today, days: int = _JOURNAL_DAYS) -> LoginJournal:
+    """Проценты считаются за период: с первого записанного входа (журнал ведётся не с начала времён),
+    но не дольше days дней. «Доля входов» — сколько из всех входов команды пришлось на человека,
+    «Активность» — в сколько из дней периода он заходил хотя бы раз."""
+    log = pd.DataFrame(rows, columns=["email", "logged_in_at"])
+    if log.empty:
+        return LoginJournal(pd.DataFrame(), log, 0)
+    # Домен у всех один и тот же — без него таблицы читаются легче и помещаются в узкую панель.
+    log["email"] = log["email"].str.removesuffix(f"@{access.EMPLOYEE_DOMAIN}")
+    log["logged_in_at"] = pd.to_datetime(log["logged_in_at"], utc=True).dt.tz_convert(schedule_store.TZ)
+    log["day"] = log["logged_in_at"].dt.date
+    period_days = max(1, min(days, (today - log["day"].min()).days + 1))
+    summary = log.groupby("email").agg(
+        logins=("logged_in_at", "count"), active_days=("day", "nunique"), last=("logged_in_at", "max"),
+    ).reset_index()
+    summary["share"] = (summary["logins"] / summary["logins"].sum() * 100).round().astype(int)
+    summary["activity"] = (summary["active_days"] / period_days * 100).round().clip(upper=100).astype(int)
+    summary = summary.sort_values(["logins", "last"], ascending=False, ignore_index=True)
+    summary["last"] = summary["last"].dt.strftime("%d.%m %H:%M")
+    log = log.drop(columns="day").sort_values("logged_in_at", ascending=False, ignore_index=True)
+    log["logged_in_at"] = log["logged_in_at"].dt.strftime("%d.%m.%Y %H:%M")
+    return LoginJournal(summary, log, period_days)
+
+
+def _load_login_journal() -> LoginJournal | str:
+    """Журнал или текст ошибки: недоступный журнал не должен ломать дашборд."""
+    try:
+        rows = access.recent_logins(_connect, _JOURNAL_DAYS)
+    except access.AccessStoreError as exc:
+        return str(exc)
+    return _login_journal(rows, _now().date())
+
+
+def _render_login_sidebar(journal: LoginJournal | str) -> None:
+    """Служебная боковая панель: коротко, кто заходил. Свёрнута до стрелки слева вверху."""
     with st.sidebar:
         st.markdown("### 🛠 Служебное")
-        st.caption(f"Кто заходил в дашборд — последние {_LOGINS_SHOWN} входов, время киевское.")
-        try:
-            rows = access.recent_logins(_connect, _LOGINS_SHOWN)
-        except access.AccessStoreError as exc:
-            st.error(str(exc))
+        if isinstance(journal, str):
+            st.error(journal)
             return
-        if not rows:
+        if journal.summary.empty:
             st.caption("Входов пока не записано.")
             return
-        log = pd.DataFrame(rows)
-        # Домен у всех один и тот же — без него таблица помещается в узкую панель.
-        log["email"] = log["email"].str.removesuffix(f"@{access.EMPLOYEE_DOMAIN}")
-        log["logged_in_at"] = pd.to_datetime(log["logged_in_at"], utc=True).dt.tz_convert(schedule_store.TZ)
-        summary = (
-            log.groupby("email")["logged_in_at"].agg(["count", "max"]).sort_values("max", ascending=False)
-            .reset_index()
-        )
-        summary["max"] = summary["max"].dt.strftime("%d.%m %H:%M")
+        st.caption(f"Кто заходил за {journal.period_days} дн. Подробно — во вкладке «📒 Журнал».")
         st.dataframe(
-            summary.rename(columns={"email": "Почта", "count": "Входов", "max": "Последний"}),
+            journal.summary[["email", "logins", "last"]].rename(
+                columns={"email": "Сотрудник", "logins": "Входов", "last": "Последний"}),
             use_container_width=True, hide_index=True,
         )
-        with st.expander("Все входы по времени"):
-            log["logged_in_at"] = log["logged_in_at"].dt.strftime("%d.%m %H:%M")
-            st.dataframe(
-                log.rename(columns={"email": "Почта", "logged_in_at": "Когда"}),
-                use_container_width=True, hide_index=True,
-            )
+
+
+def _render_journal(journal: LoginJournal | str, email: str, role: str | None) -> None:
+    """Вкладка «Журнал»: входы и проценты видят все сотрудники, управление ролями — только админ."""
+    if isinstance(journal, str):
+        st.error(journal)
+    elif journal.summary.empty:
+        st.info("Входов пока не записано.")
+    else:
+        st.markdown('<p class="section-title">Кто пользуется дашбордом</p>', unsafe_allow_html=True)
+        st.markdown(
+            f'<p class="section-note">За {journal.period_days} дн., время киевское. «Доля входов» — '
+            "сколько процентов всех входов команды пришлось на человека. «Активность» — в сколько "
+            "процентов дней периода он заходил хотя бы раз.</p>",
+            unsafe_allow_html=True,
+        )
+        st.dataframe(
+            journal.summary[["email", "logins", "share", "active_days", "activity", "last"]].rename(columns={
+                "email": "Сотрудник", "logins": "Входов", "share": "Доля входов, %",
+                "active_days": "Дней с входом", "activity": "Активность, %", "last": "Последний вход",
+            }),
+            use_container_width=True, hide_index=True,
+            column_config={
+                "Доля входов, %": st.column_config.ProgressColumn(format="%d%%", min_value=0, max_value=100),
+                "Активность, %": st.column_config.ProgressColumn(format="%d%%", min_value=0, max_value=100),
+            },
+        )
+        st.markdown('<p class="section-title">Все входы</p>', unsafe_allow_html=True)
+        st.dataframe(
+            journal.log.rename(columns={"email": "Сотрудник", "logged_in_at": "Когда"}),
+            use_container_width=True, hide_index=True,
+        )
+    if role == access.ROLE_ADMIN:
+        st.markdown('<p class="section-title">Пользователи и роли</p>', unsafe_allow_html=True)
+        _render_users_panel(email, role)
 
 
 def _render_users_panel(actor_email: str, actor_role: str) -> None:
@@ -1877,8 +1936,8 @@ def main() -> None:
     _apply_design()
     user, email, role = _resolve_access()
     _require_employee(user, email)
-    if role == access.ROLE_ADMIN:
-        _render_admin_sidebar()
+    journal = _load_login_journal()
+    _render_login_sidebar(journal)
     left, right = st.columns([3, 2])
     with left:
         _render_brand()
@@ -1924,11 +1983,9 @@ def main() -> None:
     _render_overview(shown)
 
     tab_titles = ["📋 Текущее состояние", "📅 История", "📈 Прогноз", "🥊 Пары конкурентов",
-                  "⚙ Сбор и управление", "ℹ️ Как это работает"]
-    if role == access.ROLE_ADMIN:
-        tab_titles.append("👥 Пользователи")
+                  "⚙ Сбор и управление", "ℹ️ Как это работает", "📒 Журнал"]
     tabs = st.tabs(tab_titles)
-    current_tab, history_tab, forecast_tab, pairs_tab, schedule_tab, how_tab = tabs[:6]
+    current_tab, history_tab, forecast_tab, pairs_tab, schedule_tab, how_tab, journal_tab = tabs
 
     with current_tab:
         _table_or_note(shown, with_images=True)
@@ -1967,9 +2024,8 @@ def main() -> None:
     with how_tab:
         _render_how_it_works(pairs, shown_history)
 
-    if role == access.ROLE_ADMIN:
-        with tabs[6]:
-            _render_users_panel(email, role)
+    with journal_tab:
+        _render_journal(journal, email, role)
 
     download_left, download_right, _ = st.columns([1, 1, 4])
     with download_left:

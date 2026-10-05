@@ -218,12 +218,16 @@ def record_login(connect: Connect, email: str) -> bool:
     return True
 
 
-def recent_logins(connect: Connect, limit: int = 200) -> List[dict]:
-    """Последние входы из журнала, новые сверху: для служебной панели админа."""
+def recent_logins(connect: Connect, days: int = 30, limit: int = 5000) -> List[dict]:
+    """Входы за последние days дней из журнала, новые сверху (не больше limit строк)."""
     rows = _run(
         connect,
-        "SELECT email, logged_in_at FROM bsr_radar.login_log ORDER BY logged_in_at DESC, id DESC LIMIT %s;",
-        (int(limit),),
+        """
+        SELECT email, logged_in_at FROM bsr_radar.login_log
+        WHERE logged_in_at >= now() - make_interval(days => %s)
+        ORDER BY logged_in_at DESC, id DESC LIMIT %s;
+        """,
+        (int(days), int(limit)),
         fetch=True,
     )
     return [{"email": email, "logged_in_at": logged_in_at} for email, logged_in_at in rows]
