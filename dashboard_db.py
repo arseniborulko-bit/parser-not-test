@@ -1998,12 +1998,6 @@ def _render_journal(journal: LoginJournal | str, actions: list | str | None, ema
         st.info(f"За {journal.period_days} дн. входов не было.")
     else:
         st.markdown('<p class="section-title">Кто пользуется дашбордом</p>', unsafe_allow_html=True)
-        st.markdown(
-            f'<p class="section-note">За {journal.period_days} дн., время киевское. «Доля входов» — '
-            "сколько процентов всех входов команды пришлось на человека. «Активность» — в сколько "
-            "процентов дней периода он заходил хотя бы раз.</p>",
-            unsafe_allow_html=True,
-        )
         st.dataframe(
             journal.summary[["email", "logins", "share", "active_days", "activity", "last"]].rename(columns={
                 "email": "Сотрудник", "logins": "Входов", "share": "Доля входов, %",
