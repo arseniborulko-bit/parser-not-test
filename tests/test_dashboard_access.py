@@ -12,7 +12,7 @@ import access
 import schedule_store
 
 SCRIPT = "import dashboard_db\ndashboard_db.main()"
-PUBLIC_TABS = ["📋 Текущее состояние", "📅 История", "📈 Прогноз", "🥊 Пары конкурентов", "🛡 Продавцы",
+PUBLIC_TABS = ["📋 Текущее состояние", "📅 История", "📈 Прогноз", "🥊 Пары конкурентов",
                "⚙ Сбор и управление", "ℹ️ Как это работает", "📊 Активность дашборда"]
 # Журнал открыт всем сотрудникам; админа отличает раздел «Пользователи и роли» внутри него.
 ADMIN_TABS = PUBLIC_TABS
@@ -99,9 +99,6 @@ def dash(monkeypatch):
 
     monkeypatch.setattr(usage_log, "log_exists", lambda connect: False)
     monkeypatch.setattr(access, "allowed_table_exists", lambda connect: False)
-    import offers
-
-    monkeypatch.setattr(offers, "table_exists", lambda connect: False)
     monkeypatch.setattr(schedule_store, "load_overview", lambda connect, now: overview())
     yield module
     st.cache_resource.clear()
@@ -885,69 +882,6 @@ def test_no_logins_at_all_means_no_card(dash):
     assert "Scorecard" not in journal_text(run_on_tab(JOURNAL))
 
 
-SELLERS = "🛡 Продавцы"
-
-
-def offer_row(asin, seller, ours, buybox=False, price=20.0, market="US"):
-    return {"marketplace": market, "asin": asin, "product": f"Товар {asin}", "seller_id": seller and f"ID{seller}",
-            "seller_name": seller, "price": price if seller else None, "currency": "USD" if seller else None,
-            "is_new": True, "fba": True, "buybox": buybox, "ours": ours,
-            "checked_at": datetime(2026, 9, 21, 5, 0, tzinfo=timezone.utc)}
-
-
-OFFER_ROWS = [
-    offer_row("B0OK", "Мы", True, buybox=True),
-    offer_row("B0HIJ", "Мы", True, buybox=True), offer_row("B0HIJ", "Чужой", False, price=15.5),
-    offer_row("B0LOST", "Другой", False, buybox=True, price=18.0), offer_row("B0LOST", "Мы", True),
-    offer_row("B0NONE", None, None),
-]
-
-
-def test_sellers_summary_puts_a_lost_buybox_first_then_foreign_sellers(dash):
-    rows = dash._sellers_summary(OFFER_ROWS).to_dict("records")
-    assert [(r["Статус"], r["ASIN"].rsplit("/", 1)[1]) for r in rows] == [
-        ("🚨 Buy Box у чужого", "B0LOST"), ("⚠️ Чужой продавец", "B0HIJ"),
-        ("Нет предложений", "B0NONE"), ("✅ Только мы", "B0OK"),
-    ]
-    lost, hij = rows[0], rows[1]
-    assert (lost["Buy Box у"], lost["Цена Buy Box"], lost["Чужие продавцы"]) == ("Другой", "18.00 USD", "Другой")
-    assert (hij["Продавцов"], hij["Buy Box у"], hij["Цена Buy Box"], hij["Чужие продавцы"], hij["Проверено"]) == (
-        2, "Мы", "20.00 USD", "Чужой", "21.09 08:00")
-
-
-def test_unknown_our_seller_gives_a_dash_status(dash):
-    rows = [offer_row("B0", "Кто-то", None, buybox=True)]
-    assert dash._sellers_summary(rows).iloc[0]["Статус"] == "—"
-
-
-def test_the_sellers_tab_reads_the_database_only_when_open(monkeypatch, dash):
-    import offers
-
-    def must_not_be_called(connect):
-        raise AssertionError("продавцы читаются только на своей вкладке")
-
-    monkeypatch.setattr(offers, "table_exists", must_not_be_called)
-    assert not run().exception
-
-
-def test_the_sellers_tab_shows_the_summary(monkeypatch, dash):
-    import offers
-
-    monkeypatch.setattr(offers, "table_exists", lambda connect: True)
-    monkeypatch.setattr(offers, "latest", lambda connect: OFFER_ROWS)
-    at = run_on_tab(SELLERS)
-    assert not at.exception
-    tab = next(t for t in at.tabs if t.label == SELLERS)
-    text = " ".join(m.value for m in tab.markdown)
-    assert "Наших ASIN: 4 · с чужим продавцом: 2 · из них Buy Box у чужого: 1" in text
-    assert list(tab.dataframe[0].value["Статус"])[0] == "🚨 Buy Box у чужого"
-
-
-def test_without_the_offers_table_the_tab_says_it_is_not_connected(dash):
-    at = run_on_tab(SELLERS)
-    tab = next(t for t in at.tabs if t.label == SELLERS)
-    assert [i.value for i in tab.info] == ["Проверка продавцов ещё не подключена."]
-
 
 def test_people_table_counts_opened_sections_and_edits_within_the_period(monkeypatch, dash, actions):
     import activity
@@ -978,3 +912,14 @@ def test_without_the_allowed_table_the_admin_section_is_hidden_entirely(monkeypa
     monkeypatch.setattr(access, "list_users", lambda connect: [])
     text = journal_text(run_on_tab(JOURNAL))
     assert "Допущенные для Scorecard" not in text and "015" not in text
+
+
+def test_the_sellers_tab_is_gone_and_its_old_opens_are_not_listed(monkeypatch, dash, actions):
+    import activity
+
+    assert not any("Продавцы" in title for title in dash.TAB_TITLES)
+    events = [{"session_id": "s", "email": "anna@maximumstores.online", "at": at_kyiv(20, 9), "section": "🛡 Продавцы"}]
+    monkeypatch.setattr(activity, "recent", lambda connect, days=30, limit=50000: events)
+    at = run_on_tab(JOURNAL)
+    sections = next(f.value for f in at.tabs[-1].dataframe if "Раздел" in f.value)
+    assert "🛡 Продавцы" not in list(sections["Раздел"])
