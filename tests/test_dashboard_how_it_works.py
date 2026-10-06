@@ -57,6 +57,11 @@ def test_it_explains_that_history_outlives_a_disabled_pair():
     "выбор дня",               # срез за одну дату
     "Исправить названия",      # правка сеткой
     "отметить несколько",      # множественный выбор стран
+    "рабочим\nаккаунтом",      # вход через Google
+    "Выбрать проблемные",      # группа товаров в «Прогнозе»
+    "«Портфель»",              # режимы прогноза
+    "% для Scorecard",         # вкладка «Активность дашборда»
+    "/start",                  # подписка на бота
 ])
 def test_the_text_covers_what_the_dashboard_actually_has_now(fact):
     """Раздел устаревает молча: тут перечислено то, что появилось после его первой версии."""
@@ -105,3 +110,9 @@ def test_the_tab_renders_the_new_design_without_crashing(dash):  # noqa: F811
     text = " ".join(block.value for block in at.markdown)
     assert "how-title" in text or "Как это работает" in text
     assert "Порядок работы" in text
+
+
+def test_the_old_forecast_tab_is_no_longer_described():
+    text = dash_module._HOW_IT_WORKS
+    assert "Кто быстрее всего растёт" not in text
+    assert "Продавцы" not in text
