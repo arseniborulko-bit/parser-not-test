@@ -175,3 +175,12 @@ def test_the_google_login_dependencies_are_installed_and_listed():
 
     requirements = (PROJECT / "requirements.txt").read_text(encoding="utf-8").lower()
     assert "authlib" in requirements and "httpx" in requirements
+
+
+def test_the_sign_in_screen_looks_like_rating_radar_and_reads_no_data(monkeypatch, no_data):
+    sign_in(monkeypatch, no_data, {"is_logged_in": False})
+    at = run()
+    assert closed(at)
+    text = " ".join(m.value for m in at.markdown)
+    assert 'class="gate"' in text and "Доступ только для сотрудников maximumstores.online" in text
+    assert "bot-link" in text  # бот в шапке, как в Radar

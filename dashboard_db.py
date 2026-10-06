@@ -160,20 +160,41 @@ def _require_employee(user: dict, email: str | None) -> None:
     ни один запрос к базе за данными дашборда не выполняется. Вход не настроен — дашборд закрыт,
     а не открыт (решение владельца 01.10.2026)."""
     if not _auth_configured():
-        _render_brand()
-        st.error("Вход через Google не настроен: в Secrets нет полной секции [auth]. Дашборд закрыт.")
+        middle = _render_gate()
+        middle.error("Вход через Google не настроен: в Secrets нет полной секции [auth]. Дашборд закрыт.")
         st.stop()
     if not user.get("is_logged_in"):
-        _render_brand()
-        st.info(f"Дашборд доступен только сотрудникам. Войдите рабочим Google-аккаунтом @{access.EMPLOYEE_DOMAIN}.")
-        st.button("Войти через Google", on_click=st.login, key="login_btn", type="primary")
+        middle = _render_gate()
+        middle.button("Войти через Google", on_click=st.login, key="login_btn", type="primary",
+                      use_container_width=True)
         st.stop()
     if email is None:
-        _render_brand()
-        st.error(f"Доступ только для сотрудников {access.EMPLOYEE_DOMAIN}")
-        st.button("Выйти", on_click=st.logout, key="logout_btn")
+        middle = _render_gate("Вы вошли не рабочим аккаунтом. Выйдите и войдите заново через "
+                              f"@{access.EMPLOYEE_DOMAIN}.")
+        middle.error(f"Доступ только для сотрудников {access.EMPLOYEE_DOMAIN}")
+        middle.button("Выйти", on_click=st.logout, key="logout_btn", use_container_width=True)
         st.stop()
     _record_login_once(user, email)
+
+
+def _render_gate(note: str = "") -> st.delta_generator.DeltaGenerator:
+    """Экран входа как в Rating Radar: шапка (название слева, бот справа) и карточка по центру.
+    Данных из базы здесь нет и быть не должно — до входа дашборд базу не читает. Возвращает
+    среднюю колонку: кнопку или сообщение кладёт туда вызывающий."""
+    left, right = st.columns([3, 2])
+    with left:
+        _render_brand()
+    with right:
+        st.markdown(_bot_link_html(), unsafe_allow_html=True)
+    st.markdown(
+        '<div class="gate"><div class="gate-mark">📡</div><p class="gate-title">Competitor BSR</p>'
+        f'<p class="gate-text">Доступ только для сотрудников {escape(access.EMPLOYEE_DOMAIN)}</p>'
+        + (f'<p class="gate-note">{escape(note)}</p>' if note else "")
+        + "</div>",
+        unsafe_allow_html=True,
+    )
+    _, middle, _ = st.columns([1, 1.1, 1])
+    return middle
 
 
 PROJECT_DIR = Path(__file__).resolve().parent
@@ -221,8 +242,10 @@ def _apply_design() -> None:
         [data-testid="stSidebar"] { background: #ffffff; }
         .brand { display: flex; align-items: center; gap: .7rem; margin: 0 0 1.4rem; }
         .brand-mark { font-size: 2.6rem; line-height: 1; }
-        .brand-title { font-size: 2.35rem; font-weight: 800; letter-spacing: -0.03em; color: #111827; margin: 0; line-height: 1.1; }
-        .brand-subtitle { color: #64748b; font-size: .9rem; margin: .15rem 0 0; }
+        /* !important: правило Streamlit для абзацев внутри st.markdown сильнее класса — без него
+        заголовок рисовался обычным текстом. */
+        .brand-title { font-size: 2.35rem !important; font-weight: 800; letter-spacing: -0.03em; color: #111827; margin: 0; line-height: 1.1; }
+        .brand-subtitle { color: #64748b; font-size: .9rem !important; margin: .15rem 0 0; }
         /* Streamlit красит ссылки своими правилами по [data-testid], поэтому цвет и отсутствие
         подчёркивания задаём принудительно, иначе получается чужая синяя ссылка с подчёркиванием. */
         .bot-row { display: flex; justify-content: flex-end; }
@@ -242,6 +265,11 @@ def _apply_design() -> None:
         две строки) Streamlit растягивает все карточки в ряду по высоте самой высокой — и у
         остальных внизу появлялось пустое место. Убираем фиксированную высоту и padding, чтобы
         карточки были размером с содержимое, а не с самую длинную деталь. */
+        .gate { text-align: center; margin: 5rem 0 2rem; }
+        .gate-mark { font-size: 4.2rem; line-height: 1; margin-bottom: 1.4rem; }
+        .gate-title { font-size: 2.6rem !important; font-weight: 800; letter-spacing: -0.03em; color: #111827; margin: 0 0 1rem; }
+        .gate-text { color: #334155; font-size: 1.15rem !important; margin: 0; }
+        .gate-note { color: #64748b; font-size: .92rem !important; margin: .6rem 0 0; }
         .metric-card { background: #ffffff; border: 1px solid #e5e7eb; border-radius: 15px; padding: .7rem .9rem; box-shadow: 0 1px 2px rgba(15,23,42,.025); }
         .metric-label { color: #64748b; font-size: .7rem; letter-spacing: .065em; text-transform: uppercase; }
         .metric-value { color: #111827; font-size: 1.5rem; font-weight: 800; line-height: 1.2; margin: .15rem 0; }
