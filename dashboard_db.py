@@ -32,6 +32,7 @@ import access
 import activity
 import collect_ui
 import github_dispatch
+import offers
 import pairs_store
 import pairs_ui
 import run_control
@@ -1964,7 +1965,7 @@ def _render_allowed_admin(allowed: list | str | None, actor_email: str, actor_ro
                     st.rerun()
 
 
-TAB_TITLES = ["📋 Текущее состояние", "📅 История", "📈 Прогноз", "🥊 Пары конкурентов",
+TAB_TITLES = ["📋 Текущее состояние", "📅 История", "📈 Прогноз", "🥊 Пары конкурентов", "🛡 Продавцы",
               "⚙ Сбор и управление", "ℹ️ Как это работает", "📊 Активность дашборда"]
 _TAB_KEY = "main_tab"
 _SECTION_RENAMES = {"📒 Журнал": TAB_TITLES[-1]}
@@ -2122,6 +2123,93 @@ def _render_changes(rows: list | str | None) -> None:
     st.dataframe(table, use_container_width=True, hide_index=True)
     with st.expander("Все действия по времени"):
         st.dataframe(_usage_log_table(rows), use_container_width=True, hide_index=True)
+
+
+def _load_offers() -> list | str | None:
+    """Последняя проверка продавцов; None — таблицы ещё нет (миграция 016); текст — ошибка."""
+    try:
+        if not offers.table_exists(_connect):
+            return None
+        return offers.latest(_connect)
+    except offers.OffersStoreError as exc:
+        return str(exc)
+
+
+_SELLER_PROBLEM, _SELLER_BUYBOX, _SELLER_OK, _SELLER_EMPTY, _SELLER_UNKNOWN = (
+    "⚠️ Чужой продавец", "🚨 Buy Box у чужого", "✅ Только мы", "Нет предложений", "—")
+
+
+def _sellers_summary(rows: list[dict]) -> pd.DataFrame:
+    """По нашему ASIN: сколько продавцов, у кого Buy Box и по какой цене, кто чужой, итог. Проблемные сверху."""
+    groups: dict[tuple[str, str], list[dict]] = {}
+    for row in rows:
+        groups.setdefault((row["marketplace"], row["asin"]), []).append(row)
+    # Потерянный Buy Box хуже, чем чужой продавец без него: такие ASIN — первыми.
+    order = {_SELLER_BUYBOX: 0, _SELLER_PROBLEM: 1, _SELLER_EMPTY: 2, _SELLER_UNKNOWN: 3, _SELLER_OK: 4}
+    result = []
+    for (market, asin), items in groups.items():
+        sellers = [item for item in items if item["seller_name"] or item["seller_id"]]
+        buybox = next((item for item in sellers if item["buybox"]), None)
+        foreign = [item for item in sellers if item["ours"] is False]
+        if not sellers:
+            status = _SELLER_EMPTY
+        elif all(item["ours"] is None for item in sellers):
+            status = _SELLER_UNKNOWN
+        elif buybox is not None and buybox["ours"] is False:
+            status = _SELLER_BUYBOX
+        elif foreign:
+            status = _SELLER_PROBLEM
+        else:
+            status = _SELLER_OK
+        price = buybox["price"] if buybox is not None else None
+        result.append({
+            "Статус": status, "Страна": market, "ASIN": _amazon_url(asin, market), "Товар": items[0]["product"] or "",
+            "Продавцов": len(sellers),
+            "Buy Box у": (buybox["seller_name"] or buybox["seller_id"]) if buybox is not None else "",
+            "Цена Buy Box": f"{float(price):.2f} {buybox['currency'] or ''}".strip() if price is not None else "",
+            "Чужие продавцы": ", ".join(item["seller_name"] or item["seller_id"] for item in foreign),
+            "Проверено": items[0]["checked_at"].astimezone(schedule_store.TZ).strftime("%d.%m %H:%M"),
+        })
+    result.sort(key=lambda row: (order[row["Статус"]], row["Страна"], row["ASIN"]))
+    return pd.DataFrame(result, columns=["Статус", "Страна", "ASIN", "Товар", "Продавцов", "Buy Box у",
+                                         "Цена Buy Box", "Чужие продавцы", "Проверено"])
+
+
+def _render_sellers(rows: list | str | None) -> None:
+    st.markdown('<p class="section-title">Продавцы на наших карточках</p>', unsafe_allow_html=True)
+    if rows is None:
+        st.info("Проверка продавцов ещё не подключена.")
+        return
+    if isinstance(rows, str):
+        st.error(rows)
+        return
+    if not rows:
+        st.info("Проверок ещё не было: продавцы проверяются после ежедневного сбора.")
+        return
+    summary = _sellers_summary(rows)
+    lost = int((summary["Статус"] == _SELLER_BUYBOX).sum())
+    problems = lost + int((summary["Статус"] == _SELLER_PROBLEM).sum())
+    st.markdown(
+        f'<p class="section-note">Наших ASIN: {len(summary)} · с чужим продавцом: {problems} · '
+        f"из них Buy Box у чужого: {lost}</p>",
+        unsafe_allow_html=True,
+    )
+    if (summary["Статус"] == _SELLER_UNKNOWN).all():
+        st.caption("Наш продавец не задан (секреты OUR_SELLER_IDS / OUR_SELLER_NAMES) — чужих пока не отличить.")
+    link = st.column_config.LinkColumn("ASIN", display_text=r"https://www\.amazon\.[^/]+/dp/([A-Z0-9]{10})")
+    st.dataframe(summary, use_container_width=True, hide_index=True, column_config={"ASIN": link})
+    with st.expander("Все продавцы по карточкам"):
+        detail = pd.DataFrame([
+            {
+                "Страна": row["marketplace"], "ASIN": row["asin"], "Продавец": row["seller_name"] or row["seller_id"] or "",
+                "Id продавца": row["seller_id"] or "",
+                "Цена": f"{float(row['price']):.2f} {row['currency'] or ''}".strip() if row["price"] is not None else "",
+                "Buy Box": "да" if row["buybox"] else "", "FBA": {True: "да", False: "нет"}.get(row["fba"], ""),
+                "Наш": {True: "да", False: "нет"}.get(row["ours"], "—"),
+            }
+            for row in rows if row["seller_name"] or row["seller_id"]
+        ])
+        st.dataframe(detail, use_container_width=True, hide_index=True)
 
 
 def _render_journal_tab(email: str, role: str | None) -> None:
@@ -2290,7 +2378,7 @@ def main() -> None:
     _render_overview(shown)
 
     tabs = st.tabs(TAB_TITLES, key=_TAB_KEY, on_change="rerun")
-    current_tab, history_tab, forecast_tab, pairs_tab, schedule_tab, how_tab, journal_tab = tabs
+    current_tab, history_tab, forecast_tab, pairs_tab, sellers_tab, schedule_tab, how_tab, journal_tab = tabs
 
     with current_tab:
         _table_or_note(shown, with_images=True)
@@ -2323,6 +2411,11 @@ def main() -> None:
         )
         if overview is not None:
             _render_recent_runs(overview, can_edit)
+
+    with sellers_tab:
+        # Как и журнал, читает базу только на своей вкладке.
+        if sellers_tab.open:
+            _render_sellers(_load_offers())
 
     with how_tab:
         _render_how_it_works(pairs, shown_history)

@@ -116,8 +116,23 @@ def _run_admitted(parser_run_id: int) -> int:
         return 1
 
     db_runs.log_finish(sync_run_id, "done")
+    _run_offers_check()
     _write_status(state="done", step="sync", finished_at=datetime.now().isoformat(), error=None)
     return 0
+
+
+def _run_offers_check() -> None:
+    """Продавцы на наших карточках (check_offers.py) — только при OFFERS_CHECK=1 и если в этот раз
+    собирали наши товары. Шаг после синка: данные дня уже в базе, и его сбой их не трогает, поэтому
+    код выхода прогона от него не зависит — причина только в last_run.log."""
+    if os.environ.get("OFFERS_CHECK", "").strip() != "1":
+        return
+    if (os.environ.get("COLLECT_SCOPE", "all").strip().lower() or "all") not in ("all", "ours"):
+        return
+    _write_status(state="running", step="offers")
+    code = _run_step("offers", [sys.executable, str(PROJECT_DIR / "check_offers.py")])
+    if code != 0:
+        print(f"check_offers.py завершился с кодом {code} — см. last_run.log; данные сбора не затронуты.", file=sys.stderr)
 
 
 if __name__ == "__main__":

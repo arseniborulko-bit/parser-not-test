@@ -76,6 +76,11 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           PAIR_SOURCE: database
           SUBSCRIBER_SOURCE: database
+          # Продавцы на наших карточках (Offers API, 1 кредит на наш ASIN) — после синка, см. check_offers.py.
+          # «Наш» продавец — id и/или название магазина через запятую; без них тревоги о чужих не будет.
+          OFFERS_CHECK: "1"
+          OUR_SELLER_IDS: ${{ secrets.OUR_SELLER_IDS }}
+          OUR_SELLER_NAMES: ${{ secrets.OUR_SELLER_NAMES }}
         run: python run_parser_and_sync.py
 
       - name: Сохранить лог прогона

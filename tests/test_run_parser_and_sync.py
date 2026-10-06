@@ -28,7 +28,7 @@ import pytest
 def runner(monkeypatch, tmp_path):
     module = importlib.import_module("run_parser_and_sync")
     for name in ("GITHUB_ACTIONS", "GITHUB_EVENT_NAME", "GITHUB_REPOSITORY", "GITHUB_RUN_ID",
-                 "GITHUB_RUN_ATTEMPT", "COLLECTION_RUN_ID", "FORCE_COLLECTION"):
+                 "GITHUB_RUN_ATTEMPT", "COLLECTION_RUN_ID", "FORCE_COLLECTION", "OFFERS_CHECK", "COLLECT_SCOPE"):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("DATABASE_URL", "unused-test-dsn")
     monkeypatch.setattr(module, "STATUS_FILE", tmp_path / "run_status.json")
@@ -40,7 +40,7 @@ def runner(monkeypatch, tmp_path):
     monkeypatch.setattr(module.db_runs.psycopg2, "connect", forbidden)
     monkeypatch.setattr(module.subprocess, "run", forbidden)
     events = []
-    codes = {"parser": 0, "sync": 0}
+    codes = {"parser": 0, "sync": 0, "offers": 0}
 
     def admit(invocation):
         events.append(("admit", invocation))
@@ -216,3 +216,33 @@ def test_unexpected_child_exception_keeps_database_attempt_unfinished(runner, mo
     assert runner.module.main() == 1
     assert not any(e[0] == "finish" for e in runner.events)
     assert "PRIVATE_VALUE" not in capsys.readouterr().err
+
+
+def _children(runner):
+    return [e[1] for e in runner.events if e[0] == "child"]
+
+
+def test_the_offers_check_runs_after_sync_only_when_switched_on(runner, monkeypatch):
+    monkeypatch.setenv("OFFERS_CHECK", "1")
+    assert runner.module.main() == 0
+    assert _children(runner) == ["parser", "sync", "offers"]
+
+
+def test_a_failed_offers_check_does_not_fail_the_collection(runner, monkeypatch):
+    monkeypatch.setenv("OFFERS_CHECK", "1")
+    runner.codes["offers"] = 1
+    assert runner.module.main() == 0
+    status = json.loads(runner.module.STATUS_FILE.read_text(encoding="utf-8"))
+    assert status["state"] == "done"
+
+
+def test_no_offers_check_after_a_failed_sync_or_a_competitors_only_run(runner, monkeypatch):
+    monkeypatch.setenv("OFFERS_CHECK", "1")
+    runner.codes["sync"] = 1
+    runner.module.main()
+    assert "offers" not in _children(runner)
+    runner.events.clear()
+    runner.codes["sync"] = 0
+    monkeypatch.setenv("COLLECT_SCOPE", "competitors")
+    runner.module.main()
+    assert "offers" not in _children(runner)
