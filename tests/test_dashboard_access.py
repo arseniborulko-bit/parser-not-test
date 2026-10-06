@@ -587,14 +587,15 @@ def journal_text(at):
 
 def test_journal_counts_logins_share_and_activity_per_employee(dash):
     journal = dash._login_journal(LOGINS, NOW.date())
-    assert journal.period_days == 10
+    assert journal.period_days == 30  # как в Rating Radar: весь выбранный период
     rows = journal.summary.to_dict("records")
     assert [(r["email"], r["logins"], r["share"], r["active_days"], r["activity"], r["last"]) for r in rows] == [
-        ("anna", 3, 75, 2, 20, "21.09 07:00"),
-        ("boss", 1, 25, 1, 10, "12.09 10:00"),
+        ("anna", 3, 75, 2, 7, "21.09 07:00"),
+        ("boss", 1, 25, 1, 3, "12.09 10:00"),
     ]
     assert list(journal.log["logged_in_at"]) == [
         "21.09.2026 07:00", "20.09.2026 18:00", "20.09.2026 09:00", "12.09.2026 10:00"]
+    assert dash._login_journal(LOGINS, NOW.date(), 7).summary["email"].tolist() == ["anna"]
 
 
 def test_the_period_is_capped_at_thirty_days(dash):
@@ -623,9 +624,11 @@ def test_every_employee_sees_the_journal_but_not_role_management(monkeypatch, da
     at = run_on_tab(JOURNAL)
     assert not at.exception
     assert [t.label for t in at.tabs] == PUBLIC_TABS
-    summary = at.tabs[-1].dataframe[0].value
-    assert list(summary["Доля входов, %"]) == [75, 25]
-    assert list(summary["Активность, %"]) == [20, 10]
+    people = at.tabs[-1].dataframe[0].value
+    assert list(people.columns) == ["Сотрудник", "Входов", "Дней", "Доля входов, %", "Активность, %",
+                                    "Открыл разделов", "Правок", "Последний вход"]
+    assert list(people["Доля входов, %"]) == [75, 25]
+    assert list(people["Активность, %"]) == [7, 3]
     assert "Пользователи и роли" not in journal_text(at)
 
 
@@ -771,37 +774,63 @@ SCORE_LOGINS = [
 
 def test_scorecard_counts_only_allowed_people_over_the_last_seven_days(dash):
     card = dash._scorecard(SCORE_LOGINS, ALLOWED, NOW)
-    assert (card.seen, card.total, card.pct, card.last_pct, card.delta) == (2, 3, 67, 33, 34)
-    assert (card.start, card.end) == ("15.09", "21.09")
+    # За 7 дней: anna — 1 день, boss — 1 день, carl — 0; в среднем 2/3 дня из 5 → 13%.
+    # Неделей раньше: только anna, 1 день → 1/3 из 5 → 7%. Чужой (stranger) не считается.
+    assert (card.seen, card.total, card.pct) == (2, 3, 67)
+    assert round(card.avg_days, 2) == 0.67
+    assert (card.regularity, card.last_regularity, card.delta) == (13, 7, 6)
     assert card.by_dates.to_dict("records") == [
-        {"date": "14.09", "users": 1, "pct": 33},
-        {"date": "21.09 (сейчас)", "users": 2, "pct": 67},
+        {"date": "14.09", "users": 1, "regularity": 7},
+        {"date": "21.09 (сейчас)", "users": 2, "regularity": 13},
     ]
+
+
+def test_regularity_counts_distinct_days_and_never_exceeds_100(dash):
+    every_day = [{"email": "anna@maximumstores.online", "logged_in_at": at_kyiv(21, 7) - timedelta(days=d, hours=h)}
+                 for d in range(7) for h in (0, 1)]
+    card = dash._scorecard(every_day, ["anna@maximumstores.online"], NOW)
+    assert card.avg_days == 7 and card.regularity == 100
 
 
 def test_without_allowed_people_there_is_no_scorecard(dash):
     assert dash._scorecard(SCORE_LOGINS, [], NOW) is None
 
 
-def test_the_journal_shows_the_scorecard_card_with_a_green_badge(monkeypatch, dash):
+def metrics(at):
+    return {m.label: (m.value, m.proto.delta, m.help) for m in at.tabs[-1].metric}
+
+
+def test_the_journal_shows_the_scorecard_like_rating_radar(monkeypatch, dash):
     monkeypatch.setattr(access, "recent_logins", lambda connect, days=30, limit=5000: SCORE_LOGINS)
     monkeypatch.setattr(access, "allowed_table_exists", lambda connect: True)
     monkeypatch.setattr(access, "list_allowed", lambda connect: ALLOWED)
     at = run_on_tab(JOURNAL)
     assert not at.exception
+    shown = metrics(at)
+    assert shown["Регулярность"][:2] == ("13%", "+6 п.п. к прошлой неделе")
+    assert shown["Зашли"][0] == "2 из 3" and "допущенных" in shown["Зашли"][2]
+    assert shown["В среднем дней"][0] == "0.7 из 5"
     text = journal_text(at)
-    assert "Для Scorecard — эта неделя" in text and "67%" in text and "+34%" in text and "#166534" in text
-    assert "2 из 3 допущенных зашли" in text and "прошлая неделя — 33%" in text
-    assert "% для Scorecard по датам" in text
+    assert "% для Scorecard — последние 7 дней" in text and "% для Scorecard по датам" in text
     assert "Допущенные для Scorecard" not in text  # список ведёт только админ
+    assert [r.label for r in at.tabs[-1].radio] == ["Период"]
+    assert at.tabs[-1].radio[0].value == 30
 
 
-def test_a_drop_gets_a_red_badge(monkeypatch, dash):
+def test_a_drop_shows_a_negative_delta(monkeypatch, dash):
     monkeypatch.setattr(access, "recent_logins", lambda connect, days=30, limit=5000: [SCORE_LOGINS[-1]])
     monkeypatch.setattr(access, "allowed_table_exists", lambda connect: True)
     monkeypatch.setattr(access, "list_allowed", lambda connect: ALLOWED)
-    text = journal_text(run_on_tab(JOURNAL))
-    assert "-33%" in text and "#991b1b" in text
+    assert metrics(run_on_tab(JOURNAL))["Регулярность"][:2] == ("0%", "-7 п.п. к прошлой неделе")
+
+
+def test_choosing_a_period_narrows_who_is_listed(monkeypatch, dash):
+    monkeypatch.setattr(access, "recent_logins", lambda connect, days=30, limit=5000: LOGINS)
+    at = AppTest.from_string(SCRIPT)
+    at.session_state["main_tab"] = JOURNAL
+    at.session_state["journal_period"] = 7
+    at.run(timeout=30)
+    assert list(at.tabs[-1].dataframe[0].value["Сотрудник"]) == ["anna"]
 
 
 def test_admin_manages_the_allowed_list(monkeypatch, dash):
@@ -839,17 +868,17 @@ def test_sections_opened_under_the_old_journal_name_count_for_the_renamed_tab(mo
 
 def test_until_the_allowed_list_exists_the_card_counts_everyone_who_logged_in(monkeypatch, dash):
     monkeypatch.setattr(access, "recent_logins", lambda connect, days=30, limit=5000: SCORE_LOGINS)
-    text = journal_text(run_on_tab(JOURNAL))
-    # Разных людей трое (Boss@ и boss@ — один адрес), и все заходили за последние 7 дней.
-    assert "Для Scorecard — эта неделя" in text and "100%" in text
-    assert "3 из 3 заходивших за 12 нед. зашли" in text
+    shown = metrics(run_on_tab(JOURNAL))
+    # Разных людей трое (Boss@ и boss@ — один адрес), все заходили за 7 дней, по одному дню.
+    assert shown["Регулярность"][0] == "20%"
+    assert shown["Зашли"][0] == "3 из 3" and "заходивших за 12 нед." in shown["Зашли"][2]
 
 
 def test_an_empty_allowed_list_also_falls_back_to_everyone(monkeypatch, dash):
     monkeypatch.setattr(access, "recent_logins", lambda connect, days=30, limit=5000: SCORE_LOGINS)
     monkeypatch.setattr(access, "allowed_table_exists", lambda connect: True)
     monkeypatch.setattr(access, "list_allowed", lambda connect: [])
-    assert "3 из 3 заходивших за 12 нед. зашли" in journal_text(run_on_tab(JOURNAL))
+    assert metrics(run_on_tab(JOURNAL))["Зашли"][0] == "3 из 3"
 
 
 def test_no_logins_at_all_means_no_card(dash):
@@ -918,3 +947,26 @@ def test_without_the_offers_table_the_tab_says_it_is_not_connected(dash):
     at = run_on_tab(SELLERS)
     tab = next(t for t in at.tabs if t.label == SELLERS)
     assert [i.value for i in tab.info] == ["Проверка продавцов ещё не подключена."]
+
+
+def test_people_table_counts_opened_sections_and_edits_within_the_period(monkeypatch, dash, actions):
+    import activity
+    import usage_log
+
+    monkeypatch.setattr(access, "recent_logins", lambda connect, days=30, limit=5000: LOGINS)
+    events = [
+        {"session_id": "s", "email": "anna@maximumstores.online", "at": at_kyiv(20, 9), "section": PUBLIC_TABS[0]},
+        {"session_id": "s", "email": "anna@maximumstores.online", "at": at_kyiv(20, 9, 5), "section": None},
+        {"session_id": "s", "email": "anna@maximumstores.online", "at": at_kyiv(20, 9, 6), "section": "📈 Прогноз"},
+        {"session_id": "o", "email": "anna@maximumstores.online", "at": at_kyiv(1, 9) - timedelta(days=40),
+         "section": "📈 Прогноз"},  # вне 30 дней
+    ]
+    monkeypatch.setattr(activity, "recent", lambda connect, days=30, limit=50000: events)
+    monkeypatch.setattr(usage_log, "log_exists", lambda connect: True)
+    monkeypatch.setattr(usage_log, "recent", lambda connect, days: [
+        {"created_at": at_kyiv(19, 9), "user_name": "boss@maximumstores.online", "action": "pairs_add", "volume": 1, "unit": "пар"},
+        {"created_at": at_kyiv(19, 9), "user_name": "boss@maximumstores.online", "action": "export_csv", "volume": 1, "unit": "строк"},
+    ])
+    people = run_on_tab(JOURNAL).tabs[-1].dataframe[0].value
+    assert dict(zip(people["Сотрудник"], people["Открыл разделов"])) == {"anna": 2, "boss": 0}
+    assert dict(zip(people["Сотрудник"], people["Правок"])) == {"anna": 0, "boss": 1}

@@ -242,15 +242,6 @@ def _apply_design() -> None:
         две строки) Streamlit растягивает все карточки в ряду по высоте самой высокой — и у
         остальных внизу появлялось пустое место. Убираем фиксированную высоту и padding, чтобы
         карточки были размером с содержимое, а не с самую длинную деталь. */
-        .scorecard { display: flex; justify-content: space-between; align-items: center; gap: 1rem; flex-wrap: wrap;
-            background: #ffffff; border: 1px solid #e5e7eb; border-radius: 15px; padding: 1.2rem 1.4rem; margin: .4rem 0 1rem; }
-        .scorecard p { margin: 0; }
-        .scorecard-label { color: #64748b; font-size: .88rem; margin-bottom: .35rem !important; }
-        .scorecard-main { display: flex; align-items: baseline; gap: .6rem; }
-        .scorecard-value { font-size: 2.5rem; font-weight: 800; line-height: 1; color: #111827; }
-        .scorecard-badge { font-size: .82rem; font-weight: 650; padding: .15rem .5rem; border-radius: 6px; }
-        .scorecard-side { text-align: right; color: #334155; font-size: .9rem; }
-        .scorecard-muted { color: #94a3b8; font-size: .8rem; margin-top: .25rem !important; }
         .metric-card { background: #ffffff; border: 1px solid #e5e7eb; border-radius: 15px; padding: .7rem .9rem; box-shadow: 0 1px 2px rgba(15,23,42,.025); }
         .metric-label { color: #64748b; font-size: .7rem; letter-spacing: .065em; text-transform: uppercase; }
         .metric-value { color: #111827; font-size: 1.5rem; font-weight: 800; line-height: 1.2; margin: .15rem 0; }
@@ -1762,6 +1753,7 @@ def _render_auth_bar(user: dict, email: str, role: str | None) -> None:
 
 _JOURNAL_DAYS = 30
 _JOURNAL_WEEKS = 12
+_JOURNAL_PERIODS = (7, 14, 30, 60)
 
 
 @dataclass
@@ -1774,9 +1766,9 @@ class LoginJournal:
 
 
 def _login_journal(rows: list, today, days: int = _JOURNAL_DAYS) -> LoginJournal:
-    """Проценты считаются за период: с первого записанного входа (журнал ведётся не с начала времён),
-    но не дольше days дней. «Доля входов» — сколько из всех входов команды пришлось на человека,
-    «Активность» — в сколько из дней периода он заходил хотя бы раз."""
+    """Сводка за последние days дней (как в Rating Radar — весь выбранный период). «Доля входов» —
+    сколько из всех входов команды пришлось на человека, «Активность» — в сколько процентов дней
+    периода он заходил хотя бы раз."""
     log = pd.DataFrame(rows, columns=["email", "logged_in_at"])
     if log.empty:
         return LoginJournal(pd.DataFrame(), log, 0, pd.DataFrame())
@@ -1785,7 +1777,7 @@ def _login_journal(rows: list, today, days: int = _JOURNAL_DAYS) -> LoginJournal
     log["logged_in_at"] = pd.to_datetime(log["logged_in_at"], utc=True).dt.tz_convert(schedule_store.TZ)
     log["day"] = log["logged_in_at"].dt.date
     weekly = _weekly_users(log, today)
-    period_days = max(1, min(days, (today - log["day"].min()).days + 1))
+    period_days = max(1, days)
     # Неделям нужна история длиннее периода; сводка и список — только за последние days дней.
     log = log[log["day"] > today - timedelta(days=days)].reset_index(drop=True)
     if log.empty:
@@ -1844,28 +1836,32 @@ def _load_allowed() -> list | str | None:
         return str(exc)
 
 
+_SCORECARD_WORKDAYS = 5
+
+
 @dataclass
 class Scorecard:
-    """Доля допущенных, заходивших за последние 7 дней, и то же неделей раньше. by_dates — та же доля
-    с шагом в неделю назад (старые сверху), для таблицы «% для Scorecard по датам»."""
-    pct: int
-    last_pct: int
+    """Scorecard за последние 7 дней — как в Rating Radar. «Регулярность» = в среднем дней со входом на
+    человека / 5 рабочих дней × 100; «Зашли» — сколько допущенных заходили хоть раз. last_* — то же за
+    предыдущие 7 дней. by_dates — те же цифры с шагом в неделю назад (старые сверху)."""
+    regularity: int
+    last_regularity: int
+    avg_days: float
     seen: int
     total: int
-    start: str
-    end: str
+    pct: int
     by_dates: pd.DataFrame
     # Кто в знаменателе: «допущенных» (список allowed_users) или, пока списка нет, все заходившие.
     base: str = "допущенных"
 
     @property
     def delta(self) -> int:
-        return self.pct - self.last_pct
+        """Изменение регулярности к прошлой неделе, в процентных пунктах."""
+        return self.regularity - self.last_regularity
 
 
 def _scorecard(rows: list, allowed: Iterable[str], now: datetime, weeks: int = _JOURNAL_WEEKS) -> Scorecard | None:
-    """% = уникальные допущенные, входившие за 7 дней до момента / всего допущенных × 100. Считаются только
-    люди из списка: зашедший не из списка не поднимает процент выше 100."""
+    """Считаются только люди из списка: зашедший не из списка не поднимает цифры выше 100%."""
     allowed = {email for email in (access.normalize_email(item) for item in allowed) if email}
     if not allowed:
         return None
@@ -1876,11 +1872,16 @@ def _scorecard(rows: list, allowed: Iterable[str], now: datetime, weeks: int = _
     now = pd.Timestamp(now).tz_convert("UTC")
     week = pd.Timedelta(days=7)
 
-    def seen_by(end) -> int:
-        return len({email for email, at in logins if email in allowed and end - week < at <= end})
+    def window(end) -> tuple[int, float]:
+        """(сколько допущенных заходили, в среднем дней со входом на допущенного) за 7 суток до end."""
+        days: dict[str, set] = {}
+        for email, at in logins:
+            if email in allowed and end - week < at <= end:
+                days.setdefault(email, set()).add(at.tz_convert(schedule_store.TZ).date())
+        return len(days), sum(len(d) for d in days.values()) / len(allowed)
 
-    def percent(count: int) -> int:
-        return round(100 * count / len(allowed))
+    def regularity(avg_days: float) -> int:
+        return min(100, round(avg_days / _SCORECARD_WORKDAYS * 100))
 
     first = min((at for _, at in logins), default=now)
     dates = []
@@ -1888,45 +1889,41 @@ def _scorecard(rows: list, allowed: Iterable[str], now: datetime, weeks: int = _
         end = now - k * week
         if k and end <= first:
             break
-        count = seen_by(end)
+        seen, avg = window(end)
         dates.append({
             "date": end.tz_convert(schedule_store.TZ).strftime("%d.%m") + (" (сейчас)" if k == 0 else ""),
-            "users": count, "pct": percent(count),
+            "users": seen, "regularity": regularity(avg),
         })
-    this_week, last_week = seen_by(now), seen_by(now - week)
-    kyiv = now.tz_convert(schedule_store.TZ)
+    seen, avg = window(now)
+    _, last_avg = window(now - week)
     return Scorecard(
-        pct=percent(this_week), last_pct=percent(last_week), seen=this_week, total=len(allowed),
-        start=(kyiv - pd.Timedelta(days=6)).strftime("%d.%m"), end=kyiv.strftime("%d.%m"),
-        by_dates=pd.DataFrame(dates[::-1], columns=["date", "users", "pct"]),
+        regularity=regularity(avg), last_regularity=regularity(last_avg), avg_days=avg, seen=seen,
+        total=len(allowed), pct=round(100 * seen / len(allowed)),
+        by_dates=pd.DataFrame(dates[::-1], columns=["date", "users", "regularity"]),
     )
 
 
-def _render_scorecard_card(card: Scorecard) -> None:
-    if card.delta > 0:
-        badge = ("#dcfce7", "#166534", f"+{card.delta}%")
-    elif card.delta < 0:
-        badge = ("#fee2e2", "#991b1b", f"{card.delta}%")
-    else:
-        badge = ("#eef0f4", "#475569", "0%")
-    st.markdown(
-        '<div class="scorecard">'
-        '<div><p class="scorecard-label">Для Scorecard — эта неделя</p>'
-        f'<div class="scorecard-main"><span class="scorecard-value">{card.pct}%</span>'
-        f'<span class="scorecard-badge" style="background:{badge[0]};color:{badge[1]}">{badge[2]}</span></div></div>'
-        f'<div class="scorecard-side"><p>{card.seen} из {card.total} {escape(card.base)} зашли</p>'
-        f'<p class="scorecard-muted">неделя {card.start} – {card.end} · прошлая неделя — {card.last_pct}%</p></div>'
-        '</div>',
-        unsafe_allow_html=True,
+def _render_scorecard(card: Scorecard) -> None:
+    st.markdown('<p class="section-title">% для Scorecard — последние 7 дней</p>', unsafe_allow_html=True)
+    left, middle, right = st.columns(3)
+    left.metric(
+        "Регулярность", f"{card.regularity}%", delta=f"{card.delta:+d} п.п. к прошлой неделе",
+        delta_color="normal" if card.delta else "off",
+        help=f"В среднем дней со входом на человека / {_SCORECARD_WORKDAYS} рабочих дней × 100.",
     )
+    middle.metric("Зашли", f"{card.seen} из {card.total}",
+                  help=f"Сколько {card.base} заходили хотя бы раз за 7 дней.")
+    right.metric("В среднем дней", f"{card.avg_days:.1f} из {_SCORECARD_WORKDAYS}",
+                 help="Сколько разных дней за неделю в среднем заходил один человек.")
 
 
 def _render_scorecard_dates(card: Scorecard) -> None:
     st.markdown('<p class="section-title">% для Scorecard по датам</p>', unsafe_allow_html=True)
     st.dataframe(
-        card.by_dates.rename(columns={"date": "Дата колонки Scorecard", "users": "Зашли", "pct": "%"}),
+        card.by_dates.rename(columns={"date": "Дата колонки Scorecard", "users": "Зашли",
+                                      "regularity": "Регулярность, %"}),
         use_container_width=True, hide_index=True,
-        column_config={"%": st.column_config.ProgressColumn(format="%d%%", min_value=0, max_value=100)},
+        column_config={"Регулярность, %": st.column_config.ProgressColumn(format="%d%%", min_value=0, max_value=100)},
     )
 
 
@@ -2008,7 +2005,7 @@ def _load_activity() -> list | str | None:
     if not _activity_on():
         return None
     try:
-        return activity.recent(_connect, _JOURNAL_DAYS)
+        return activity.recent(_connect, max(_JOURNAL_PERIODS))
     except activity.ActivityError as exc:
         return str(exc)
 
@@ -2043,12 +2040,6 @@ def _render_time_spent(rows: list) -> None:
 
 def _render_sections(rows: list) -> None:
     st.markdown('<p class="section-title">Какие разделы открывают</p>', unsafe_allow_html=True)
-    st.markdown(
-        '<p class="section-note">«В % сессий» — в скольких открытиях дашборда раздел смотрели хоть раз. '
-        f"«{TAB_TITLES[0]}» открывается сам при входе, поэтому у него всегда больше. Разделы с нулём "
-        "никто не открывал — кандидаты, чтобы убрать.</p>",
-        unsafe_allow_html=True,
-    )
     # Вкладка «Активность дашборда» раньше называлась «📒 Журнал»: старые записи считаем под новым именем.
     rows = [{**row, "section": _SECTION_RENAMES.get(row["section"], row["section"])} for row in rows]
     table = activity.sections(rows, TAB_TITLES)
@@ -2056,14 +2047,29 @@ def _render_sections(rows: list) -> None:
         moment.tz_convert(schedule_store.TZ).strftime("%d.%m %H:%M") if pd.notna(moment) else "—"
         for moment in table["last"]
     ]
+    opened = table[table["opens"] > 0]
+    if not opened.empty:
+        st.altair_chart(_sections_chart(opened), use_container_width=True)
+    # В таблице и неоткрытые разделы — с нулём: по ним видно, что можно убрать.
     st.dataframe(
-        table.rename(columns={
-            "section": "Раздел", "opens": "Открытий", "employees": "Сотрудников", "share": "В % сессий",
-            "last": "Последний раз",
+        table[["section", "opens", "employees", "last"]].rename(columns={
+            "section": "Раздел", "opens": "Открытий", "employees": "Людей", "last": "Последний раз",
         }),
         use_container_width=True, hide_index=True,
-        column_config={"В % сессий": st.column_config.ProgressColumn(format="%d%%", min_value=0, max_value=100)},
     )
+
+
+def _sections_chart(opened: pd.DataFrame) -> alt.Chart:
+    bars = alt.Chart(opened).encode(
+        y=alt.Y("section:N", sort=list(opened["section"]), title=None, axis=alt.Axis(labelLimit=260)),
+        x=alt.X("opens:Q", title=None, axis=alt.Axis(tickMinStep=1, format="d")),
+        tooltip=[alt.Tooltip("section:N", title="Раздел"), alt.Tooltip("opens:Q", title="Открытий"),
+                 alt.Tooltip("employees:Q", title="Людей")],
+    )
+    return (
+        bars.mark_bar(color="#168ed0", cornerRadiusTopRight=4, cornerRadiusBottomRight=4, size=22)
+        + bars.mark_text(align="left", dx=4, color="#334155").encode(text="opens:Q")
+    ).properties(height=max(90, 38 * len(opened)))
 
 
 # Что считается правкой, а что запуском или выгрузкой. Вход по паролю команды — не правка, в счёт не идёт.
@@ -2103,7 +2109,7 @@ def _load_usage() -> list | str | None:
     try:
         if not usage_log.log_exists(_connect):
             return None
-        return usage_log.recent(_connect, _JOURNAL_DAYS)
+        return usage_log.recent(_connect, max(_JOURNAL_PERIODS))
     except usage_log.UsageLogError as exc:
         return str(exc)
 
@@ -2213,28 +2219,64 @@ def _render_sellers(rows: list | str | None) -> None:
 
 
 def _render_journal_tab(email: str, role: str | None) -> None:
+    """Порядок как в Rating Radar: заголовок с «Обновить», Scorecard за 7 дней, период, кто пользуется,
+    разделы; ниже — наши дополнительные разделы и управление для админа."""
+    head, refresh = st.columns([5, 1])
+    head.markdown('<p class="section-title">Активность дашборда</p>', unsafe_allow_html=True)
+    if refresh.button("🔄 Обновить", key="journal_refresh", use_container_width=True):
+        _activity_on.clear()  # журнал действий могли только что подключить
     logins, allowed = _load_logins(), _load_allowed()
-    journal = logins if isinstance(logins, str) else _login_journal(logins, _now().date())
     card = None
     if isinstance(logins, list):
         card = _scorecard(logins, allowed, _now()) if isinstance(allowed, list) and allowed else None
         if card is None:
             # Пока список допущенных не заведён (нет таблицы или он пуст), знаменатель — все, кто заходил
-            # за _JOURNAL_WEEKS недель: карточку видно сразу, а с заполненным списком она перейдёт на него.
+            # за _JOURNAL_WEEKS недель: цифры видно сразу, а с заполненным списком они перейдут на него.
             card = _scorecard(logins, [row["email"] for row in logins], _now())
             if card is not None:
                 card.base = f"заходивших за {_JOURNAL_WEEKS} нед."
+    if card is not None:
+        _render_scorecard(card)
+    days = st.radio("Период", _JOURNAL_PERIODS, index=_JOURNAL_PERIODS.index(_JOURNAL_DAYS), horizontal=True,
+                    format_func=lambda value: f"{value} дн.", key="journal_period")
+    journal = logins if isinstance(logins, str) else _login_journal(logins, _now().date(), days)
     if isinstance(allowed, str) and role != access.ROLE_ADMIN:
         allowed = None  # ошибку списка допущенных видит админ в своём разделе; остальным она ни к чему
-    _render_journal(journal, _load_activity(), email, role, _load_usage(), card, allowed)
+    since = _now() - timedelta(days=days)
+    actions, usage = _load_activity(), _load_usage()
+    if isinstance(actions, list):
+        actions = [row for row in actions if row["at"] >= since]
+    if isinstance(usage, list):
+        usage = [row for row in usage if row["created_at"] >= since]
+    _render_journal(journal, actions, email, role, usage, card, allowed)
+
+
+def _people_table(summary: pd.DataFrame, actions: list | str | None, usage: list | str | None) -> pd.DataFrame:
+    """«Кто пользуется» как в Rating Radar: входы и дни плюс сколько разделов открыл и сколько правок сделал."""
+    opened: dict[str, int] = {}
+    for row in actions if isinstance(actions, list) else []:
+        if row["section"]:
+            name = _short_name(row["email"])
+            opened[name] = opened.get(name, 0) + 1
+    edits: dict[str, int] = {}
+    for row in usage if isinstance(usage, list) else []:
+        if row["action"] in _USAGE_KINDS["edits"]:
+            name = _short_name(row["user_name"])
+            edits[name] = edits.get(name, 0) + 1
+    return pd.DataFrame({
+        "Сотрудник": summary["email"], "Входов": summary["logins"], "Дней": summary["active_days"],
+        "Доля входов, %": summary["share"], "Активность, %": summary["activity"],
+        "Открыл разделов": [opened.get(name, 0) for name in summary["email"]],
+        "Правок": [edits.get(name, 0) for name in summary["email"]],
+        "Последний вход": summary["last"],
+    })
 
 
 def _render_journal(journal: LoginJournal | str, actions: list | str | None, email: str, role: str | None,
                     usage: list | str | None = None, card: Scorecard | None = None,
                     allowed: list | str | None = None) -> None:
-    """Вкладка «Активность дашборда»: входы, время и разделы видят все сотрудники, управление ролями — только админ."""
-    if card is not None:
-        _render_scorecard_card(card)
+    """Вкладка «Активность дашборда» после Scorecard и периода. Всё видят все сотрудники, кроме управления
+    списком допущенных и ролями — оно только админу."""
     if isinstance(journal, str):
         st.error(journal)
     elif journal.summary.empty and (journal.weekly is None or journal.weekly.empty):
@@ -2242,32 +2284,28 @@ def _render_journal(journal: LoginJournal | str, actions: list | str | None, ema
     elif journal.summary.empty:
         st.info(f"За {journal.period_days} дн. входов не было.")
     else:
-        st.markdown('<p class="section-title">Кто пользуется дашбордом</p>', unsafe_allow_html=True)
+        st.markdown('<p class="section-title">Кто пользуется</p>', unsafe_allow_html=True)
         st.dataframe(
-            journal.summary[["email", "logins", "share", "active_days", "activity", "last"]].rename(columns={
-                "email": "Сотрудник", "logins": "Входов", "share": "Доля входов, %",
-                "active_days": "Дней с входом", "activity": "Активность, %", "last": "Последний вход",
-            }),
-            use_container_width=True, hide_index=True,
+            _people_table(journal.summary, actions, usage), use_container_width=True, hide_index=True,
             column_config={
                 "Доля входов, %": st.column_config.ProgressColumn(format="%d%%", min_value=0, max_value=100),
                 "Активность, %": st.column_config.ProgressColumn(format="%d%%", min_value=0, max_value=100),
             },
         )
 
+    # actions is None — таблицы журнала действий (миграция 014) ещё нет: разделы просто не показываются.
+    if isinstance(actions, str):
+        st.error(actions)
+    elif actions is not None:
+        _render_sections(actions)
+        _render_time_spent(actions)
+    _render_changes(usage)
+
     if isinstance(journal, LoginJournal) and journal.weekly is not None and not journal.weekly.empty:
         st.markdown('<p class="section-title">Сотрудников со входом по неделям</p>', unsafe_allow_html=True)
         st.altair_chart(_weekly_users_chart(journal.weekly), use_container_width=True)
     if card is not None:
         _render_scorecard_dates(card)
-
-    # actions is None — таблицы журнала действий (миграция 014) ещё нет: разделы просто не показываются.
-    if isinstance(actions, str):
-        st.error(actions)
-    elif actions is not None:
-        _render_time_spent(actions)
-        _render_sections(actions)
-    _render_changes(usage)
 
     if isinstance(journal, LoginJournal) and not journal.log.empty:
         st.markdown('<p class="section-title">Все входы</p>', unsafe_allow_html=True)
