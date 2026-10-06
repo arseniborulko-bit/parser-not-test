@@ -801,11 +801,6 @@ def test_a_drop_gets_a_red_badge(monkeypatch, dash):
     assert "-33%" in text and "#991b1b" in text
 
 
-def test_without_the_allowed_table_there_is_no_card_for_employees(dash):
-    text = journal_text(run_on_tab(JOURNAL))
-    assert "Scorecard" not in text
-
-
 def test_admin_manages_the_allowed_list(monkeypatch, dash):
     monkeypatch.setenv("ADMIN_EMAILS", "boss@maximumstores.online")
     sign_in(monkeypatch, dash, employee("boss@maximumstores.online"))
@@ -837,3 +832,22 @@ def test_sections_opened_under_the_old_journal_name_count_for_the_renamed_tab(mo
     sections = next(f.value for f in at.tabs[-1].dataframe if "Раздел" in f.value)
     assert "📒 Журнал" not in list(sections["Раздел"])
     assert dict(zip(sections["Раздел"], sections["Открытий"]))[JOURNAL] == 2
+
+
+def test_until_the_allowed_list_exists_the_card_counts_everyone_who_logged_in(monkeypatch, dash):
+    monkeypatch.setattr(access, "recent_logins", lambda connect, days=30, limit=5000: SCORE_LOGINS)
+    text = journal_text(run_on_tab(JOURNAL))
+    # Разных людей трое (Boss@ и boss@ — один адрес), и все заходили за последние 7 дней.
+    assert "Для Scorecard — эта неделя" in text and "100%" in text
+    assert "3 из 3 заходивших за 12 нед. зашли" in text
+
+
+def test_an_empty_allowed_list_also_falls_back_to_everyone(monkeypatch, dash):
+    monkeypatch.setattr(access, "recent_logins", lambda connect, days=30, limit=5000: SCORE_LOGINS)
+    monkeypatch.setattr(access, "allowed_table_exists", lambda connect: True)
+    monkeypatch.setattr(access, "list_allowed", lambda connect: [])
+    assert "3 из 3 заходивших за 12 нед. зашли" in journal_text(run_on_tab(JOURNAL))
+
+
+def test_no_logins_at_all_means_no_card(dash):
+    assert "Scorecard" not in journal_text(run_on_tab(JOURNAL))

@@ -1854,6 +1854,8 @@ class Scorecard:
     start: str
     end: str
     by_dates: pd.DataFrame
+    # Кто в знаменателе: «допущенных» (список allowed_users) или, пока списка нет, все заходившие.
+    base: str = "допущенных"
 
     @property
     def delta(self) -> int:
@@ -1911,7 +1913,7 @@ def _render_scorecard_card(card: Scorecard) -> None:
         '<div><p class="scorecard-label">Для Scorecard — эта неделя</p>'
         f'<div class="scorecard-main"><span class="scorecard-value">{card.pct}%</span>'
         f'<span class="scorecard-badge" style="background:{badge[0]};color:{badge[1]}">{badge[2]}</span></div></div>'
-        f'<div class="scorecard-side"><p>{card.seen} из {card.total} допущенных зашли</p>'
+        f'<div class="scorecard-side"><p>{card.seen} из {card.total} {escape(card.base)} зашли</p>'
         f'<p class="scorecard-muted">неделя {card.start} – {card.end} · прошлая неделя — {card.last_pct}%</p></div>'
         '</div>',
         unsafe_allow_html=True,
@@ -2125,7 +2127,15 @@ def _render_changes(rows: list | str | None) -> None:
 def _render_journal_tab(email: str, role: str | None) -> None:
     logins, allowed = _load_logins(), _load_allowed()
     journal = logins if isinstance(logins, str) else _login_journal(logins, _now().date())
-    card = _scorecard(logins, allowed, _now()) if isinstance(logins, list) and isinstance(allowed, list) else None
+    card = None
+    if isinstance(logins, list):
+        card = _scorecard(logins, allowed, _now()) if isinstance(allowed, list) and allowed else None
+        if card is None:
+            # Пока список допущенных не заведён (нет таблицы или он пуст), знаменатель — все, кто заходил
+            # за _JOURNAL_WEEKS недель: карточку видно сразу, а с заполненным списком она перейдёт на него.
+            card = _scorecard(logins, [row["email"] for row in logins], _now())
+            if card is not None:
+                card.base = f"заходивших за {_JOURNAL_WEEKS} нед."
     if isinstance(allowed, str) and role != access.ROLE_ADMIN:
         allowed = None  # ошибку списка допущенных видит админ в своём разделе; остальным она ни к чему
     _render_journal(journal, _load_activity(), email, role, _load_usage(), card, allowed)
