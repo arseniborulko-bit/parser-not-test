@@ -970,3 +970,11 @@ def test_people_table_counts_opened_sections_and_edits_within_the_period(monkeyp
     people = run_on_tab(JOURNAL).tabs[-1].dataframe[0].value
     assert dict(zip(people["Сотрудник"], people["Открыл разделов"])) == {"anna": 2, "boss": 0}
     assert dict(zip(people["Сотрудник"], people["Правок"])) == {"anna": 0, "boss": 1}
+
+
+def test_without_the_allowed_table_the_admin_section_is_hidden_entirely(monkeypatch, dash):
+    monkeypatch.setenv("ADMIN_EMAILS", "boss@maximumstores.online")
+    sign_in(monkeypatch, dash, employee("boss@maximumstores.online"))
+    monkeypatch.setattr(access, "list_users", lambda connect: [])
+    text = journal_text(run_on_tab(JOURNAL))
+    assert "Допущенные для Scorecard" not in text and "015" not in text

@@ -1928,11 +1928,11 @@ def _render_scorecard_dates(card: Scorecard) -> None:
 
 
 def _render_allowed_admin(allowed: list | str | None, actor_email: str, actor_role: str) -> None:
-    """Список допущенных для Scorecard — только админ. Вход на сайт он не ограничивает."""
-    st.markdown('<p class="section-title">Допущенные для Scorecard</p>', unsafe_allow_html=True)
+    """Список допущенных для Scorecard — только админ. Вход на сайт он не ограничивает.
+    Пока таблицы нет (миграция 015), раздела не видно вовсе."""
     if allowed is None:
-        st.caption("Таблица bsr_radar.allowed_users ещё не создана (миграция 015).")
         return
+    st.markdown('<p class="section-title">Допущенные для Scorecard</p>', unsafe_allow_html=True)
     if isinstance(allowed, str):
         st.error(allowed)
         return
