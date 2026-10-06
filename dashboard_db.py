@@ -31,6 +31,7 @@ from dotenv import load_dotenv
 import access
 import activity
 import collect_ui
+import forecast_ui
 import github_dispatch
 import pairs_store
 import pairs_ui
@@ -1119,262 +1120,6 @@ def _render_competitors_pivot(history: pd.DataFrame, pairs: pd.DataFrame) -> Non
     st.caption(f"Замеров: {len(hist)} · дней: {len(days_c)} · наших товаров: {len(use_ours)}")
 
 
-_FORECAST_WINDOWS = {"7 дней": 7, "14 дней": 14, "30 дней": 30}
-_FORECAST_HORIZONS = {"7 дней": 7, "14 дней": 14, "30 дней": 30}
-# Меньше трёх замеров — это не тренд, а две точки и совпадение. Такой ASIN в прогноз не берём.
-MIN_FORECAST_POINTS = 3
-
-
-def _daily_series(data: pd.DataFrame, value_column: str, asin_column: str) -> pd.DataFrame:
-    """Значения по дням для одной стороны пары, приведённые к виду «ASIN, страна, день, число»."""
-    if asin_column not in data or value_column not in data or "snapshot_date" not in data:
-        return pd.DataFrame(columns=["ASIN", "Страна", "Дата", "Значение"])
-    return pd.DataFrame({
-        "ASIN": data[asin_column],
-        "Страна": data["marketplace"] if "marketplace" in data else "",
-        "Дата": pd.to_datetime(data["snapshot_date"], errors="coerce"),
-        "Значение": pd.to_numeric(data[value_column], errors="coerce"),
-    })
-
-
-def _trend(days: pd.Series, values: pd.Series) -> float:
-    """Типичное изменение BSR в день — медиана дневных изменений, а не прямая по всем точкам.
-
-    На боевых данных BSR скачет на сотни тысяч за сутки, и метод наименьших квадратов давал
-    наклоны вроде −180000 в день: проекция улетала в минус и упиралась в ноль почти у всех.
-    Медиана не даёт одному выбросу задать тренд. Дни делим на реальный разрыв, поэтому
-    пропущенный день не удваивает скорость.
-    """
-    gaps = days.diff().dt.days.astype(float)
-    changes = values.astype(float).diff()
-    daily = (changes / gaps).replace([np.inf, -np.inf], np.nan).dropna()
-    if daily.empty:
-        return 0.0
-    return float(daily.median())
-
-
-def _forecast_long(data: pd.DataFrame, window_days: int) -> pd.DataFrame:
-    """Дневные точки BSR (наши и конкурентов вместе) за окно — общий срез для таблицы и графиков."""
-    parts = [
-        _daily_series(data, "our_bsr", "our_asin"),
-        _daily_series(data, "comp_bsr", "comp_asin"),
-    ]
-    long = pd.concat([part for part in parts if not part.empty], ignore_index=True) if any(
-        not part.empty for part in parts) else pd.DataFrame()
-    if long.empty:
-        return pd.DataFrame()
-    long = long.dropna(subset=["Дата", "Значение"])
-    long = long[long["ASIN"].astype(str).str.strip().ne("")]
-    if long.empty:
-        return pd.DataFrame()
-
-    # Один ASIN на одном рынке за день — одно значение (он же повторяется в разных парах).
-    long = long.groupby(["ASIN", "Страна", "Дата"], as_index=False)["Значение"].last()
-    last_day = long["Дата"].max()
-    return long[long["Дата"] > last_day - pd.Timedelta(days=window_days)]
-
-
-def _forecast_table(data: pd.DataFrame, window_days: int, horizon_days: int) -> pd.DataFrame:
-    """Куда идёт BSR каждого ASIN: сегодняшнее значение, изменение в день и простая проекция.
-
-    Это прямая экстраполяция тренда, а не модель: она не знает про сезон, акции и новинки.
-    Поэтому рядом всегда показывается, на скольких замерах она построена.
-    """
-    long = _forecast_long(data, window_days)
-    if long.empty:
-        return pd.DataFrame()
-
-    rows = []
-    for (asin, market), group in long.groupby(["ASIN", "Страна"]):
-        group = group.sort_values("Дата")
-        if len(group) < MIN_FORECAST_POINTS:
-            continue
-        slope = _trend(group["Дата"], group["Значение"])
-        current = float(group["Значение"].iloc[-1])
-        projected = current + slope * horizon_days
-        rows.append({
-            "Страна": market,
-            "ASIN": asin,
-            "BSR сейчас": current,
-            "Изменение в день": slope,
-            f"Прогноз через {horizon_days} дн.": max(projected, 0.0),
-            "Замеров": len(group),
-            # BSR: чем меньше, тем лучше, поэтому падение наклона — это рост позиций.
-            "Тренд": "растём" if slope < 0 else ("падаем" if slope > 0 else "без движения"),
-        })
-    if not rows:
-        return pd.DataFrame()
-    return pd.DataFrame(rows).sort_values(["Изменение в день", "ASIN"], ignore_index=True)
-
-
-_FORECAST_LEADERS = 15
-
-
-def _forecast_leaders_chart(table: pd.DataFrame) -> alt.Chart:
-    """Кто быстрее всего меняет позиции: столбцы «Изменение в день», худшие/лучшие сверху.
-
-    Таблица уже отсортирована по возрастанию «Изменение в день» — растущие (BSR падает) первые."""
-    leaders = table.head(_FORECAST_LEADERS).copy()
-    leaders["Метка"] = leaders["Страна"] + " · " + leaders["ASIN"]
-    return alt.Chart(leaders).mark_bar().encode(
-        x=alt.X("Изменение в день:Q", title="Изменение BSR в день"),
-        y=alt.Y("Метка:N", sort=list(leaders["Метка"]), title=None),
-        color=alt.condition("datum['Изменение в день'] < 0", alt.value("#2e7d32"), alt.value("#c62828")),
-        tooltip=["Страна", "ASIN", alt.Tooltip("BSR сейчас:Q", format=",.0f", title="BSR сейчас"),
-                 alt.Tooltip("Изменение в день:Q", format="+,.0f", title="Изменение в день"), "Замеров"],
-    ).properties(height=max(220, 26 * len(leaders)))
-
-
-def _series_from_group(group: pd.DataFrame, horizon_days: int) -> pd.DataFrame:
-    """История одного ASIN плюс прогнозная точка на горизонте. Последняя фактическая точка
-    повторяется как начало прогнозной линии, чтобы пунктир продолжал сплошную линию, а не висел
-    отдельной точкой в воздухе."""
-    group = group.sort_values("Дата")
-    if len(group) < MIN_FORECAST_POINTS:
-        return pd.DataFrame()
-    slope = _trend(group["Дата"], group["Значение"])
-    current = float(group["Значение"].iloc[-1])
-    last_day = group["Дата"].max()
-    projected = max(current + slope * horizon_days, 0.0)
-    fact = pd.DataFrame({"Дата": group["Дата"], "BSR": group["Значение"], "Тип": "Факт"})
-    forecast = pd.DataFrame({
-        "Дата": [last_day, last_day + pd.Timedelta(days=horizon_days)],
-        "BSR": [current, projected],
-        "Тип": "Прогноз",
-    })
-    return pd.concat([fact, forecast], ignore_index=True)
-
-
-def _asin_forecast_series(data: pd.DataFrame, window_days: int, horizon_days: int,
-                          asin: str, market: str) -> pd.DataFrame:
-    """История BSR одного ASIN за окно плюс прогнозная точка на горизонте — для линейного графика."""
-    long = _forecast_long(data, window_days)
-    if long.empty:
-        return pd.DataFrame()
-    return _series_from_group(long[(long["ASIN"] == asin) & (long["Страна"] == market)], horizon_days)
-
-
-def _forecast_series_many(data: pd.DataFrame, window_days: int, horizon_days: int,
-                          labels: dict[tuple[str, str], str]) -> pd.DataFrame:
-    """То же для нескольких ASIN сразу (ключ — (страна, ASIN)); у каждой линии своя «Метка».
-    Срез по дням строится один раз на все ASIN, а не заново на каждый: при «Все ASIN» их сотни."""
-    long = _forecast_long(data, window_days)
-    if long.empty or not labels:
-        return pd.DataFrame()
-    long = long[[key in labels for key in zip(long["Страна"], long["ASIN"])]]
-    parts = []
-    for (asin, market), group in long.groupby(["ASIN", "Страна"]):
-        series = _series_from_group(group, horizon_days)
-        if not series.empty:
-            parts.append(series.assign(**{"Метка": labels[(market, asin)]}))
-    return pd.concat(parts, ignore_index=True) if parts else pd.DataFrame()
-
-
-# Больше линий легенда не вмещает — тогда какая линия чья, видно по подсказке при наведении.
-_FORECAST_LEGEND_MAX = 12
-
-
-def _asin_forecast_line_chart(series: pd.DataFrame) -> alt.Chart:
-    lines = series["Метка"].nunique() if "Метка" in series else 1
-    if lines <= 1:
-        return alt.Chart(series).mark_line(point=True, color="#1f6feb").encode(
-            x=alt.X("Дата:T", title=None),
-            y=alt.Y("BSR:Q", title="BSR", scale=alt.Scale(zero=False)),
-            strokeDash=alt.StrokeDash("Тип:N", sort=["Факт", "Прогноз"], legend=alt.Legend(title=None)),
-            tooltip=["Дата:T", alt.Tooltip("BSR:Q", format=",.0f", title="BSR"), "Тип"],
-        ).properties(height=320)
-    # У разных ASIN BSR отличается в сотни раз (1 200 и 450 000): на обычной шкале все, кроме
-    # самых больших, слиплись бы в линию у нуля. Логарифмической шкале нужен BSR от 1 —
-    # прогноз, упёршийся в ноль, рисуем на единице.
-    chart_data = series.assign(BSR=series["BSR"].clip(lower=1))
-    legend = alt.Legend(title=None) if lines <= _FORECAST_LEGEND_MAX else None
-    return alt.Chart(chart_data).mark_line(point=lines <= _FORECAST_LEGEND_MAX).encode(
-        x=alt.X("Дата:T", title=None),
-        y=alt.Y("BSR:Q", title="BSR (логарифмическая шкала)", scale=alt.Scale(type="log")),
-        color=alt.Color("Метка:N", legend=legend),
-        detail="Метка:N",
-        strokeDash=alt.StrokeDash("Тип:N", sort=["Факт", "Прогноз"], legend=alt.Legend(title=None)),
-        tooltip=["Метка", "Дата:T", alt.Tooltip("BSR:Q", format=",.0f", title="BSR"), "Тип"],
-    ).properties(height=420)
-
-
-def _forecast_names(data: pd.DataFrame) -> dict[tuple[str, str], str]:
-    """Название для подписи ASIN (наш товар или конкурент): последнее непустое по дате сбора —
-    чтобы ASIN можно было найти в списке и по названию, а не только по коду."""
-    names: dict[tuple[str, str], str] = {}
-    if "marketplace" not in data:
-        return names
-    frame = data.sort_values("snapshot_date") if "snapshot_date" in data else data
-    for asin_column, name_column in (("our_asin", "our_product"), ("comp_asin", "competitor_name")):
-        if asin_column not in frame or name_column not in frame:
-            continue
-        for market, asin, name in zip(frame["marketplace"], frame[asin_column], frame[name_column]):
-            if isinstance(name, str) and name.strip():
-                names[(market, asin)] = " ".join(name.split())
-    return names
-
-
-_FORECAST_NAME_LENGTH = 40
-_ALL_MARKETS = "Все страны"
-
-
-def _forecast_label(market: str, asin: str, name: str | None) -> str:
-    label = f"{market} · {asin}"
-    if name:
-        label += " · " + (name if len(name) <= _FORECAST_NAME_LENGTH else name[:_FORECAST_NAME_LENGTH - 1] + "…")
-    return label
-
-
-def _render_forecast(data: pd.DataFrame) -> None:
-    if data.empty or "snapshot_date" not in data:
-        st.info("Нет данных для прогноза.")
-        return
-    controls = st.columns(3)
-    window = controls[0].selectbox("Считать по", list(_FORECAST_WINDOWS), index=1, key="forecast_window")
-    horizon = controls[1].selectbox("Прогноз на", list(_FORECAST_HORIZONS), key="forecast_horizon")
-    window_days, horizon_days = _FORECAST_WINDOWS[window], _FORECAST_HORIZONS[horizon]
-
-    table = _forecast_table(data, window_days, horizon_days)
-    markets = sorted(table["Страна"].dropna().unique()) if not table.empty else []
-    market = controls[2].selectbox("Страна", [_ALL_MARKETS] + markets, key="forecast_market")
-    if table.empty:
-        st.info(f"Недостаточно замеров: для прогноза нужно хотя бы {MIN_FORECAST_POINTS} дня с данными.")
-        return
-    if market != _ALL_MARKETS:
-        table = table[table["Страна"] == market].reset_index(drop=True)
-
-    st.markdown('<p class="section-title">Кто быстрее всего растёт</p>', unsafe_allow_html=True)
-    st.altair_chart(_forecast_leaders_chart(table), use_container_width=True)
-
-    st.markdown('<p class="section-title">История и прогноз по ASIN</p>', unsafe_allow_html=True)
-    names = _forecast_names(data)
-    label_keys = {
-        _forecast_label(row_market, asin, names.get((row_market, asin))): (row_market, asin)
-        for row_market, asin in zip(table["Страна"], table["ASIN"])
-    }
-    labels = list(label_keys)
-    # Ключи виджетов зависят от страны: у каждой страны свой список ASIN, и выбор из одной
-    # страны не должен оставаться в списке другой.
-    pick_all = st.checkbox(f"Выбрать все ({len(labels)})", key=f"forecast_all_{market}")
-    if pick_all:
-        picked = labels
-    else:
-        picked = st.multiselect(
-            "ASIN", labels, default=labels[:1], key=f"forecast_asins_{market}",
-            placeholder="Введите ASIN или название",
-        )
-    if not picked:
-        st.info("Выберите хотя бы один ASIN.")
-        return
-    series = _forecast_series_many(
-        data, window_days, horizon_days, {label_keys[label]: label for label in picked},
-    )
-    if series.empty:
-        st.info("Недостаточно данных для графика.")
-        return
-    st.altair_chart(_asin_forecast_line_chart(series), use_container_width=True)
-
-
 _ALL_DAYS = "Все дни"
 
 
@@ -2096,9 +1841,10 @@ def _sections_chart(opened: pd.DataFrame) -> alt.Chart:
                  alt.Tooltip("employees:Q", title="Людей")],
     )
     return (
-        bars.mark_bar(color="#168ed0", cornerRadiusTopRight=4, cornerRadiusBottomRight=4, size=22)
+        bars.mark_bar(color="#168ed0", cornerRadiusTopRight=4, cornerRadiusBottomRight=4)
         + bars.mark_text(align="left", dx=4, color="#334155").encode(text="opens:Q")
-    ).properties(height=max(90, 38 * len(opened)))
+    # Высота с запасом под ось: Streamlit считает её вместе с подписями, иначе полосы налезают друг на друга.
+    ).properties(height=50 + 34 * len(opened))
 
 
 # Что считается правкой, а что запуском или выгрузкой. Вход по паролю команды — не правка, в счёт не идёт.
@@ -2368,7 +2114,7 @@ def main() -> None:
         _table_or_note(_pick_day(shown_history), with_images=True)
 
     with forecast_tab:
-        _render_forecast(shown_history)
+        forecast_ui.render(shown_history)
 
     with pairs_tab:
         _render_competitors_pivot(history, pairs)
