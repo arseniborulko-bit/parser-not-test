@@ -319,3 +319,27 @@ def test_the_table_filter_changes_only_the_table(tab):
 def test_a_missing_forecast_is_explained(tab):
     at = tab(fc_selected={"DE|B0COMP0003"}, fc_market="DE")
     assert "Без прогноза: Конкурент 3 — мало замеров за 14 дн.: 2 из 3" in texts(at)
+
+
+def test_rating_and_reviews_are_reported_with_their_change_over_the_period():
+    rows = [{**snap(d, "US", "B0X", 1000, "B0Y", 500, reviews=200 + 5 * d),
+             "our_rating": 4.6 - 0.1 * (d // 5), "comp_rating": None} for d in range(10)]
+    catalog, daily = fc.prepare(pd.DataFrame(rows))
+    s = settings(end=FIRST + timedelta(days=9), days=30)
+    table = fc.analyze(catalog, daily, ["US|B0X", "US|B0Y"], s).set_index("key")
+    ours = table.loc["US|B0X"]
+    assert ours["rating"] == pytest.approx(4.5) and ours["rating_change"] == pytest.approx(-0.1)
+    assert ours["reviews"] == 245 and ours["reviews_added"] == 45
+    view = fc.table_view(table.reset_index(), s).set_index("Товар")
+    assert view.loc["Наш (B0X)", "Рейтинг"] == "4.5 ★"
+    assert view.loc["Наш (B0X)", "Рейтинг за период"] == "-0.1"
+    assert view.loc["Наш (B0X)", "Новых отзывов"] == "+45"
+    # У конкурента рейтинга нет — пусто, а не ноль.
+    assert np.isnan(table.loc["US|B0Y", "rating"]) and view.loc["Конкурент (B0Y)", "Рейтинг"] == ""
+
+
+def test_the_product_view_shows_rating_and_reviews(tab):
+    at = tab(fc_selected={"US|B0OURA0001"}, fc_product="US|B0OURA0001")
+    shown = {m.label: m.value for m in forecast_tab(at).metric}
+    assert shown["Отзывов"] == "119"
+    assert shown["Рейтинг"] == "нет данных"  # в этих данных рейтинга нет — не ноль и не прочерк в звёздах

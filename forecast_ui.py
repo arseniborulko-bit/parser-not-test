@@ -65,18 +65,18 @@ def prepare(data: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
 
     Каталог: key, market, asin, name, kind («наш» — если ASIN хоть в одной паре стоит нашим), ours —
     наши ASIN, с которыми конкурент в паре, rivals — конкуренты нашего товара.
-    Замеры: key, date, bsr, reviews — одно значение на товар и день; пустой BSR остаётся пустым, не нулём.
+    Замеры: key, date, bsr, reviews, rating — одно значение на товар и день; пусто остаётся пустым, не нулём.
     """
     empty = (pd.DataFrame(columns=["key", "market", "asin", "name", "kind", "ours", "rivals"]),
-             pd.DataFrame(columns=["key", "date", "bsr", "reviews"]))
+             pd.DataFrame(columns=["key", "date", "bsr", "reviews", "rating"]))
     if data.empty or "snapshot_date" not in data:
         return empty
     frame = data.sort_values("snapshot_date")
     market = frame["marketplace"].astype(str) if "marketplace" in frame else pd.Series("", index=frame.index)
     parts = []
-    for asin_col, name_col, bsr_col, reviews_col, kind in (
-        ("our_asin", "our_product", "our_bsr", "our_reviews_count", "наш"),
-        ("comp_asin", "competitor_name", "comp_bsr", "comp_reviews_count", "конкурент"),
+    for asin_col, name_col, bsr_col, reviews_col, rating_col, kind in (
+        ("our_asin", "our_product", "our_bsr", "our_reviews_count", "our_rating", "наш"),
+        ("comp_asin", "competitor_name", "comp_bsr", "comp_reviews_count", "comp_rating", "конкурент"),
     ):
         if asin_col not in frame or bsr_col not in frame:
             continue
@@ -86,6 +86,7 @@ def prepare(data: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
             "date": pd.to_datetime(frame["snapshot_date"], errors="coerce").dt.normalize(),
             "bsr": pd.to_numeric(frame[bsr_col], errors="coerce"),
             "reviews": pd.to_numeric(frame[reviews_col], errors="coerce") if reviews_col in frame else np.nan,
+            "rating": pd.to_numeric(frame[rating_col], errors="coerce") if rating_col in frame else np.nan,
             "kind": kind,
         }))
     if not parts:
@@ -119,9 +120,9 @@ def prepare(data: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
         rivals=[rivals.get(k, []) for k in keys["key"]],
     ).sort_values(["kind", "market", "name", "asin"], ascending=[False, True, True, True], ignore_index=True)
     # Один товар на один день — одно значение: он повторяется во всех своих парах.
-    daily = (rows.groupby(["key", "date"], as_index=False)
-             .agg(bsr=("bsr", lambda s: s.dropna().iloc[-1] if s.notna().any() else np.nan),
-                  reviews=("reviews", lambda s: s.dropna().iloc[-1] if s.notna().any() else np.nan)))
+    last = lambda s: s.dropna().iloc[-1] if s.notna().any() else np.nan  # noqa: E731
+    daily = rows.groupby(["key", "date"], as_index=False).agg(bsr=("bsr", last), reviews=("reviews", last),
+                                                              rating=("rating", last))
     return catalog, daily
 
 
@@ -165,11 +166,21 @@ def analyze(catalog: pd.DataFrame, daily: pd.DataFrame, keys: Iterable[str], set
             continue
         row = {"key": k, "market": info.at[k, "market"], "asin": info.at[k, "asin"], "name": info.at[k, "name"],
                "kind": info.at[k, "kind"], "current": np.nan, "last_date": pd.NaT, "start_value": np.nan,
-               "start_date": pd.NaT, "change_pct": np.nan, "reviews": np.nan, "forecast": np.nan,
+               "start_date": pd.NaT, "change_pct": np.nan, "reviews": np.nan, "reviews_added": np.nan,
+               "rating": np.nan, "rating_change": np.nan, "forecast": np.nan,
                "forecast_change_pct": np.nan, "forecast_note": ""}
         try:
-            series = by_key.get(k, pd.DataFrame(columns=["date", "bsr", "reviews"]))
+            series = by_key.get(k, pd.DataFrame(columns=["date", "bsr", "reviews", "rating"]))
             series = series[series["date"] <= end].sort_values("date")
+            # Рейтинг и отзывы — последнее известное и изменение за период по реальным замерам.
+            for column, now_key, delta_key in (("reviews", "reviews", "reviews_added"),
+                                               ("rating", "rating", "rating_change")):
+                known = series.dropna(subset=[column])
+                if not known.empty:
+                    row[now_key] = float(known[column].iloc[-1])
+                    period = known[known["date"] >= start]
+                    if len(period) >= 2:
+                        row[delta_key] = float(period[column].iloc[-1] - period[column].iloc[0])
             valid = series.dropna(subset=["bsr"])
             if not valid.empty:
                 row["current"], row["last_date"] = float(valid["bsr"].iloc[-1]), valid["date"].iloc[-1]
@@ -177,8 +188,6 @@ def analyze(catalog: pd.DataFrame, daily: pd.DataFrame, keys: Iterable[str], set
                 if len(in_period) >= 2:
                     row["start_value"], row["start_date"] = float(in_period["bsr"].iloc[0]), in_period["date"].iloc[0]
                     row["change_pct"] = (row["current"] - row["start_value"]) / row["start_value"] * 100
-                reviews = series["reviews"].dropna()
-                row["reviews"] = float(reviews.iloc[-1]) if not reviews.empty else np.nan
                 recent = valid[valid["date"] > row["last_date"] - pd.Timedelta(days=TREND_DAYS)]
                 if len(recent) < MIN_POINTS:
                     row["forecast_note"] = f"мало замеров за {TREND_DAYS} дн.: {len(recent)} из {MIN_POINTS}"
@@ -327,7 +336,10 @@ def table_view(table: pd.DataFrame, settings: Settings) -> pd.DataFrame:
         "Изменение за период": [
             f"{fmt_pct(c)} ({fmt_date(s)} → {fmt_date(l)})" if pd.notna(c) else "мало замеров"
             for c, s, l in zip(table["change_pct"], table["start_date"], table["last_date"])],
+        "Рейтинг": [f"{v:.1f} ★" if pd.notna(v) else "" for v in table["rating"]],
+        "Рейтинг за период": [f"{v:+.1f}" if pd.notna(v) else "" for v in table["rating_change"]],
         "Отзывов": pd.to_numeric(table["reviews"], errors="coerce"),
+        "Новых отзывов": [f"{v:+.0f}" if pd.notna(v) else "" for v in table["reviews_added"]],
         f"Прогноз на {settings.target:%d.%m}": table["forecast"].round(0),
         "Прогнозное изменение": [fmt_pct(v) if pd.notna(v) else (note or "нет прогноза")
                                  for v, note in zip(table["forecast_change_pct"], table["forecast_note"])],
@@ -419,7 +431,9 @@ def dumbbell_chart(table: pd.DataFrame, settings: Settings, order: list[str]) ->
     x_scale = alt.Scale(type="log")
     tooltip = [alt.Tooltip("label:N", title="Товар"), alt.Tooltip("now:Q", title="BSR сейчас", format=",.0f"),
                alt.Tooltip("future:Q", title=f"Прогноз на {settings.target:%d.%m}", format=",.0f"),
-               alt.Tooltip("note:N", title="Почему нет прогноза")]
+               alt.Tooltip("note:N", title="Почему нет прогноза"),
+               alt.Tooltip("rating:Q", title="Рейтинг", format=".1f"),
+               alt.Tooltip("reviews:Q", title="Отзывов", format=",.0f")]
     base = alt.Chart(data).encode(y=y, tooltip=tooltip)
     link = base.mark_rule(color="#94a3b8", strokeWidth=2).encode(
         x=alt.X("now:Q", scale=x_scale, title="BSR (левее — лучше)"), x2="future:Q")
@@ -660,20 +674,27 @@ def _render_selector(available: pd.DataFrame, daily: pd.DataFrame, settings: Set
             _set_selected(_selected() | set(problems))
             st.rerun()
         shown = list(found["key"])
-        latest = daily.dropna(subset=["bsr"]).sort_values("date").groupby("key")["bsr"].last()
+        ordered_days = daily.sort_values("date")
+        latest = ordered_days.dropna(subset=["bsr"]).groupby("key")["bsr"].last()
+        rating = ordered_days.dropna(subset=["rating"]).groupby("key")["rating"].last()
+        reviews = ordered_days.dropna(subset=["reviews"]).groupby("key")["reviews"].last()
         chosen = _selected()
         view = pd.DataFrame({
             "✓": [k in chosen for k in shown],
             "Товар": [n or "—" for n in found["name"]], "ASIN": found["asin"].values,
             "Страна": found["market"].values, "Тип": found["kind"].values,
             "BSR сейчас": [latest.get(k, np.nan) for k in shown],
+            "Рейтинг": [rating.get(k, np.nan) for k in shown],
+            "Отзывов": [reviews.get(k, np.nan) for k in shown],
         })
         editor_key = f"fc_editor_{st.session_state.get(_EDITOR, 0)}"
         st.data_editor(
             view, key=editor_key, hide_index=True, use_container_width=True, height=min(420, 38 + 35 * len(view)),
-            disabled=["Товар", "ASIN", "Страна", "Тип", "BSR сейчас"],
+            disabled=["Товар", "ASIN", "Страна", "Тип", "BSR сейчас", "Рейтинг", "Отзывов"],
             column_config={"✓": st.column_config.CheckboxColumn("✓", width="small"),
-                           "BSR сейчас": st.column_config.NumberColumn(format="%d")},
+                           "BSR сейчас": st.column_config.NumberColumn(format="%d"),
+                           "Рейтинг": st.column_config.NumberColumn(format="%.1f ★"),
+                           "Отзывов": st.column_config.NumberColumn(format="%d")},
             on_change=_apply_editor, args=(editor_key, shown),
         )
         st.caption(f"Найдено {len(found)} · выбрано всего {len(chosen)}")
@@ -774,6 +795,11 @@ def _render_product(key: str, catalog: pd.DataFrame, daily: pd.DataFrame, settin
               delta=f"{row['forecast_change_pct']:+.0f}%" if pd.notna(row["forecast_change_pct"]) else None,
               delta_color="inverse", help=None if pd.notna(row["forecast"]) else f"Прогноза нет: {row['forecast_note']}")
     m3.metric("Статус", RISK_LABELS[int(row["risk"])])
+    r1, r2, _ = st.columns(3)
+    r1.metric("Рейтинг", f"{row['rating']:.1f} ★" if pd.notna(row["rating"]) else "нет данных",
+              delta=f"{row['rating_change']:+.1f} за период" if pd.notna(row["rating_change"]) else None)
+    r2.metric("Отзывов", f"{row['reviews']:,.0f}".replace(",", " ") if pd.notna(row["reviews"]) else "нет данных",
+              delta=f"{row['reviews_added']:+.0f} за период" if pd.notna(row["reviews_added"]) else None)
     points = series_frame(daily, pd.DataFrame([row]), settings)
     if points.empty:
         st.info("В выбранном периоде у товара нет замеров BSR.")

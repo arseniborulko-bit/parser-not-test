@@ -623,6 +623,22 @@ def _format_kyiv_time(value: object) -> str:
     return moment.tz_convert(schedule_store.TZ).strftime("%d.%m %H:%M")
 
 
+def _ratings_next_to_bsr(table: pd.DataFrame) -> pd.DataFrame:
+    """Рейтинг и отзывы — сразу за BSR своей стороны пары, а не в хвосте широкой таблицы после «Обновлено»."""
+    columns = list(table.columns)
+    for anchor, moved in (("Δ BSR наш", ("Рейтинг наш", "Отзывов наш")),
+                          ("Δ BSR конкурента", ("Рейтинг конкурента", "Отзывов конкурента"))):
+        if anchor not in columns:
+            anchor = anchor.replace("Δ ", "")
+        present = [label for label in moved if label in columns]
+        if anchor not in columns or not present:
+            continue
+        columns = [c for c in columns if c not in present]
+        at = columns.index(anchor) + 1
+        columns[at:at] = present
+    return table[columns]
+
+
 def _present_table(data: pd.DataFrame, *, with_images: bool = False) -> tuple[pd.DataFrame, dict[str, object]]:
     labels = _COLUMN_LABELS
     result = data.rename(columns={k: v for k, v in labels.items() if k in data.columns}).copy()
@@ -649,6 +665,7 @@ def _present_table(data: pd.DataFrame, *, with_images: bool = False) -> tuple[pd
     # В этой версии Streamlit пустая ячейка (NaN/None, например нераспознанная цена) рисуется видимым
     # текстом "None"; пустая строка — действительно пустой ячейкой. Числовые столбцы форматируем в
     # строку отдельно (см. _NUMERIC_LABELS), остальные (текстовые, уже без чисел) — просто fillna.
+    result = _ratings_next_to_bsr(result)
     for label in _NUMERIC_LABELS:
         if label in result.columns:
             if label in _SIGNED_LABELS:
@@ -693,7 +710,7 @@ _HOW_IT_WORKS = """
 показывает. Справа вверху — кто вошёл и кнопка «Выйти».
 
 **Откуда берутся данные.** Раз в сутки по каждому ASIN запрашиваются позиция в категории (BSR),
-цена, наличие и фото. Запрос идёт через ScrapingDog, результаты складываются в Google Таблицу,
+цена, наличие, фото, рейтинг (звёзды) и число отзывов — всё одним запросом, без лишних трат. Запрос идёт через ScrapingDog, результаты складываются в Google Таблицу,
 оттуда переносятся в базу, а дашборд показывает уже базу.
 
 **Когда идёт сбор.** Время задаётся на вкладке «Сбор и управление», в блоке «Автосбор». Внешний сервис каждые 5 минут стучится в
@@ -743,8 +760,8 @@ GitHub, а проверка решает, пора ли: своё расписа
 графике, больше — отдельные маленькие графики с общей шкалой; «Портфель» — медиана группы по дням
 и распределение BSR; «Товар» — один товар подробно, с его конкурентами. История — сплошная линия,
 прогноз — пунктир, разрыв линии — день без замера. «Сейчас → прогноз» и «Кто теряет позиции»
-показывают, у кого дела хуже; клик по товару открывает его. В таблице внизу — поиск, фильтры,
-сортировка и выгрузка в CSV. Прогноз — продолжение тренда: медиана дневных изменений BSR за
+показывают, у кого дела хуже; клик по товару открывает его. В таблице внизу — рейтинг и отзывы с
+изменением за период, поиск, фильтры, сортировка и выгрузка в CSV. Прогноз — продолжение тренда: медиана дневных изменений BSR за
 14 дней, продлённая до общей даты. Это не предсказание — акции, сезон и новинки он не знает. Если
 замеров меньше трёх, прогноз не строится, и рядом написано почему.
 

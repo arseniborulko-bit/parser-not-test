@@ -923,3 +923,13 @@ def test_the_sellers_tab_is_gone_and_its_old_opens_are_not_listed(monkeypatch, d
     at = run_on_tab(JOURNAL)
     sections = next(f.value for f in at.tabs[-1].dataframe if "Раздел" in f.value)
     assert "🛡 Продавцы" not in list(sections["Раздел"])
+
+
+def test_rating_and_reviews_stand_next_to_bsr_in_the_current_table(dash):
+    row = {**SNAPSHOT_ROW, "our_rating": 4.5, "our_reviews_count": 5576, "comp_rating": 4.1, "comp_reviews_count": 12}
+    table, _ = dash._present_table(pd.DataFrame([row]))
+    columns = list(table.columns)
+    assert columns[columns.index("Δ BSR наш") + 1:columns.index("Δ BSR наш") + 3] == ["Рейтинг наш", "Отзывов наш"]
+    after = columns.index("Δ BSR конкурента")
+    assert columns[after + 1:after + 3] == ["Рейтинг конкурента", "Отзывов конкурента"]
+    assert table.loc[0, "Рейтинг наш"] == "4.5" and table.loc[0, "Отзывов наш"] == "5576"
