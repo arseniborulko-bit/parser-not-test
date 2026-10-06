@@ -6,8 +6,9 @@
 
 import pandas as pd
 import pytest
+from streamlit.testing.v1 import AppTest
 
-from test_dashboard_access import dash, run  # noqa: F401
+from test_dashboard_access import SCRIPT, dash, run  # noqa: F401
 
 import dashboard_db as dash_module
 
@@ -98,10 +99,24 @@ def test_the_flow_diagram_shows_live_numbers_not_placeholders():
         {"marketplace": "US", "active": True}, {"marketplace": "US", "active": False},
     ])
     data = pd.DataFrame([{"snapshot_date": "2026-09-25", "marketplace": "US"}])
-    html = dash_module._how_it_works_flow(pairs, data)
-    assert "1 активных из 2" in html
-    assert "25.09.2026" in html
-    assert "1 строк" in html and "1 стран" in html
+    steps = dash_module._how_it_works_steps(pairs, data)
+    details = " ".join(detail for _, detail, _, _ in steps)
+    assert "1 активных из 2" in details
+    assert "25.09.2026" in details
+    assert "1 строк" in details and "1 стран" in details
+
+
+def test_each_flow_step_opens_its_tab(dash):  # noqa: F811
+    """Клик по шагу схемы открывает вкладку этого шага, без перезагрузки страницы."""
+    expected = ["🥊 Пары конкурентов", "⚙ Сбор и управление", "📅 История", "📋 Текущее состояние"]
+    for index, tab in enumerate(expected):
+        at = AppTest.from_string(SCRIPT).run(timeout=30)
+        steps = [b for b in at.button if b.key.startswith("flow_")]
+        assert [b.label.split("**")[1] for b in steps] == ["Матрица пар", "Сбор", "База", "Дашборд"]
+        steps[index].click()
+        at.run(timeout=30)
+        assert not at.exception
+        assert at.session_state["main_tab"] == tab
 
 
 def test_the_tab_renders_the_new_design_without_crashing(dash):  # noqa: F811

@@ -308,6 +308,15 @@ def _apply_design() -> None:
         .how-subtitle { color: #64748b; font-size: .98rem; line-height: 1.55; max-width: 760px; margin: 0; }
         .how-eyebrow { color: #94a3b8; font-size: .72rem; letter-spacing: .12em; text-transform: uppercase; font-weight: 650; margin: 1.7rem 0 .7rem; }
         .how-flow { display: flex; align-items: stretch; }
+        /* Шаги схемы на «Как это работает» — кнопки в виде карточек: клик открывает вкладку шага. */
+        [class*="st-key-flow_"] button { background: #ffffff; border: 1px solid #e5e7eb; border-radius: 12px;
+            min-height: 4.6rem; padding: .7rem .9rem; transition: border-color .15s, box-shadow .15s, transform .15s; }
+        [class*="st-key-flow_"] button:hover { border-color: #168ed0; box-shadow: 0 4px 14px rgba(22,142,208,.15);
+            transform: translateY(-1px); }
+        [class*="st-key-flow_"] button p { color: #64748b; font-size: .8rem; line-height: 1.5; }
+        [class*="st-key-flow_"] button strong { color: #111827; font-size: .95rem; font-weight: 700; }
+        [class*="st-key-flow_"][class*="_live"] button { border-color: #168ed0; box-shadow: inset 0 0 0 1px #168ed0; }
+        [class*="st-key-flow_"][class*="_live"] button p { color: #168ed0; }
         .how-flow-step { flex: 1; background: #ffffff; border: 1px solid #e5e7eb; border-radius: 12px; padding: .8rem .9rem; text-align: center; }
         .how-flow-step.is-live { border-color: #168ed0; box-shadow: inset 0 0 0 1px #168ed0; }
         .how-flow-step-title { font-weight: 700; color: #111827; font-size: .92rem; }
@@ -773,9 +782,9 @@ def _how_it_works_sections() -> list[tuple[str, str]]:
     return sections
 
 
-def _how_it_works_flow(pairs: pd.DataFrame, data: pd.DataFrame) -> str:
-    """Живая схема потока: сколько пар в матрице, когда был последний сбор, сколько строк и стран
-    сейчас в базе — те же числа, что и в карточках «Текущее состояние», просто в виде потока."""
+def _how_it_works_steps(pairs: pd.DataFrame, data: pd.DataFrame) -> list[tuple[str, str, bool, str]]:
+    """Живая схема потока: (заголовок, цифры, выделен ли шаг, какую вкладку открывает клик). Сколько пар в
+    матрице, когда был последний сбор, сколько строк и стран в базе — те же числа, что в карточках-итогах."""
     active_pairs = int(pairs["active"].sum()) if "active" in pairs else 0
     total_pairs = len(pairs)
     latest = "нет сборов"
@@ -785,31 +794,40 @@ def _how_it_works_flow(pairs: pd.DataFrame, data: pd.DataFrame) -> str:
             latest = dates.max().strftime("%d.%m.%Y")
     records = len(data)
     countries = data["marketplace"].nunique() if "marketplace" in data else 0
-
-    steps = [
-        ("Матрица пар", f"{active_pairs} активных из {total_pairs}", False),
-        ("Сбор", "раз в сутки, ScrapingDog", False),
-        ("База", f"последний: {latest}", True),
-        ("Дашборд", f"{records} строк · {countries} стран", False),
+    return [
+        ("Матрица пар", f"{active_pairs} активных из {total_pairs}", False, "🥊 Пары конкурентов"),
+        ("Сбор", "раз в сутки, ScrapingDog", False, "⚙ Сбор и управление"),
+        ("База", f"последний: {latest}", True, "📅 История"),
+        ("Дашборд", f"{records} строк · {countries} стран", False, "📋 Текущее состояние"),
     ]
-    cells = []
-    for index, (title, detail, live) in enumerate(steps):
+
+
+def _go_to_tab(tab: str) -> None:
+    """Колбэк кнопки: выполняется до перерисовки, поэтому вкладки откроются уже на нужной."""
+    st.session_state[_TAB_KEY] = tab
+
+
+def _render_how_it_works_flow(pairs: pd.DataFrame, data: pd.DataFrame) -> None:
+    """Схема из кнопок-карточек: клик открывает вкладку этого шага."""
+    st.markdown('<div class="how-eyebrow">Как течёт поток · живая схема · нажмите на шаг</div>',
+                unsafe_allow_html=True)
+    steps = _how_it_works_steps(pairs, data)
+    columns = st.columns([1, 0.12] * (len(steps) - 1) + [1], vertical_alignment="center")
+    for index, (title, detail, live, tab) in enumerate(steps):
         if index:
-            cells.append('<div class="how-flow-connector"><span></span></div>')
-        live_class = " is-live" if live else ""
-        cells.append(
-            f'<div class="how-flow-step{live_class}">'
-            f'<div class="how-flow-step-title">{escape(title)}</div>'
-            f'<div class="how-flow-step-detail">{escape(detail)}</div></div>'
+            columns[2 * index - 1].markdown('<div class="how-flow-connector"><span></span></div>',
+                                            unsafe_allow_html=True)
+        columns[2 * index].button(
+            f"**{title}**  \n{detail}", key=f"flow_{index}{'_live' if live else ''}", on_click=_go_to_tab,
+            args=(tab,), help=f"Открыть «{tab}»", use_container_width=True,
         )
-    return (
-        '<div class="how-eyebrow">Как течёт поток · живая схема</div>'
-        f'<div class="how-flow">{"".join(cells)}</div>'
+    st.markdown(
         '<div class="how-flow-legend">'
         '<span>← пару добавляет человек</span>'
         '<span class="how-flow-legend-mid">данные текут сами</span>'
         '<span>смотрит и правит человек →</span>'
-        '</div>'
+        '</div>',
+        unsafe_allow_html=True,
     )
 
 
@@ -823,7 +841,7 @@ def _render_how_it_works(pairs: pd.DataFrame | None = None, data: pd.DataFrame |
         unsafe_allow_html=True,
     )
     if pairs is not None and data is not None:
-        st.markdown(_how_it_works_flow(pairs, data), unsafe_allow_html=True)
+        _render_how_it_works_flow(pairs, data)
 
     st.markdown('<div class="how-eyebrow">Порядок работы</div>', unsafe_allow_html=True)
     for number, (title, body) in enumerate(_how_it_works_sections(), start=1):
