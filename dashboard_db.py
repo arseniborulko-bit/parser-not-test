@@ -99,7 +99,7 @@ def _current_user() -> dict:
 
 
 # Права любого вошедшего сотрудника. Решение владельца 01.10.2026: все сотрудники могут всё — пары,
-# время сбора, запуск сбора; админы (вкладка «Журнал», раздел «Пользователи и роли») — по-прежнему из ADMIN_EMAILS и базы.
+# время сбора, запуск сбора; админы (вкладка «Активность дашборда», раздел «Пользователи и роли») — по-прежнему из ADMIN_EMAILS и базы.
 # None — сотрудник только смотрит, пока ему не дадут роль или он не откроет «🔒 Управление».
 EMPLOYEE_ROLE: str | None = access.ROLE_EDITOR
 
@@ -1963,8 +1963,9 @@ def _render_allowed_admin(allowed: list | str | None, actor_email: str, actor_ro
 
 
 TAB_TITLES = ["📋 Текущее состояние", "📅 История", "📈 Прогноз", "🥊 Пары конкурентов",
-              "⚙ Сбор и управление", "ℹ️ Как это работает", "📒 Журнал"]
+              "⚙ Сбор и управление", "ℹ️ Как это работает", "📊 Активность дашборда"]
 _TAB_KEY = "main_tab"
+_SECTION_RENAMES = {"📒 Журнал": TAB_TITLES[-1]}
 # Действия чаще раза в 15 секунд в журнал не пишутся (кроме открытия раздела): на время сессии
 # это почти не влияет, а базу на каждый клик не дёргает.
 _ACTIVITY_PING_SECONDS = 15
@@ -2045,6 +2046,8 @@ def _render_sections(rows: list) -> None:
         "никто не открывал — кандидаты, чтобы убрать.</p>",
         unsafe_allow_html=True,
     )
+    # Вкладка «Активность дашборда» раньше называлась «📒 Журнал»: старые записи считаем под новым именем.
+    rows = [{**row, "section": _SECTION_RENAMES.get(row["section"], row["section"])} for row in rows]
     table = activity.sections(rows, TAB_TITLES)
     table["last"] = [
         moment.tz_convert(schedule_store.TZ).strftime("%d.%m %H:%M") if pd.notna(moment) else "—"
@@ -2131,7 +2134,7 @@ def _render_journal_tab(email: str, role: str | None) -> None:
 def _render_journal(journal: LoginJournal | str, actions: list | str | None, email: str, role: str | None,
                     usage: list | str | None = None, card: Scorecard | None = None,
                     allowed: list | str | None = None) -> None:
-    """Вкладка «Журнал»: входы, время и разделы видят все сотрудники, управление ролями — только админ."""
+    """Вкладка «Активность дашборда»: входы, время и разделы видят все сотрудники, управление ролями — только админ."""
     if card is not None:
         _render_scorecard_card(card)
     if isinstance(journal, str):

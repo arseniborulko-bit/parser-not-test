@@ -1,5 +1,5 @@
 """Журнал использования в дашборде (Streamlit AppTest): что записывается при действиях и что видно во вкладке
-«Журнал» (раздел «Кто что меняет»). Настоящей базы нет — usage_log подменён."""
+«Активность дашборда» (раздел «Кто что меняет»). Настоящей базы нет — usage_log подменён."""
 
 from datetime import datetime, timezone
 
@@ -116,7 +116,7 @@ def journal_tables(at):
 
 def forbid_reading(monkeypatch):
     def must_not_be_called(*args, **kwargs):
-        raise AssertionError("журнал правок читается только на вкладке «Журнал»")
+        raise AssertionError("журнал правок читается только на вкладке «Активность дашборда»")
 
     monkeypatch.setattr(usage_log, "log_exists", must_not_be_called)
     monkeypatch.setattr(usage_log, "recent", must_not_be_called)

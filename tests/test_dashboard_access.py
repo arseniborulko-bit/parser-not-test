@@ -13,7 +13,7 @@ import schedule_store
 
 SCRIPT = "import dashboard_db\ndashboard_db.main()"
 PUBLIC_TABS = ["📋 Текущее состояние", "📅 История", "📈 Прогноз", "🥊 Пары конкурентов",
-               "⚙ Сбор и управление", "ℹ️ Как это работает", "📒 Журнал"]
+               "⚙ Сбор и управление", "ℹ️ Как это работает", "📊 Активность дашборда"]
 # Журнал открыт всем сотрудникам; админа отличает раздел «Пользователи и роли» внутри него.
 ADMIN_TABS = PUBLIC_TABS
 TEAM_PASSWORD = "correct-horse-battery"
@@ -568,7 +568,7 @@ LOGINS = [
     {"email": "anna@maximumstores.online", "logged_in_at": at_kyiv(20, 18)},
     {"email": "boss@maximumstores.online", "logged_in_at": at_kyiv(12, 10)},
 ]
-JOURNAL = "📒 Журнал"
+JOURNAL = "📊 Активность дашборда"
 
 
 def run_on_tab(tab, timeout=30):
@@ -823,3 +823,17 @@ def test_admin_manages_the_allowed_list(monkeypatch, dash):
     at.run()
     assert not at.exception
     assert added == [("v.tereshyn@maximumstores.online", "admin", "boss@maximumstores.online")]
+
+
+def test_sections_opened_under_the_old_journal_name_count_for_the_renamed_tab(monkeypatch, dash, actions):
+    import activity
+
+    events = [
+        {"session_id": "s1", "email": "anna@maximumstores.online", "at": at_kyiv(20, 9, 0), "section": "📒 Журнал"},
+        {"session_id": "s2", "email": "boss@maximumstores.online", "at": at_kyiv(20, 10, 0), "section": JOURNAL},
+    ]
+    monkeypatch.setattr(activity, "recent", lambda connect, days=30, limit=50000: events)
+    at = run_on_tab(JOURNAL)
+    sections = next(f.value for f in at.tabs[-1].dataframe if "Раздел" in f.value)
+    assert "📒 Журнал" not in list(sections["Раздел"])
+    assert dict(zip(sections["Раздел"], sections["Открытий"]))[JOURNAL] == 2
