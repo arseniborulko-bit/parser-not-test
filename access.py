@@ -1,7 +1,8 @@
 """Роли дашборда и список пользователей. Без Streamlit — чтобы правила доступа проверялись тестами.
 
 Вход выполняет Streamlit (Google, OIDC); здесь только решение, что этому человеку можно.
-Дашборд целиком открыт только сотрудникам (employee_email); журнал входов — record_login.
+Дашборд целиком открыт только сотрудникам (employee_email) и адресам из EXTRA_ALLOWED_EMAILS
+(allowed_email); журнал входов — record_login.
 Админы-«затравка» берутся из секрета ADMIN_EMAILS, остальные — из bsr_radar.dashboard_users.
 Всё неподтверждённое (нет письма, email не подтверждён, нет в списке, база недоступна) — без прав.
 """
@@ -94,6 +95,17 @@ def employee_email(user: Optional[Mapping], domain: str = EMPLOYEE_DOMAIN) -> Op
     if not isinstance(hosted, str) or hosted.strip().lower() != domain:
         return None
     return email
+
+
+def allowed_email(user: Optional[Mapping], extra: Iterable[str] = (), domain: str = EMPLOYEE_DOMAIN) -> Optional[str]:
+    """Кого пускать на дашборд: сотрудника домена (employee_email) или адрес из явного списка extra
+    (секрет EXTRA_ALLOWED_EMAILS — например, личный аккаунт владельца). Адрес из списка тоже должен
+    быть подтверждён Google и совпасть целиком; пустой список ничего не добавляет."""
+    email = employee_email(user, domain)
+    if email is not None:
+        return email
+    email = verified_email(user)
+    return email if email is not None and email in set(extra) else None
 
 
 def resolve_role(user: Optional[Mapping], admin_emails: Iterable[str], db_roles: Mapping[str, str]) -> Optional[str]:

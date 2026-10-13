@@ -59,7 +59,7 @@ def dash(monkeypatch):
         raise AssertionError("тест обратился к настоящей базе")
 
     monkeypatch.setattr(psycopg2, "connect", no_real_database)
-    for name in ("DATABASE_URL", "ADMIN_EMAILS", "CORPORATE_EMAIL_DOMAINS"):
+    for name in ("DATABASE_URL", "ADMIN_EMAILS", "CORPORATE_EMAIL_DOMAINS", "EXTRA_ALLOWED_EMAILS"):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("TEAM_PASSWORD", TEAM_PASSWORD)
     for name in ("GITHUB_DISPATCH_TOKEN", "GITHUB_REPO", "SCRAPINGDOG_TOKEN"):

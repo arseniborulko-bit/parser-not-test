@@ -184,3 +184,17 @@ def test_the_sign_in_screen_looks_like_rating_radar_and_reads_no_data(monkeypatc
     text = " ".join(m.value for m in at.markdown)
     assert 'class="gate"' in text and "Доступ только для сотрудников maximumstores.online" in text
     assert "bot-link" in text  # бот в шапке, как в Radar
+
+
+def test_a_personal_address_from_extra_allowed_emails_gets_in(monkeypatch, dash, logins):  # noqa: F811
+    """Владелец добавил свой личный Gmail секретом EXTRA_ALLOWED_EMAILS — его пускает, остальных Gmail нет."""
+    monkeypatch.setenv("EXTRA_ALLOWED_EMAILS", "owner@gmail.com")
+    sign_in(monkeypatch, dash, {**logged_in("owner@gmail.com"), "hd": None, "sub": "7", "iat": 1})
+    at = run()
+    assert not at.exception and at.tabs
+    assert logins == ["owner@gmail.com"]
+
+    sign_in(monkeypatch, dash, {**logged_in("stranger@gmail.com"), "hd": None})
+    at = run()
+    assert not at.tabs
+    assert any(e.value == "Доступ только для сотрудников maximumstores.online" for e in at.error)

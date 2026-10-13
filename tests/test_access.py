@@ -490,3 +490,20 @@ def test_removing_an_address_that_is_not_listed_is_reported():
     with pytest.raises(ValueError):
         access.remove_allowed(FakeDb(rowcount=0).connect, "a@maximumstores.online", actor_role=access.ROLE_ADMIN)
     access.remove_allowed(FakeDb(rowcount=1).connect, "a@maximumstores.online", actor_role=access.ROLE_ADMIN)
+
+
+PERSONAL = {"is_logged_in": True, "email": "owner@gmail.com", "email_verified": True}
+
+
+def test_an_extra_allowed_address_gets_in_only_if_listed_verified_and_exact():
+    extra = access.parse_email_list("Owner@Gmail.com")
+    assert access.allowed_email(PERSONAL, extra) == "owner@gmail.com"
+    assert access.allowed_email(PERSONAL) is None  # без списка — как раньше, только домен
+    assert access.allowed_email({**PERSONAL, "email_verified": False}, extra) is None
+    assert access.allowed_email({**PERSONAL, "email": "owner2@gmail.com"}, extra) is None
+    assert access.allowed_email({**PERSONAL, "is_logged_in": False}, extra) is None
+
+
+def test_employees_still_get_in_whatever_the_extra_list_says():
+    employee = {**WORKSPACE, "email": "user@maximumstores.online"}
+    assert access.allowed_email(employee, frozenset()) == "user@maximumstores.online"

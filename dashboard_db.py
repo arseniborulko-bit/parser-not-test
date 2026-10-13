@@ -109,7 +109,7 @@ def _resolve_access() -> tuple[dict, str | None, str | None]:
     """(данные пользователя, почта сотрудника, роль). Почта None — это не сотрудник (или вход не
     выполнен): дальше _require_employee дашборд не пустит. Роль None — управлять нельзя."""
     user = _current_user()
-    email = access.employee_email(user)
+    email = access.allowed_email(user, access.parse_email_list(_secret("EXTRA_ALLOWED_EMAILS")))
     if email is None:
         return user, None, None
     admin_emails = access.parse_email_list(_secret("ADMIN_EMAILS"))
