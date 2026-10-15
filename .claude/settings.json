@@ -1,0 +1,38 @@
+{
+  "permissions": {
+    "deny": [
+      "Read(./.env)",
+      "Read(./.env.*)",
+      "Read(./**/.env)",
+      "Read(./**/.env.*)",
+      "Read(./.streamlit/secrets.toml)",
+      "Read(./**/*key*.json*)",
+      "Edit(./.env)",
+      "Edit(./.env.*)",
+      "Edit(./**/.env)",
+      "Edit(./**/.env.*)",
+      "Edit(./.streamlit/secrets.toml)",
+      "Edit(./**/*key*.json*)",
+      "Bash(cat *.env*)",
+      "Bash(head *.env*)",
+      "Bash(tail *.env*)",
+      "Bash(less *.env*)",
+      "Bash(more *.env*)",
+      "Bash(sed *.env*)",
+      "Bash(awk *.env*)",
+      "Bash(grep *.env*)",
+      "Bash(strings *.env*)",
+      "Bash(xxd *.env*)",
+      "Bash(base64 *.env*)",
+      "Bash(source *.env*)",
+      "Bash(cat *secrets.toml*)",
+      "Bash(head *secrets.toml*)",
+      "Bash(tail *secrets.toml*)",
+      "Bash(grep *secrets.toml*)",
+      "Bash(cat *key*.json*)",
+      "Bash(head *key*.json*)",
+      "Bash(tail *key*.json*)",
+      "Bash(grep *key*.json*)"
+    ]
+  }
+}
