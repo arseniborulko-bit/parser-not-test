@@ -1788,11 +1788,22 @@ def _render_allowed_admin(allowed: list | str | None, actor_email: str, actor_ro
 
 TAB_TITLES = ["📋 Текущее состояние", "📅 История", "📈 Прогноз", "🥊 Пары конкурентов",
               "⚙ Сбор и управление", "ℹ️ Как это работает", "📊 Активность дашборда"]
-# Вкладка в разработке (этап 19): видна только админам и адресам из секрета PREVIEW_EMAILS. Стоит второй, сразу за
-# «Текущим состоянием»: последняя вкладка на обычном экране уходит за край ряда, а «Активность дашборда» остаётся
-# последней. В TAB_TITLES не входит — журнал и разбивка по разделам её не показывают.
-BEST_SELLER_TAB = "🏆 Best Seller подкатегории"
-_BEST_SELLER_AT = 1
+# Раздел в разработке (этап 19), как в макете: переключатель «Мониторинг BSR | Best Seller подкатегории» над
+# дашбордом, где «Мониторинг BSR» — весь прежний дашборд со своими вкладками. Переключатель видят только админы и
+# адреса из секрета PREVIEW_EMAILS; остальным он не рисуется и дашборд не меняется.
+MONITORING_SECTION = "Мониторинг BSR"
+BEST_SELLER_SECTION = "Best Seller подкатегории"
+_SECTION_KEY = "top_section"
+_SECTION_NAV_CSS = """
+<style>
+.st-key-top_section [role="radiogroup"] { gap: 1.8rem; border-bottom: 1px solid #e5e7eb; margin-bottom: .4rem; }
+.st-key-top_section [data-testid="stRadioOption"] { padding: 0 0 .55rem; margin-bottom: -1px; border-bottom: 3px solid transparent; }
+.st-key-top_section [data-testid="stRadioOption"] > div > div:first-child { display: none; }
+.st-key-top_section [data-testid="stRadioOption"] p { color: #475569; font-size: 1.02rem; font-weight: 600; }
+.st-key-top_section [data-testid="stRadioOption"][data-selected="true"] { border-bottom-color: #0f4c75; }
+.st-key-top_section [data-testid="stRadioOption"][data-selected="true"] p { color: #0f4c75; font-weight: 700; }
+</style>
+"""
 _TAB_KEY = "main_tab"
 _SECTION_RENAMES = {"📒 Журнал": TAB_TITLES[-1]}
 # Действия чаще раза в 15 секунд в журнал не пишутся (кроме открытия раздела): на время сессии
@@ -2125,6 +2136,14 @@ def main() -> None:
             _render_unlock_box()
     actor, manage_role = _manager(email, role)
 
+    if access.preview_allowed(email, access.parse_email_list(_secret("PREVIEW_EMAILS")), role):
+        st.markdown(_SECTION_NAV_CSS, unsafe_allow_html=True)
+        section = st.radio("Раздел", [MONITORING_SECTION, BEST_SELLER_SECTION], horizontal=True, key=_SECTION_KEY,
+                           label_visibility="collapsed")
+        if section == BEST_SELLER_SECTION:
+            best_seller_ui.render()
+            return
+
     if not _management_open() and manage_role is None:
         st.info(
             "Режим просмотра: дашборд показывает данные из PostgreSQL, не запускает парсер и не "
@@ -2160,13 +2179,8 @@ def main() -> None:
 
     _render_overview(shown)
 
-    preview = access.preview_allowed(email, access.parse_email_list(_secret("PREVIEW_EMAILS")), role)
-    titles = list(TAB_TITLES)
-    if preview:
-        titles.insert(_BEST_SELLER_AT, BEST_SELLER_TAB)
-    tabs = dict(zip(titles, st.tabs(titles, key=_TAB_KEY, on_change="rerun")))
-    current_tab, history_tab, forecast_tab, pairs_tab, schedule_tab, how_tab, journal_tab = (
-        tabs[title] for title in TAB_TITLES)
+    tabs = st.tabs(TAB_TITLES, key=_TAB_KEY, on_change="rerun")
+    current_tab, history_tab, forecast_tab, pairs_tab, schedule_tab, how_tab, journal_tab = tabs
 
     with current_tab:
         _table_or_note(shown, with_images=True)
@@ -2207,10 +2221,6 @@ def main() -> None:
         # Журнал читает базу, поэтому только когда вкладка открыта, а не при каждом действии.
         if journal_tab.open:
             _render_journal_tab(email, role)
-
-    if preview:
-        with tabs[BEST_SELLER_TAB]:
-            best_seller_ui.render()
 
     download_left, download_right, _ = st.columns([1, 1, 4])
     with download_left:

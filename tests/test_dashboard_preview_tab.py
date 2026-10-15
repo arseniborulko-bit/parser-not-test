@@ -1,14 +1,13 @@
-"""Вкладка в разработке «🏆 Best Seller подкатегории» видна только админам и адресам из секрета PREVIEW_EMAILS;
-остальные сотрудники видят дашборд как раньше. Streamlit AppTest, без Google и настоящей базы."""
+"""Раздел в разработке «Best Seller подкатегории» — как в макете, переключатель «Мониторинг BSR | Best Seller
+подкатегории» над дашбордом. Его видят только админы и адреса из секрета PREVIEW_EMAILS; остальные видят дашборд
+как раньше, без переключателя. Streamlit AppTest, без Google и настоящей базы."""
 
 import pytest
 
 import access
-from test_dashboard_access import ADMIN_TABS, PUBLIC_TABS, dash, employee, run, sign_in  # noqa: F401
+from test_dashboard_access import PUBLIC_TABS, dash, employee, run, sign_in  # noqa: F401
 
-PREVIEW = "🏆 Best Seller подкатегории"
-# Вторая, сразу за «Текущим состоянием»: последняя вкладка на обычном экране уходит за край ряда.
-WITH_PREVIEW = PUBLIC_TABS[:1] + [PREVIEW] + PUBLIC_TABS[1:]
+SECTIONS = ["Мониторинг BSR", "Best Seller подкатегории"]
 OWNER = "owner@maximumstores.online"
 ANNA = "anna@maximumstores.online"
 
@@ -28,26 +27,38 @@ def test_preview_is_only_for_admins_and_listed_addresses(email, emails, role, al
     assert access.preview_allowed(email, emails, role) is allowed
 
 
-def labels(at):
-    return [t.label for t in at.tabs]
+def section_switch(at):
+    return [r for r in at.radio if r.key == "top_section"]
 
 
-def test_listed_address_sees_the_new_tab_second(monkeypatch, dash):  # noqa: F811
-    monkeypatch.setenv("PREVIEW_EMAILS", f"{OWNER.upper()}, someone@gmail.com")
-    sign_in(monkeypatch, dash, employee(OWNER))
-    at = run()
-    assert not at.exception
-    assert labels(at)[: len(WITH_PREVIEW)] == WITH_PREVIEW == ADMIN_TABS
-    assert any("PREVIEW_EMAILS" in i.value for i in at.tabs[1].info)
-
-
-def test_admin_sees_the_new_tab_without_any_setting(monkeypatch, dash):  # noqa: F811
+def test_admin_opens_monitoring_by_default_and_can_switch_to_best_seller(monkeypatch, dash):  # noqa: F811
     monkeypatch.delenv("PREVIEW_EMAILS", raising=False)
     monkeypatch.setenv("ADMIN_EMAILS", OWNER)
     sign_in(monkeypatch, dash, employee(OWNER))
     at = run()
     assert not at.exception
-    assert labels(at)[: len(WITH_PREVIEW)] == WITH_PREVIEW
+    (switch,) = section_switch(at)
+    assert list(switch.options) == SECTIONS and switch.value == SECTIONS[0]
+    assert [t.label for t in at.tabs] == PUBLIC_TABS
+
+    def no_data():
+        raise AssertionError("раздел Best Seller не должен грузить данные мониторинга")
+
+    for name in ("load_current", "load_snapshots", "load_competitor_pairs"):
+        monkeypatch.setattr(dash, name, no_data)
+    switch.set_value(SECTIONS[1]).run(timeout=30)
+    assert not at.exception
+    assert not at.tabs  # вкладок мониторинга в этом разделе нет
+    assert not at.error  # и мониторинг не пытался загрузить данные (дашборд показал бы ошибку загрузки)
+    assert any("Поиск подкатегорий Best Seller" in m.value for m in at.markdown)
+    assert any("PREVIEW_EMAILS" in i.value for i in at.info)
+
+
+def test_listed_address_sees_the_switch(monkeypatch, dash):  # noqa: F811
+    monkeypatch.setenv("PREVIEW_EMAILS", f"{OWNER.upper()}, someone@gmail.com")
+    sign_in(monkeypatch, dash, employee(OWNER))
+    at = run()
+    assert not at.exception and section_switch(at)
 
 
 def test_other_employees_see_the_dashboard_unchanged(monkeypatch, dash):  # noqa: F811
@@ -58,4 +69,5 @@ def test_other_employees_see_the_dashboard_unchanged(monkeypatch, dash):  # noqa
     sign_in(monkeypatch, dash, employee(ANNA))
     at = run()
     assert not at.exception
-    assert PREVIEW not in labels(at) and labels(at)[: len(PUBLIC_TABS)] == PUBLIC_TABS
+    assert not section_switch(at)
+    assert [t.label for t in at.tabs] == PUBLIC_TABS
