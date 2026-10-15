@@ -108,10 +108,13 @@ def allowed_email(user: Optional[Mapping], extra: Iterable[str] = (), domain: st
     return email if email is not None and email in set(extra) else None
 
 
-def preview_allowed(email: Optional[str], preview_emails: Iterable[str]) -> bool:
-    """Видит ли пользователь вкладки в разработке: только адреса из секрета PREVIEW_EMAILS (адреса не в коде —
-    репозиторий публичный). Пустой список — не видит никто; остальной дашборд от этого не меняется."""
-    return email is not None and email in set(preview_emails)
+def preview_allowed(email: Optional[str], preview_emails: Iterable[str], role: Optional[str] = None) -> bool:
+    """Видит ли пользователь вкладки в разработке: админ (решение владельца 15.10.2026 — без отдельной настройки)
+    или адрес из секрета PREVIEW_EMAILS (адреса не в коде — репозиторий публичный). Остальной дашборд от этого
+    не меняется."""
+    if email is None:
+        return False
+    return has_role(role, ROLE_ADMIN) or email in set(preview_emails)
 
 
 def resolve_role(user: Optional[Mapping], admin_emails: Iterable[str], db_roles: Mapping[str, str]) -> Optional[str]:

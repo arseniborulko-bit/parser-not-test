@@ -1,5 +1,5 @@
-"""Вкладка «🏆 Best Seller подкатегории» (этап 19, SOP-AMZ-001). Пока в разработке: видна только адресам из
-секрета PREVIEW_EMAILS.
+"""Вкладка «🏆 Best Seller подкатегории» (этап 19, SOP-AMZ-001). Пока в разработке: видна только админам и
+адресам из секрета PREVIEW_EMAILS.
 
 Сейчас вкладка повторяет макет (две страницы: один ASIN и список ASIN) на примерных данных из него —
 поиск через ScrapingDog, кэш и запись в таблицу гипотез ещё не подключены, кнопки этих действий неактивны.
@@ -411,7 +411,8 @@ def _render_batch() -> None:
 
 def render() -> None:
     st.markdown(_CSS, unsafe_allow_html=True)
-    st.info("Вкладка в разработке и видна только адресам из секрета PREVIEW_EMAILS. Остальные сотрудники её не видят.")
+    st.info("Вкладка в разработке: её видят только админы и адреса из секрета PREVIEW_EMAILS. "
+            "Остальные сотрудники её не видят.")
     mode = st.radio("Режим", MODES, horizontal=True, key="bs_mode", label_visibility="collapsed")
     if mode == MODES[0]:
         _render_single()

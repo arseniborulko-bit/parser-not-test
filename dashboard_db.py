@@ -1788,9 +1788,11 @@ def _render_allowed_admin(allowed: list | str | None, actor_email: str, actor_ro
 
 TAB_TITLES = ["📋 Текущее состояние", "📅 История", "📈 Прогноз", "🥊 Пары конкурентов",
               "⚙ Сбор и управление", "ℹ️ Как это работает", "📊 Активность дашборда"]
-# Вкладка в разработке (этап 19): видна только адресам из секрета PREVIEW_EMAILS и стоит последней,
-# поэтому в TAB_TITLES не входит — журнал и разбивка по разделам её не показывают.
+# Вкладка в разработке (этап 19): видна только админам и адресам из секрета PREVIEW_EMAILS. Стоит второй, сразу за
+# «Текущим состоянием»: последняя вкладка на обычном экране уходит за край ряда, а «Активность дашборда» остаётся
+# последней. В TAB_TITLES не входит — журнал и разбивка по разделам её не показывают.
 BEST_SELLER_TAB = "🏆 Best Seller подкатегории"
+_BEST_SELLER_AT = 1
 _TAB_KEY = "main_tab"
 _SECTION_RENAMES = {"📒 Журнал": TAB_TITLES[-1]}
 # Действия чаще раза в 15 секунд в журнал не пишутся (кроме открытия раздела): на время сессии
@@ -2158,9 +2160,13 @@ def main() -> None:
 
     _render_overview(shown)
 
-    preview = access.preview_allowed(email, access.parse_email_list(_secret("PREVIEW_EMAILS")))
-    tabs = st.tabs(TAB_TITLES + [BEST_SELLER_TAB] if preview else TAB_TITLES, key=_TAB_KEY, on_change="rerun")
-    current_tab, history_tab, forecast_tab, pairs_tab, schedule_tab, how_tab, journal_tab = tabs[:len(TAB_TITLES)]
+    preview = access.preview_allowed(email, access.parse_email_list(_secret("PREVIEW_EMAILS")), role)
+    titles = list(TAB_TITLES)
+    if preview:
+        titles.insert(_BEST_SELLER_AT, BEST_SELLER_TAB)
+    tabs = dict(zip(titles, st.tabs(titles, key=_TAB_KEY, on_change="rerun")))
+    current_tab, history_tab, forecast_tab, pairs_tab, schedule_tab, how_tab, journal_tab = (
+        tabs[title] for title in TAB_TITLES)
 
     with current_tab:
         _table_or_note(shown, with_images=True)
@@ -2203,7 +2209,7 @@ def main() -> None:
             _render_journal_tab(email, role)
 
     if preview:
-        with tabs[-1]:
+        with tabs[BEST_SELLER_TAB]:
             best_seller_ui.render()
 
     download_left, download_right, _ = st.columns([1, 1, 4])

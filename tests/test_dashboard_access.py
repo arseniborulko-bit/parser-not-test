@@ -15,7 +15,8 @@ SCRIPT = "import dashboard_db\ndashboard_db.main()"
 PUBLIC_TABS = ["📋 Текущее состояние", "📅 История", "📈 Прогноз", "🥊 Пары конкурентов",
                "⚙ Сбор и управление", "ℹ️ Как это работает", "📊 Активность дашборда"]
 # Журнал открыт всем сотрудникам; админа отличает раздел «Пользователи и роли» внутри него.
-ADMIN_TABS = PUBLIC_TABS
+# Админ видит ещё вкладку в разработке «🏆 Best Seller подкатегории» — второй (tests/test_dashboard_preview_tab.py).
+ADMIN_TABS = PUBLIC_TABS[:1] + ["🏆 Best Seller подкатегории"] + PUBLIC_TABS[1:]
 TEAM_PASSWORD = "correct-horse-battery"
 NOW = datetime(2026, 9, 21, 8, 0, tzinfo=schedule_store.TZ)
 
