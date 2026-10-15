@@ -1789,8 +1789,8 @@ def _render_allowed_admin(allowed: list | str | None, actor_email: str, actor_ro
 TAB_TITLES = ["📋 Текущее состояние", "📅 История", "📈 Прогноз", "🥊 Пары конкурентов",
               "⚙ Сбор и управление", "ℹ️ Как это работает", "📊 Активность дашборда"]
 # Раздел в разработке (этап 19), как в макете: переключатель «Мониторинг BSR | Best Seller подкатегории» над
-# дашбордом, где «Мониторинг BSR» — весь прежний дашборд со своими вкладками. Переключатель видят только админы и
-# адреса из секрета PREVIEW_EMAILS; остальным он не рисуется и дашборд не меняется.
+# дашбордом, где «Мониторинг BSR» — весь прежний дашборд со своими вкладками и открыт по умолчанию. Переключатель
+# видят все вошедшие сотрудники (решение владельца 15.10.2026; раньше — только админы и PREVIEW_EMAILS).
 MONITORING_SECTION = "Мониторинг BSR"
 BEST_SELLER_SECTION = "Best Seller подкатегории"
 _SECTION_KEY = "top_section"
@@ -2136,13 +2136,12 @@ def main() -> None:
             _render_unlock_box()
     actor, manage_role = _manager(email, role)
 
-    if access.preview_allowed(email, access.parse_email_list(_secret("PREVIEW_EMAILS")), role):
-        st.markdown(_SECTION_NAV_CSS, unsafe_allow_html=True)
-        section = st.radio("Раздел", [MONITORING_SECTION, BEST_SELLER_SECTION], horizontal=True, key=_SECTION_KEY,
-                           label_visibility="collapsed")
-        if section == BEST_SELLER_SECTION:
-            best_seller_ui.render()
-            return
+    st.markdown(_SECTION_NAV_CSS, unsafe_allow_html=True)
+    section = st.radio("Раздел", [MONITORING_SECTION, BEST_SELLER_SECTION], horizontal=True, key=_SECTION_KEY,
+                       label_visibility="collapsed")
+    if section == BEST_SELLER_SECTION:
+        best_seller_ui.render()
+        return
 
     if not _management_open() and manage_role is None:
         st.info(
