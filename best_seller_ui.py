@@ -176,9 +176,25 @@ def evaluate_demo(listing: Listing, subcategories: Sequence[Subcategory]) -> Lis
 
 
 def parse_links(text: object) -> Tuple[List[pairs_store.Item], List[str], int]:
-    """ASIN и страна из ссылок Amazon (тот же разбор, что у формы «Добавить пару»); голые ASIN — нераспознанные."""
-    batch = pairs_store.parse_asin_batch(text, require_link=True)
-    return batch.items, batch.invalid, batch.repeats
+    """ASIN и страна из ссылок Amazon (тот же разбор, что у формы «Добавить пару»); голые ASIN — нераспознанные.
+    Повтор — та же страна и тот же ASIN: один ASIN в Германии и в Италии — две разные строки (BSR и подкатегории
+    там свои), поэтому каждая ссылка разбирается отдельно, а не общим списком с повтором по одному ASIN."""
+    items: List[pairs_store.Item] = []
+    invalid: List[str] = []
+    repeats = 0
+    seen: set = set()
+    for token in pairs_store._TOKEN_SPLIT.split(text.strip()) if isinstance(text, str) else []:
+        if not token:
+            continue
+        batch = pairs_store.parse_asin_batch(token, require_link=True)
+        invalid += batch.invalid
+        for item in batch.items:
+            if (item.market, item.asin) in seen:
+                repeats += 1
+                continue
+            seen.add((item.market, item.asin))
+            items.append(item)
+    return items, invalid, repeats
 
 
 def links_summary(items: Sequence[pairs_store.Item], repeats: int = 0) -> str:

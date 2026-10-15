@@ -92,10 +92,11 @@ def test_list_page_matches_the_mockup_and_filters():
 def test_only_full_amazon_links_are_accepted_and_the_country_comes_from_the_domain():
     items, invalid, repeats = ui.parse_links(
         "https://www.amazon.de/dp/B07WVYMY7Y?th=1&psc=1\nB0GNBSDL65\nhttps://www.amazon.com/dp/B0GNBSDL65\n"
-        "https://www.amazon.co.uk/dp/B07WVYMY7Y")
-    assert [(i.asin, i.market) for i in items] == [("B07WVYMY7Y", "DE"), ("B0GNBSDL65", "US")]
-    assert invalid == ["B0GNBSDL65"] and repeats == 1  # голый ASIN — нет страны; повтор ASIN отброшен
-    assert ui.links_summary(items, repeats) == "Распознано 2 ASIN: DE 1 · US 1 · повторов убрано: 1"
+        "https://www.amazon.it/dp/B07WVYMY7Y\nhttps://www.amazon.de/dp/B07WVYMY7Y")
+    # Один ASIN в Германии и в Италии — две строки; повтор — только та же страна и тот же ASIN.
+    assert [(i.asin, i.market) for i in items] == [("B07WVYMY7Y", "DE"), ("B0GNBSDL65", "US"), ("B07WVYMY7Y", "IT")]
+    assert invalid == ["B0GNBSDL65"] and repeats == 1  # голый ASIN — нет страны
+    assert ui.links_summary(items, repeats) == "Распознано 3 ASIN: DE 1 · IT 1 · US 1 · повторов убрано: 1"
     assert ui.links_summary([]) == "Ссылок пока нет."
 
 
