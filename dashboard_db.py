@@ -30,6 +30,7 @@ from dotenv import load_dotenv
 
 import access
 import activity
+import best_seller_ui
 import collect_ui
 import forecast_ui
 import github_dispatch
@@ -1787,6 +1788,9 @@ def _render_allowed_admin(allowed: list | str | None, actor_email: str, actor_ro
 
 TAB_TITLES = ["📋 Текущее состояние", "📅 История", "📈 Прогноз", "🥊 Пары конкурентов",
               "⚙ Сбор и управление", "ℹ️ Как это работает", "📊 Активность дашборда"]
+# Вкладка в разработке (этап 19): видна только адресам из секрета PREVIEW_EMAILS и стоит последней,
+# поэтому в TAB_TITLES не входит — журнал и разбивка по разделам её не показывают.
+BEST_SELLER_TAB = "🏆 Best Seller подкатегории"
 _TAB_KEY = "main_tab"
 _SECTION_RENAMES = {"📒 Журнал": TAB_TITLES[-1]}
 # Действия чаще раза в 15 секунд в журнал не пишутся (кроме открытия раздела): на время сессии
@@ -2154,8 +2158,9 @@ def main() -> None:
 
     _render_overview(shown)
 
-    tabs = st.tabs(TAB_TITLES, key=_TAB_KEY, on_change="rerun")
-    current_tab, history_tab, forecast_tab, pairs_tab, schedule_tab, how_tab, journal_tab = tabs
+    preview = access.preview_allowed(email, access.parse_email_list(_secret("PREVIEW_EMAILS")))
+    tabs = st.tabs(TAB_TITLES + [BEST_SELLER_TAB] if preview else TAB_TITLES, key=_TAB_KEY, on_change="rerun")
+    current_tab, history_tab, forecast_tab, pairs_tab, schedule_tab, how_tab, journal_tab = tabs[:len(TAB_TITLES)]
 
     with current_tab:
         _table_or_note(shown, with_images=True)
@@ -2196,6 +2201,10 @@ def main() -> None:
         # Журнал читает базу, поэтому только когда вкладка открыта, а не при каждом действии.
         if journal_tab.open:
             _render_journal_tab(email, role)
+
+    if preview:
+        with tabs[-1]:
+            best_seller_ui.render()
 
     download_left, download_right, _ = st.columns([1, 1, 4])
     with download_left:
