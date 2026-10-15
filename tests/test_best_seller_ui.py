@@ -87,3 +87,32 @@ def test_list_page_matches_the_mockup_and_filters():
     at.radio(key="bs_batch_status").set_value("Ошибки").run(timeout=30)
     text = page_text(at)
     assert "Показано 1 из 28" in text and "B0XXXXXX07" in text and "B0GNBSDL65" not in text
+
+
+def test_only_full_amazon_links_are_accepted_and_the_country_comes_from_the_domain():
+    items, invalid, repeats = ui.parse_links(
+        "https://www.amazon.de/dp/B07WVYMY7Y?th=1&psc=1\nB0GNBSDL65\nhttps://www.amazon.com/dp/B0GNBSDL65\n"
+        "https://www.amazon.co.uk/dp/B07WVYMY7Y")
+    assert [(i.asin, i.market) for i in items] == [("B07WVYMY7Y", "DE"), ("B0GNBSDL65", "US")]
+    assert invalid == ["B0GNBSDL65"] and repeats == 1  # голый ASIN — нет страны; повтор ASIN отброшен
+    assert ui.links_summary(items, repeats) == "Распознано 2 ASIN: DE 1 · US 1 · повторов убрано: 1"
+    assert ui.links_summary([]) == "Ссылок пока нет."
+
+
+def test_single_page_shows_the_country_from_the_link_and_warns_on_a_bare_asin():
+    at = AppTest.from_string(SCRIPT).run(timeout=30)
+    assert "Распознано: ASIN B0GNBSDL65 · страна US" in page_text(at)
+    at.text_input(key="bs_link").set_value("https://www.amazon.de/dp/B07WVYMY7Y").run(timeout=30)
+    assert "Распознано: ASIN B07WVYMY7Y · страна DE" in page_text(at)
+    at.text_input(key="bs_link").set_value("B07WVYMY7Y").run(timeout=30)
+    assert any(ui.LINK_HINT in w.value for w in at.warning)
+
+
+def test_list_page_counts_countries_and_lists_what_it_could_not_read():
+    at = AppTest.from_string(SCRIPT).run(timeout=30)
+    at.radio(key="bs_mode").set_value("Список ASIN").run(timeout=30)
+    assert "Распознано 3 ASIN: US 3" in page_text(at)
+    at.text_area(key="bs_batch_input").set_value(
+        "https://www.amazon.de/dp/B07WVYMY7Y\nB0GNBSDL65\nhttps://www.amazon.fr/dp/B082B5LKQQ").run(timeout=30)
+    assert "Распознано 2 ASIN: DE 1 · FR 1" in page_text(at)
+    assert any("Не распознано (1): B0GNBSDL65" in w.value for w in at.warning)

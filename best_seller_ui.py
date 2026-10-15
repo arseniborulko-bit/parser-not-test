@@ -15,12 +15,16 @@ from typing import List, Optional, Sequence, Tuple
 import streamlit as st
 
 import best_seller
+import pairs_store
 
 SHEET_NAME = "Получение bs за счет смены под категории"
 MODES = ("Один ASIN", "Список ASIN")
 STATUS_FILTERS = ("Все", "С подходящими", "Без подходящих", "Ошибки")
 NOT_CONNECTED = "Поиск ещё не подключён: сначала разведка ScrapingDog (этап 0)."
 WRITE_LATER = "Запись в Google-таблицу гипотез подключим после поиска (этап 3)."
+# Как в форме «Добавить пару»: только полная ссылка Amazon, чтобы страна была видна из самой ссылки
+# (владелец, 15.10.2026). Голый ASIN не принимается.
+LINK_HINT = "Нужна полная ссылка на товар Amazon, например https://www.amazon.de/dp/B07WVYMY7Y — по ней видна страна."
 
 
 @dataclass(frozen=True)
@@ -52,6 +56,7 @@ class Subcategory:
 @dataclass(frozen=True)
 class BatchRow:
     asin: str
+    market: str
     group: str
     our_bsr: Optional[str]
     best: Optional[str]
@@ -86,16 +91,16 @@ DEMO_SUBCATEGORIES = (
 )
 # Пример из макета, стр. 2: первые две строки — из SOP, остальные условные.
 DEMO_BATCH = (
-    BatchRow("B0GNBSDL65", "beanie", "91 233", "Men's Novelty Sun Hats", 460_779, 2, best_seller.HIGH, "готово"),
-    BatchRow("B0DG2B7KJN", "beanie + socks", "~51 000", "уже #3 в Women's Novelty Beanies", None, None, None,
+    BatchRow("B0GNBSDL65", "US", "beanie", "91 233", "Men's Novelty Sun Hats", 460_779, 2, best_seller.HIGH, "готово"),
+    BatchRow("B0DG2B7KJN", "US", "beanie + socks", "~51 000", "уже #3 в Women's Novelty Beanies", None, None, None,
              "поиск не нужен"),
-    BatchRow("B0XXXXXX03", "neck gaiter", "148 200", "Women's Cold Weather Neck Gaiters", 312_500, 3, best_seller.HIGH,
+    BatchRow("B0XXXXXX03", "US", "neck gaiter", "148 200", "Women's Cold Weather Neck Gaiters", 312_500, 3, best_seller.HIGH,
              "готово"),
-    BatchRow("B0XXXXXX04", "boot socks", "205 900", "Women's Soccer Socks", 188_700, 1, best_seller.LOW, "готово"),
-    BatchRow("B0XXXXXX05", "kids pants", "310 000", "Girls' Novelty Leggings", 260_400, 2, best_seller.HIGH, "готово"),
-    BatchRow("B0XXXXXX06", "beanie", "72 800", "нет подходящих", None, 0, None, "готово"),
-    BatchRow("B0XXXXXX07", "boot socks", None, None, None, None, None, "ошибка запроса"),
-    BatchRow("B0XXXXXX08", "neck gaiter", None, None, None, None, None, "в очереди"),
+    BatchRow("B0XXXXXX04", "US", "boot socks", "205 900", "Women's Soccer Socks", 188_700, 1, best_seller.LOW, "готово"),
+    BatchRow("B0XXXXXX05", "US", "kids pants", "310 000", "Girls' Novelty Leggings", 260_400, 2, best_seller.HIGH, "готово"),
+    BatchRow("B0XXXXXX06", "US", "beanie", "72 800", "нет подходящих", None, 0, None, "готово"),
+    BatchRow("B0XXXXXX07", "US", "boot socks", None, None, None, None, None, "ошибка запроса"),
+    BatchRow("B0XXXXXX08", "US", "neck gaiter", None, None, None, None, None, "в очереди"),
 )
 DEMO_BATCH_TOTAL = 28
 DEMO_BATCH_COUNTS = (("С подходящими", 12, "#15803d"), ("Без подходящих", 4, "#111827"),
@@ -168,6 +173,23 @@ def evaluate_demo(listing: Listing, subcategories: Sequence[Subcategory]) -> Lis
              for sub in subcategories]
     order = best_seller.ranked([verdict for _, verdict in pairs])
     return sorted(pairs, key=lambda pair: next(i for i, v in enumerate(order) if v is pair[1]))
+
+
+def parse_links(text: object) -> Tuple[List[pairs_store.Item], List[str], int]:
+    """ASIN и страна из ссылок Amazon (тот же разбор, что у формы «Добавить пару»); голые ASIN — нераспознанные."""
+    batch = pairs_store.parse_asin_batch(text, require_link=True)
+    return batch.items, batch.invalid, batch.repeats
+
+
+def links_summary(items: Sequence[pairs_store.Item], repeats: int = 0) -> str:
+    if not items:
+        return "Ссылок пока нет."
+    counts: dict = {}
+    for item in items:
+        counts[item.market] = counts.get(item.market, 0) + 1
+    by_market = " · ".join(f"{m} {n}" for m, n in sorted(counts.items(), key=lambda kv: (-kv[1], kv[0])))
+    tail = f" · повторов убрано: {repeats}" if repeats else ""
+    return f"Распознано {len(items)} ASIN: {by_market}{tail}"
 
 
 def filter_batch(rows: Sequence[BatchRow], query: str, group: str, status: str) -> List[BatchRow]:
@@ -305,12 +327,17 @@ def _render_single() -> None:
         unsafe_allow_html=True,
     )
     with st.container(border=True):
-        asin_col, market_col, button_col, follow_col = st.columns([2.2, 1.2, 1.5, 2.6], vertical_alignment="bottom")
-        asin_col.text_input("ASIN", value=DEMO_LISTING.asin, key="bs_asin")
-        market_col.selectbox("Маркет", ["US"], key="bs_market")
+        link_col, button_col, follow_col = st.columns([3.4, 1.5, 2.6], vertical_alignment="bottom")
+        link = link_col.text_input("Ссылка на товар Amazon", value=f"https://www.amazon.com/dp/{DEMO_LISTING.asin}",
+                                   key="bs_link", help=LINK_HINT)
         _soon(button_col, "Найти подкатегории", "bs_find")
         if follow_col.checkbox("Следить за этим ASIN (проверка раз в неделю)", key="bs_follow"):
             follow_col.caption("Еженедельная проверка заработает вместе с поиском.")
+        items, _, _ = parse_links(link)
+        if items:
+            st.caption(f"Распознано: ASIN {items[0].asin} · страна {items[0].market}")
+        elif link.strip():
+            st.warning(LINK_HINT)
     st.markdown(_listing_card(DEMO_LISTING), unsafe_allow_html=True)
     _results(DEMO_LISTING, evaluate_demo(DEMO_LISTING, DEMO_SUBCATEGORIES))
     _legend()
@@ -333,12 +360,12 @@ def _batch_table(rows: Sequence[BatchRow]) -> str:
         if row.status == "ошибка запроса":
             status += '<span class="bs-retry">повторить</span>'
         body.append(
-            f"<tr><td>{asin}</td><td>{escape(row.group)}</td><td class='bs-num'>{escape(row.our_bsr or '–')}</td>"
+            f"<tr><td>{asin}</td><td>{escape(row.market)}</td><td>{escape(row.group)}</td><td class='bs-num'>{escape(row.our_bsr or '–')}</td>"
             f"<td>{best}</td><td class='bs-num'>{fmt_int(row.leader_bsr)}</td>"
             f"<td class='bs-num'><b>{'–' if row.suitable is None else row.suitable}</b></td>"
             f"<td>{priority}</td><td>{status}</td></tr>"
         )
-    head = ("<tr><th>ASIN</th><th>Группа</th><th class='bs-num'>Наш BSR</th><th>Лучшая подкатегория</th>"
+    head = ("<tr><th>ASIN</th><th>Страна</th><th>Группа</th><th class='bs-num'>Наш BSR</th><th>Лучшая подкатегория</th>"
             "<th class='bs-num'>BSR лидера</th><th class='bs-num'>Подходят</th><th>Приоритет</th><th>Статус</th></tr>")
     return f'<table class="bs-table"><thead>{head}</thead><tbody>{"".join(body)}</tbody></table>'
 
@@ -352,9 +379,15 @@ def _render_batch() -> None:
     )
     with st.container(border=True):
         left, right = st.columns([1.1, 1.4])
-        left.text_area("ASIN, по одному в строке", value="\n".join(r.asin for r in DEMO_BATCH[:3]), height=110,
-                       key="bs_batch_input")
-        left.caption(f"Загружено {DEMO_BATCH_TOTAL} ASIN · маркет US")
+        text = left.text_area("Ссылки на товары Amazon, по одной в строке",
+                              value="\n".join(f"https://www.amazon.{pairs_store.DOMAIN_BY_MARKET[r.market]}/dp/{r.asin}"
+                                              for r in DEMO_BATCH[:3]),
+                              height=110, key="bs_batch_input", help=LINK_HINT)
+        items, invalid, repeats = parse_links(text)
+        left.caption(links_summary(items, repeats))
+        if invalid:
+            left.warning(f"Не распознано ({len(invalid)}): {', '.join(invalid[:5])}{' …' if len(invalid) > 5 else ''}. "
+                         + LINK_HINT)
         run_col, csv_col, monitor_col = right.columns([1, 1, 1.3])
         _soon(run_col, "Запустить поиск", "bs_batch_run")
         _soon(csv_col, "Загрузить CSV", "bs_batch_csv")
