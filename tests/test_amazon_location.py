@@ -42,3 +42,28 @@ def test_product_request_carries_the_postal_code(domain, country, postal):
                       "postal_code": postal}
     # С индексом ответ идёт до ~40 с: 15 с обрывали запрос (замер 16.10.2026).
     assert session.timeout >= 45
+
+
+class TextResponse:
+    def __init__(self, status, text):
+        self.status_code, self.text = status, text
+
+
+class TextSession:
+    def __init__(self, response):
+        self.response, self.calls = response, []
+
+    def get(self, url, params, timeout):
+        self.calls.append((url, params, timeout))
+        return self.response
+
+
+def test_scrape_page_uses_the_generic_endpoint_and_hides_the_token(caplog):
+    ok = TextSession(TextResponse(200, "<html>ok</html>"))
+    assert scraping.scrape_page("https://www.amazon.com/gp/bestsellers/fashion/1", token="T", session=ok) == "<html>ok</html>"
+    ((url, params, timeout),) = ok.calls
+    assert url == "https://api.scrapingdog.com/scrape" and timeout >= 45
+    assert params == {"api_key": "T", "url": "https://www.amazon.com/gp/bestsellers/fashion/1", "dynamic": "false"}
+    bad = TextSession(TextResponse(410, "timed out for key T"))
+    assert scraping.scrape_page("https://x", token="T", session=bad) is None
+    assert "timed out for key ***" in caplog.text and "key T" not in caplog.text

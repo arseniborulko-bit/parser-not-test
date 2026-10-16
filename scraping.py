@@ -129,6 +129,26 @@ def fetch_product(asin: str, domain: str = DOMAIN, token: Optional[str] = None, 
     return None
 
 
+def scrape_page(url: str, token: Optional[str] = None, session: Optional[requests.Session] = None) -> Optional[str]:
+    """HTML страницы Amazon через общий /scrape ScrapingDog (dynamic=false): страницы Best Sellers и страницы
+    товаров для бейджа (этап 19). Один запрос = 1 кредит; None — сеть, не-200; токен в лог не попадает."""
+    token = token or get_scrapingdog_token()
+    req_session = session or _get_http_session()
+    try:
+        response = req_session.get(
+            "https://api.scrapingdog.com/scrape",
+            params={"api_key": token, "url": url, "dynamic": "false"},
+            timeout=SCRAPINGDOG_TIMEOUT,
+        )
+    except requests.RequestException as e:
+        logger.warning(f"[scrape] Ошибка сети: {str(e).replace(token, '***') if token else e}")
+        return None
+    if response.status_code != 200:
+        logger.error(f"[scrape] Ошибка {response.status_code}: {response.text[:200].replace(token, '***')}")
+        return None
+    return response.text
+
+
 def _extract_image_url(data: dict) -> str:
     """main_image, а при его отсутствии — первая ссылка из images_of_specified_asin/images."""
     main = data.get("main_image")
