@@ -177,10 +177,10 @@ WITH s AS (
     VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, now())
     RETURNING id
 ), r AS (
-    INSERT INTO best_seller.search_results (search_id, node, name, leader_bsr, k1, k2, k3, k4, relevance, status,
-                                            priority, reason)
-    SELECT s.id, t.* FROM s, unnest(%s::text[], %s::text[], %s::int[], %s::bool[], %s::bool[], %s::bool[],
-                                    %s::bool[], %s::text[], %s::text[], %s::text[], %s::text[]) AS t
+    INSERT INTO best_seller.search_results (search_id, node, name, path, leader_bsr, k1, k2, k3, k4, relevance,
+                                            status, priority, reason)
+    SELECT s.id, t.* FROM s, unnest(%s::text[], %s::text[], %s::text[], %s::int[], %s::bool[], %s::bool[],
+                                    %s::bool[], %s::bool[], %s::text[], %s::text[], %s::text[], %s::text[]) AS t
 )
 SELECT id FROM s;
 """
@@ -192,7 +192,8 @@ def save_search(connect: Connect, result, *, actor_role: Optional[str], actor: s
     own = [{"node": x.node, "name": x.name, "rank": x.rank} for x in result.own]
     cs = result.candidates
     columns = (
-        [c.sub.node for c in cs], [c.sub.name[:300] for c in cs], [c.info.leader_bsr if c.info else None for c in cs],
+        [c.sub.node for c in cs], [c.sub.name[:300] for c in cs], [c.sub.path[:500] for c in cs],
+        [c.info.leader_bsr if c.info else None for c in cs],
         [c.verdict.k1 for c in cs], [c.verdict.k2 for c in cs], [c.verdict.k3 for c in cs], [c.verdict.k4 for c in cs],
         [c.relevance for c in cs], [c.verdict.status for c in cs], [c.verdict.priority for c in cs],
         [c.verdict.reason for c in cs],
@@ -214,11 +215,11 @@ def latest_search(connect: Connect, market: str, asin: str) -> Optional[dict]:
         return None
     sid, title, our, target, status, error, own, requests, actor, finished = rows[0]
     results = _run(connect, """
-        SELECT node, name, leader_bsr, k1, k2, k3, k4, relevance, status, priority, reason
+        SELECT node, name, path, leader_bsr, k1, k2, k3, k4, relevance, status, priority, reason
         FROM best_seller.search_results WHERE search_id = %s
         ORDER BY CASE status WHEN 'suitable' THEN 0 WHEN 'pending' THEN 1 ELSE 2 END, leader_bsr DESC NULLS LAST;
         """, (sid,), fetch=True)
-    keys = ("node", "name", "leader_bsr", "k1", "k2", "k3", "k4", "relevance", "status", "priority", "reason")
+    keys = ("node", "name", "path", "leader_bsr", "k1", "k2", "k3", "k4", "relevance", "status", "priority", "reason")
     return {"id": sid, "market": market, "asin": asin, "title": title, "our_bsr": our, "target_bsr": target,
             "status": status, "error": error, "own": list(own or []), "requests": requests, "actor": actor,
             "finished_at": finished, "results": [dict(zip(keys, row)) for row in results]}

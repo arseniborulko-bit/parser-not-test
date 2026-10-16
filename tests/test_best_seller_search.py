@@ -199,3 +199,53 @@ def test_our_listing_can_be_read_from_its_product_page():
     assert main == 859857 and [(x.node, x.name, x.rank) for x in subs] == [
         ("9057034011", "Men's Novelty Sun Hats", 8), ("9056981011", "Women's Novelty Sun Hats", 12)]
     assert s.product_from_page(None) is None and s.product_from_page("<html></html>") is None
+
+
+def test_walk_goes_down_the_branches_to_leaf_subcategories_and_filters_by_name():
+    root, hats = "2474954011", "300"
+    pages = {
+        URL + root: bs_page("Men's Hats & Caps", top("RR", 50), siblings=[(hats, "Hats"), ("303", "Balaclavas")]),
+        URL + hats: bs_page("Hats", top("HH", 50), siblings=[("301", "Trapper Hats"), ("302", "Sun Hats")]),
+        URL + "301": bs_page("Men's Trapper Hats", top("TT", 50), siblings=[("301", "Trapper Hats"), ("302", "Sun Hats")]),
+        URL + "302": bs_page("Men's Sun Hats", top("SS", 50), siblings=[("301", "Trapper Hats"), ("302", "Sun Hats")]),
+    }
+    fake, asked = Fake(pages), []
+
+    def keep(our_title, names):
+        asked.append(list(names))
+        return [n for n in names if n != "Balaclavas"]  # как «Balaclavas — пропускать сразу» в SOP
+
+    leaves, used = s.walk_branches("US", [s.Branch("Men › Hats & Caps", "fashion", root)], fetch_page=fake.fetch_page,
+                                   cache=s.MemoryCache(), now=NOW, keep=keep, our_title="Merino Beanie")
+    assert [(x.node, x.name, x.path) for x in leaves] == [
+        ("301", "Men's Trapper Hats", "Men › Hats & Caps › Hats › Trapper Hats"),
+        ("302", "Men's Sun Hats", "Men › Hats & Caps › Hats › Sun Hats")]
+    assert URL + "303" not in fake.urls and asked[0] == ["Hats", "Balaclavas"]
+    assert used == 4
+
+
+def test_walk_stops_at_the_page_limit():
+    kids = [(f"{500 + i}", f"Kid {i}") for i in range(20)]
+    pages = {URL + "400": bs_page("Root", top("RR", 5), siblings=kids)}
+    pages.update({URL + n: bs_page(name, top("AA", 5), siblings=kids) for n, name in kids})
+    fake = Fake(pages)
+    leaves, used = s.walk_branches("US", [s.Branch("Root", "fashion", "400")], fetch_page=fake.fetch_page,
+                                   cache=s.MemoryCache(), now=NOW, max_pages=6)
+    assert used == 6 and len(leaves) == 5
+
+
+def test_search_with_branches_checks_leaves_and_keeps_the_path():
+    root = "2474954011"
+    pages = {
+        URL + root: bs_page("Men's Hats & Caps", top("RR", 50), siblings=[("302", "Sun Hats"), ("309", "Other")]),
+        URL + "302": bs_page("Men's Sun Hats", top("SS", 50), siblings=[("302", "Sun Hats"), ("309", "Other")]),
+        "https://www.amazon.com/dp/B0SS000001": leader_page(30000),
+    }
+    product = {**PRODUCT, "best_sellers_rank": PRODUCT["best_sellers_rank"][:1]}  # своих подкатегорий нет
+    fake = Fake(pages, product)
+    result = s.search(OURS, "US", fetch_product=fake.fetch_product, fetch_page=fake.fetch_page, cache=s.MemoryCache(),
+                      target_bsr=60000, now=NOW, branches=[s.Branch("Men › Hats & Caps", "fashion", root)])
+    assert [(c.sub.node, c.sub.path, c.verdict.reason) for c in result.candidates] == [
+        ("302", "Men › Hats & Caps › Sun Hats", "отклонена по К1")]
+    # страница подкатегории взята при обходе и повторно не запрашивается; «309» не открылась — в кандидаты не попала
+    assert fake.urls.count(URL + "302") == 1

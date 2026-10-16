@@ -369,8 +369,8 @@ def _render_demo_single() -> None:
     )
 
 
-SEARCH_MAX_CANDIDATES = 8
-SEARCH_TAKES = "Поиск идёт 1–5 минут: страница каждой подкатегории и её лидера запрашиваются у ScrapingDog."
+SEARCH_TAKES = ("Поиск идёт 5–15 минут: обходятся ветки из SOP (Men, Women, Sport, Novelty) и проверяется лидер каждой "
+                "подкатегории. Повторный поиск по похожему товару быстрее — подкатегории хранятся неделю.")
 
 
 def _search_problem(connect) -> Optional[str]:
@@ -392,8 +392,9 @@ def _run_search(connect, market: str, asin: str, target: Optional[int], actor: s
 
     fetch_page = lambda url: scraping.scrape_page(url, token=token)  # noqa: E731
     result = bss.search(asin, market, cache=best_seller_store.DbNodeCache(connect), target_bsr=target,
+                        branches=bss.BRANCHES_BY_MARKET.get(market),
                         fetch_product=lambda a, d: bss.product_from_page(fetch_page(bss.product_url(market, a))),
-                        fetch_page=fetch_page, max_candidates=SEARCH_MAX_CANDIDATES)
+                        fetch_page=fetch_page)
     best_seller_store.save_search(connect, result, actor_role=access.ROLE_EDITOR, actor=actor)
     usage_log.record(connect, actor, "best_seller_search", result.requests, "запросов ScrapingDog")
 
@@ -423,7 +424,8 @@ def _found_pairs(found: dict) -> List[Tuple[Subcategory, best_seller.Verdict]]:
     pairs = []
     for row in found["results"]:
         ratio = row["leader_bsr"] / target if row["leader_bsr"] and target else None
-        sub = Subcategory(row["name"] or row["node"], "", row["node"], row["leader_bsr"], relevance=row["relevance"])
+        sub = Subcategory(row["name"] or row["node"], row.get("path") or "", row["node"], row["leader_bsr"],
+                          relevance=row["relevance"])
         pairs.append((sub, best_seller.Verdict(row["k1"], row["k2"], row["k3"], row["k4"], row["status"],
                                                row["priority"], ratio, row["reason"])))
     return pairs

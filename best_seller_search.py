@@ -43,6 +43,32 @@ class Subcategory:
     dept: str
     name: str
     rank: Optional[int] = None  # место нашего товара в ней (для своих подкатегорий)
+    path: str = ""  # ветка, в которой найдена: «Men › Accessories › Hats & Caps» (столбец таблицы гипотез)
+
+
+@dataclass(frozen=True)
+class Branch:
+    """Корень ветки дерева Best Sellers, которую обходит поиск (SOP-AMZ-001, шаги 4–7)."""
+
+    label: str
+    dept: str
+    node: str
+
+
+# Ветки из SOP для одежды и аксессуаров, Amazon US, в порядке обхода (Men → Women → Sport → Novelty).
+# Номера узлов взяты со страниц Best Sellers 16.10.2026. Другие страны и товары — П9 в SOP, не подтверждено.
+US_APPAREL_BRANCHES = (
+    Branch("Men › Accessories › Hats & Caps", "fashion", "2474954011"),
+    Branch("Women › Accessories", "fashion", "2474936011"),
+    Branch("Sport Specific Clothing", "fashion", "23575629011"),
+    Branch("Sports & Outdoors › Sports", "sporting-goods", "10971181011"),
+    Branch("Novelty & More", "fashion", "7147445011"),
+)
+BRANCHES_BY_MARKET = {"US": US_APPAREL_BRANCHES}
+MAX_PAGES_PER_BRANCH = 30  # страниц меню на ветку без отсева по названию: огромные ветки (Sports) не уходят в бесконечность
+MAX_BRANCH_CANDIDATES = 40
+# (наш заголовок, названия подкатегорий уровня) -> названия, которые стоит открывать (отсев явно нерелевантных)
+NameFilter = Callable[[str, Sequence[str]], Sequence[str]]
 
 
 @dataclass
@@ -255,8 +281,9 @@ def _retrying(fetch: Callable, attempts: int) -> Callable:
 
 def search(asin: str, market: str, *, fetch_product: ProductFetch, fetch_page: PageFetch, cache: NodeCache,
            target_bsr: Optional[int] = None, relevance: Optional[RelevanceFn] = None,
-           now: Optional[datetime] = None, max_candidates: int = MAX_CANDIDATES,
-           attempts: int = ATTEMPTS) -> SearchResult:
+           now: Optional[datetime] = None, max_candidates: Optional[int] = None,
+           attempts: int = ATTEMPTS, branches: Optional[Sequence[Branch]] = None,
+           keep: Optional[NameFilter] = None) -> SearchResult:
     """Подкатегории, где ASIN может стать #1 Best Seller. target_bsr — наш целевой BSR (по умолчанию — текущий).
     requests — сколько ответов получено (≈ кредитов; оборванные попытки ScrapingDog не оплачиваются)."""
     now = now or datetime.now(timezone.utc)
@@ -284,16 +311,27 @@ def search(asin: str, market: str, *, fetch_product: ProductFetch, fetch_page: P
 
     queue: List[Subcategory] = list(result.own)
     seen = {sub.node for sub in queue}
+    if branches:
+        # Как в SOP: свои подкатегории + конечные подкатегории заданных веток; соседей своих не добавляем.
+        leaves, used = walk_branches(market, branches, fetch_page=fetch_page, cache=cache, now=now, keep=keep,
+                                     our_title=result.title)
+        result.requests += used
+        for leaf in leaves:
+            if leaf.node not in seen:
+                seen.add(leaf.node)
+                queue.append(leaf)
+    limit = max_candidates or (MAX_BRANCH_CANDIDATES if branches else MAX_CANDIDATES)
     index = 0
-    while index < len(queue) and len(result.candidates) < max_candidates:
+    while index < len(queue) and len(result.candidates) < limit:
         sub = queue[index]
         index += 1
         info, used = _check_node(market, sub, fetch_page, cache, result.target_bsr, now)
         result.requests += used
-        for linked in (info.linked if info else []):
-            if linked.node not in seen and linked.node not in parents:
-                seen.add(linked.node)
-                queue.append(linked)
+        if not branches:
+            for linked in (info.linked if info else []):
+                if linked.node not in seen and linked.node not in parents:
+                    seen.add(linked.node)
+                    queue.append(linked)
         result.candidates.append(_decide(sub, info, result.target_bsr, result.title, relevance))
     order = best_seller.ranked([c.verdict for c in result.candidates])
     result.candidates.sort(key=lambda c: next(i for i, v in enumerate(order) if v is c.verdict))
@@ -301,27 +339,70 @@ def search(asin: str, market: str, *, fetch_product: ProductFetch, fetch_page: P
     return result
 
 
+def _page_info(market: str, sub: Subcategory, fetch_page: PageFetch, cache: NodeCache,
+               now: datetime) -> Tuple[Optional[NodeInfo], int]:
+    """Первая страница подкатегории (места, заголовки, меню) — из кэша, если свежая, иначе 1 запрос."""
+    info = cache.get(market, sub.node)
+    if _fresh(info, now):
+        return info, 0
+    page = fetch_page(bestsellers_url(market, sub))
+    if not page:
+        return None, 1
+    parsed = parse_bestsellers(page)
+    info = NodeInfo(node=sub.node, dept=sub.dept, name=parsed.name or sub.name, linked=parsed.linked,
+                    top=[{"rank": r, "asin": a, "title": parsed.titles.get(a, "")} for r, a in parsed.ranked],
+                    fetched_at=now)
+    info.leader_asin = next((a for r, a in parsed.ranked if r == 1), None)
+    cache.put(market, info)
+    return info, 1
+
+
+def walk_branches(market: str, branches: Sequence[Branch], *, fetch_page: PageFetch, cache: NodeCache,
+                  now: datetime, keep: Optional[NameFilter] = None, our_title: str = "",
+                  max_pages: int = MAX_PAGES_PER_BRANCH) -> Tuple[List[Subcategory], int]:
+    """Конечные подкатегории веток (SOP, шаги 4–7) с путём «Ветка › …». Узел конечный, если его меню показывает
+    тех же соседей, что и уровень выше (у конечной подкатегории детей нет — Amazon показывает соседей).
+    keep — отсев явно нерелевантных по названию до трат (как «Balaclavas, Visors — пропускать сразу» в SOP)."""
+    leaves: List[Subcategory] = []
+    used = 0
+    seen: set = set()
+    for branch in branches:
+        queue = [(Subcategory(branch.node, branch.dept, branch.label), frozenset(), branch.label)]
+        fetched = 0
+        while queue and fetched < max_pages:
+            sub, siblings, path = queue.pop(0)
+            if sub.node in seen:
+                continue
+            seen.add(sub.node)
+            info, cost = _page_info(market, sub, fetch_page, cache, now)
+            used += cost
+            fetched += cost
+            if info is None:
+                continue
+            kids = [x for x in info.linked if x.node not in siblings and x.node != sub.node]
+            if not kids:
+                leaves.append(Subcategory(sub.node, sub.dept, info.name or sub.name, path=path))
+                continue
+            if keep is not None:
+                allowed = set(keep(our_title, [k.name for k in kids]))
+                kids = [k for k in kids if k.name in allowed]
+            level = frozenset(x.node for x in info.linked)
+            queue.extend((k, level, f"{path} › {k.name}") for k in kids)
+    return leaves, used
+
+
 def _check_node(market: str, sub: Subcategory, fetch_page: PageFetch, cache: NodeCache, target_bsr: int,
                 now: datetime) -> Tuple[Optional[NodeInfo], int]:
     """Данные подкатегории: из кэша, если свежие, иначе — запросы по порядку с ранней остановкой по К1."""
-    used = 0
-    info = cache.get(market, sub.node)
-    if not _fresh(info, now):
-        page = fetch_page(bestsellers_url(market, sub))
+    info, used = _page_info(market, sub, fetch_page, cache, now)
+    if info is None:
+        return None, used
+    if info.leader_asin and info.leader_bsr is None and info.leader_badge is None:
+        leader = fetch_page(product_url(market, info.leader_asin))
         used += 1
-        if not page:
-            return None, used
-        parsed = parse_bestsellers(page)
-        info = NodeInfo(node=sub.node, dept=sub.dept, name=parsed.name or sub.name, linked=parsed.linked,
-                        top=[{"rank": r, "asin": a, "title": parsed.titles.get(a, "")} for r, a in parsed.ranked],
-                        fetched_at=now)
-        info.leader_asin = next((a for r, a in parsed.ranked if r == 1), None)
-        if info.leader_asin:
-            leader = fetch_page(product_url(market, info.leader_asin))
-            used += 1
-            if leader:
-                info.leader_bsr, info.leader_badge = parse_leader(leader)
-        cache.put(market, info)
+        if leader:
+            info.leader_bsr, info.leader_badge = parse_leader(leader)
+            cache.put(market, info)
     k1 = best_seller.evaluate(target_bsr, info.leader_bsr).k1
     if k1 and info.item_count is None:
         page = fetch_page(bestsellers_url(market, sub, 2))
@@ -347,4 +428,4 @@ def _decide(sub: Subcategory, info: Optional[NodeInfo], target_bsr: int, our_tit
     if first.k2 and relevance is not None:  # К3 стоит денег (ИИ) — только если К1 и К2 пройдены
         rel = relevance(our_title, [row["title"] for row in info.top if row.get("title")])
     verdict = best_seller.evaluate(target_bsr, info.leader_bsr, info.item_count, rel, info.leader_badge)
-    return Candidate(Subcategory(sub.node, sub.dept, info.name or sub.name, sub.rank), info, verdict, rel)
+    return Candidate(Subcategory(sub.node, sub.dept, info.name or sub.name, sub.rank, sub.path), info, verdict, rel)
