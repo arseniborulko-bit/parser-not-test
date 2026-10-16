@@ -26,6 +26,8 @@ import pairs_store
 from utils import clean_number
 
 CACHE_DAYS = 7
+# ScrapingDog иногда обрывает запрос по времени (ответ 410, кредит не списывается) — до 3 попыток на запрос.
+ATTEMPTS = 3
 MAX_CANDIDATES = 12
 TOP_SIZE = 100
 
@@ -200,6 +202,31 @@ def parse_leader(page: str) -> Tuple[Optional[int], Optional[bool]]:
     return bsr, badge
 
 
+_LADDER_LINK = re.compile(r"(\d[\d.,\s]*)\s*(?:in|en|dans|nella|nel)?\s*<a href=['\"][^'\"]*/gp/bestsellers/"
+                          r"([a-z0-9-]+)/(\d+)/ref=pd_zg_hrsr[^'\"]*['\"][^>]*>([^<]+)</a>", re.I)
+
+
+def product_from_page(page: Optional[str]) -> Optional[dict]:
+    """Наш товар со страницы (общий /scrape) в том же виде, что Product API: title, best_sellers_rank, categories.
+    Быстрее и надёжнее Product API, который с индексом доставки отвечает до 40 с и бывает обрывается (16.10.2026)."""
+    if not page:
+        return None
+    title = re.search(r'id="productTitle"[^>]*>(.*?)</span>', page, re.S)
+    main_bsr, _ = parse_leader(page)
+    ladder = [{"rank": main_bsr, "category": "", "link": ""}] if main_bsr else []
+    seen = set()
+    for rank, dept, node, name in _LADDER_LINK.findall(page):
+        if node not in seen:
+            seen.add(node)
+            ladder.append({"rank": int(re.sub(r"[.,\s]", "", rank)), "category": html_lib.unescape(name).strip(),
+                           "link": f"/gp/bestsellers/{dept}/{node}/"})
+    crumbs = re.search(r'id="wayfinding-breadcrumbs_feature_div".*?</ul>', page, re.S)
+    categories = [{"node": node} for node in re.findall(r"node=(\d+)", crumbs.group(0))] if crumbs else []
+    if not ladder and not title:
+        return None
+    return {"title": _text(title.group(1)) if title else "", "best_sellers_rank": ladder, "categories": categories}
+
+
 def bestsellers_url(market: str, sub: Subcategory, page: int = 1) -> str:
     domain = pairs_store.DOMAIN_BY_MARKET[market]
     url = f"https://www.amazon.{domain}/gp/bestsellers/{sub.dept}/{sub.node}"
@@ -216,11 +243,24 @@ def _fresh(info: Optional[NodeInfo], now: datetime) -> bool:
     return info is not None and info.fetched_at is not None and now - info.fetched_at < timedelta(days=CACHE_DAYS)
 
 
+def _retrying(fetch: Callable, attempts: int) -> Callable:
+    def call(*args):
+        for _ in range(max(1, attempts)):
+            answer = fetch(*args)
+            if answer:
+                return answer
+        return None
+    return call
+
+
 def search(asin: str, market: str, *, fetch_product: ProductFetch, fetch_page: PageFetch, cache: NodeCache,
            target_bsr: Optional[int] = None, relevance: Optional[RelevanceFn] = None,
-           now: Optional[datetime] = None, max_candidates: int = MAX_CANDIDATES) -> SearchResult:
-    """Подкатегории, где ASIN может стать #1 Best Seller. target_bsr — наш целевой BSR (по умолчанию — текущий)."""
+           now: Optional[datetime] = None, max_candidates: int = MAX_CANDIDATES,
+           attempts: int = ATTEMPTS) -> SearchResult:
+    """Подкатегории, где ASIN может стать #1 Best Seller. target_bsr — наш целевой BSR (по умолчанию — текущий).
+    requests — сколько ответов получено (≈ кредитов; оборванные попытки ScrapingDog не оплачиваются)."""
     now = now or datetime.now(timezone.utc)
+    fetch_product, fetch_page = _retrying(fetch_product, attempts), _retrying(fetch_page, attempts)
     result = SearchResult(asin=asin, market=market, status="error")
     if market not in pairs_store.DOMAIN_BY_MARKET:
         result.error = f"Неизвестная страна: {market}"

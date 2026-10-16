@@ -167,3 +167,35 @@ def test_max_candidates_caps_spending():
     result = s.search(OURS, "US", fetch_product=fake.fetch_product, fetch_page=fake.fetch_page,
                       cache=s.MemoryCache(), target_bsr=60000, now=NOW, max_candidates=5)
     assert len(result.candidates) == 5
+
+
+def test_a_dropped_request_is_retried():
+    calls = []
+
+    def flaky_product(asin, domain):
+        calls.append(asin)
+        return None if len(calls) < 3 else PRODUCT
+
+    result = s.search(OURS, "US", fetch_product=flaky_product, fetch_page=lambda url: None,
+                      cache=s.MemoryCache(), max_candidates=1)
+    assert len(calls) == 3 and result.status == "done"
+    calls.clear()
+    assert s.search(OURS, "US", fetch_product=lambda a, d: calls.append(a), fetch_page=lambda url: None,
+                    cache=s.MemoryCache(), attempts=2).status == "error"
+    assert len(calls) == 2
+
+
+def test_our_listing_can_be_read_from_its_product_page():
+    page = ('<span id="productTitle"> Classic Straw Hat </span>'
+            '<div id="wayfinding-breadcrumbs_feature_div"><ul><a href="/b?node=7141123011">C</a>'
+            '<a href="/b?node=9056985011">M</a></ul></div>'
+            "<table><tr><th>Best Sellers Rank</th><td>#859,857 in Clothing (See Top 100) <ul>"
+            "<li>#8 in <a href='/gp/bestsellers/fashion/9057034011/ref=pd_zg_hrsr_fashion'>Men's Novelty Sun Hats</a></li>"
+            "<li>#12 in <a href='/gp/bestsellers/fashion/9056981011/ref=pd_zg_hrsr_fashion'>Women's Novelty Sun Hats</a></li>"
+            "</ul></td></tr></table>")
+    product = s.product_from_page(page)
+    assert product["title"] == "Classic Straw Hat" and product["categories"] == [{"node": "7141123011"}, {"node": "9056985011"}]
+    main, subs = s.own_subcategories(product)
+    assert main == 859857 and [(x.node, x.name, x.rank) for x in subs] == [
+        ("9057034011", "Men's Novelty Sun Hats", 8), ("9056981011", "Women's Novelty Sun Hats", 12)]
+    assert s.product_from_page(None) is None and s.product_from_page("<html></html>") is None
