@@ -680,8 +680,6 @@ def _render_batch(connect=None, actor: str = "", can_edit: bool = False) -> None
         'ошибок. Запросы к Amazon тратятся на новые подкатегории, а не на каждый ASIN.</p>',
         unsafe_allow_html=True,
     )
-    _demo_note("Пример из макета: первые две строки взяты из SOP-AMZ-001, ASIN B0XXXXXX и остальные значения "
-               "условные. " + NOT_CONNECTED)
 
 
 def render(connect=None, actor: str = "", can_edit: bool = False, token: str = "") -> None:
