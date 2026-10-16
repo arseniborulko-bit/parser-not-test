@@ -6,6 +6,7 @@ import requests
 from urllib3.util import Retry
 from requests.adapters import HTTPAdapter
 
+from amazon_location import location_params
 from config import DOMAIN, MAX_CONCURRENT_WORKERS, REQUEST_TIMEOUT, get_scrapingdog_token
 from utils import ProductData, clean_number, extract_bsr, extract_category, extract_price, logger
 
@@ -96,7 +97,8 @@ def fetch_product(asin: str, domain: str = DOMAIN, token: Optional[str] = None, 
     """
     token = token or get_scrapingdog_token()
     country = DOMAIN_TO_COUNTRY.get(str(domain).strip().lower(), "us")
-    params = {"api_key": token, "asin": asin, "domain": domain, "country": country}
+    # Индекс доставки — иначе Amazon отдаёт страницу для случайного адреса и BSR/цена «прыгают» (amazon_location).
+    params = {"api_key": token, "asin": asin, "domain": domain, "country": country, **location_params(domain)}
     req_session = session or _get_http_session()
 
     try:

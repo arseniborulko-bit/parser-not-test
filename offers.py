@@ -19,6 +19,7 @@ from typing import Iterable, List, Mapping, Optional, Sequence
 import requests
 
 import dbutil
+from amazon_location import location_params
 from dbutil import Connect
 
 log = logging.getLogger(__name__)
@@ -111,7 +112,7 @@ def parse_offers(data: object) -> List[Offer]:
 def fetch_offers(asin: str, domain: str, country: str, token: str,
                  session: Optional[requests.Session] = None, timeout: float = 60) -> Optional[dict]:
     """Ровно один запрос (1 кредит). None — сеть, не-200 или битый JSON; токен в лог не попадает."""
-    params = {"api_key": token, "asin": asin, "domain": domain, "country": country}
+    params = {"api_key": token, "asin": asin, "domain": domain, "country": country, **location_params(domain)}
     try:
         response = (session or requests).get(OFFERS_URL, params=params, timeout=timeout)
     except requests.RequestException as exc:

@@ -97,7 +97,8 @@ def test_fetch_offers_hides_the_token_and_returns_none_on_errors():
     assert offers.fetch_offers("B0BZXDFGSJ", "de", "de", "SECRET", session=ok) == SAMPLE
     url, params = ok.calls[0]
     assert url == "https://api.scrapingdog.com/amazon/offers"
-    assert params == {"api_key": "SECRET", "asin": "B0BZXDFGSJ", "domain": "de", "country": "de"}
+    assert params == {"api_key": "SECRET", "asin": "B0BZXDFGSJ", "domain": "de", "country": "de",
+                      "postal_code": "10115"}
     assert offers.fetch_offers("B0", "com", "us", "SECRET", session=Session(Response(500, {}))) is None
     assert offers.fetch_offers("B0", "com", "us", "SECRET", session=Session(Response(200, None))) is None
 
