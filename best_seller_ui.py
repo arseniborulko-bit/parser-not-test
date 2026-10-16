@@ -390,9 +390,9 @@ def _batch_table(rows: Sequence[BatchRow]) -> str:
 
 
 WATCH_MODES = ("Добавить новые", "Управлять существующими")
-NO_DATABASE = ("База раздела Best Seller не подключена: нужен секрет BEST_SELLER_DATABASE_URL — отдельная база, "
-               "не база мониторинга. Схема: best_seller_db/001_watchlist.sql.")
-NO_TABLE = "В базе Best Seller ещё нет таблиц: примените best_seller_db/001_watchlist.sql."
+NO_DATABASE = "База дашборда не подключена: список ASIN Best Seller недоступен."
+NO_TABLE = ("Таблиц раздела Best Seller в базе ещё нет: примените best_seller_db/001_watchlist.sql "
+            "(своя схема best_seller, таблицы мониторинга не затрагивает).")
 
 
 def _load_watchlist(connect) -> Tuple[List[dict], Optional[str]]:
@@ -567,7 +567,8 @@ def _render_batch(connect=None, actor: str = "", can_edit: bool = False) -> None
 
 
 def render(connect=None, actor: str = "", can_edit: bool = False) -> None:
-    """connect — подключение к ОТДЕЛЬНОЙ базе Best Seller (None — не настроена); can_edit — может ли менять список."""
+    """connect — подключение к базе дашборда (таблицы раздела — в схеме best_seller; None — нет базы);
+    can_edit — может ли менять список."""
     st.markdown(_CSS, unsafe_allow_html=True)
     st.info("Раздел в разработке: поиск ещё не подключён, ниже — пример из макета SOP-AMZ-001.")
     mode = st.radio("Режим", MODES, horizontal=True, key="bs_mode", label_visibility="collapsed")
