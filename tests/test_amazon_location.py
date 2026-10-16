@@ -32,7 +32,7 @@ class Session:
 
 
 @pytest.mark.parametrize("domain, country, postal", [("de", "de", "10115"), ("com", "us", "10001"),
-                                                      ("it", "it", "00184"), ("co.uk", "gb", "EC1A 1BB")])
+                                                      ("it", "it", "20121"), ("co.uk", "gb", "EC1A 1BB")])
 def test_product_request_carries_the_postal_code(domain, country, postal):
     session = Session()
     assert scraping.fetch_product("B07WVYMY7Y", domain=domain, token="T", session=session) == {"title": "x"}
