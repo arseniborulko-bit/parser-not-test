@@ -6,6 +6,7 @@
 CREATE TABLE IF NOT EXISTS best_seller.node_cache (
     marketplace TEXT NOT NULL,
     node TEXT NOT NULL CHECK (node ~ '^[0-9]+$'),
+    dept TEXT NOT NULL DEFAULT '',  -- раздел в адресе страницы Best Sellers (fashion, …)
     name TEXT NOT NULL DEFAULT '',
     path TEXT NOT NULL DEFAULT '',
     leader_asin TEXT,
@@ -13,6 +14,7 @@ CREATE TABLE IF NOT EXISTS best_seller.node_cache (
     leader_badge BOOLEAN,            -- живой бейдж «#1 Best Seller» у лидера (К4); NULL — не проверяли
     item_count INTEGER CHECK (item_count IS NULL OR item_count BETWEEN 0 AND 100),  -- К2; NULL — не проверяли
     top JSONB NOT NULL DEFAULT '[]', -- [{"rank": 1, "asin": "...", "title": "..."}] — заголовки для К3
+    linked JSONB NOT NULL DEFAULT '[]', -- соседние подкатегории из меню [{"node", "dept", "name"}] — ещё кандидаты
     fetched_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     PRIMARY KEY (marketplace, node)
 );
@@ -23,11 +25,14 @@ CREATE TABLE IF NOT EXISTS best_seller.searches (
     marketplace TEXT NOT NULL,
     asin TEXT NOT NULL CHECK (asin ~ '^B0[A-Z0-9]{8}$'),
     actor TEXT NOT NULL DEFAULT '',
+    title TEXT NOT NULL DEFAULT '',
     our_bsr INTEGER,
     target_bsr INTEGER CHECK (target_bsr IS NULL OR target_bsr > 0),
     status TEXT NOT NULL DEFAULT 'queued'
         CHECK (status IN ('queued', 'running', 'done', 'not_needed', 'error')),
     error TEXT NOT NULL DEFAULT '',
+    own JSONB NOT NULL DEFAULT '[]',  -- свои подкатегории товара [{"node", "name", "rank"}]
+    requests INTEGER NOT NULL DEFAULT 0,  -- ответов ScrapingDog (≈ кредитов)
     started_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     finished_at TIMESTAMPTZ
 );

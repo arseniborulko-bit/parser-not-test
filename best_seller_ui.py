@@ -281,14 +281,16 @@ def _listing_card(listing: Listing) -> str:
 _COLS = [0.45, 3.3, 1.6, 1.05, 1.15, 0.38, 0.38, 0.38, 0.38, 1.5]
 
 
-def _results(listing: Listing, evaluated: List[Tuple[Subcategory, best_seller.Verdict]]) -> None:
+def _results(key: str, evaluated: List[Tuple[Subcategory, best_seller.Verdict]]) -> None:
     suitable = sum(v.status == best_seller.SUITABLE for _, v in evaluated)
     rejected = sum(v.status == best_seller.REJECTED for _, v in evaluated)
+    pending = sum(v.status == best_seller.PENDING for _, v in evaluated)
     with st.container(border=True):
         head, counts = st.columns([3, 2], vertical_alignment="center")
         head.markdown('<div class="bs-title">Результат поиска</div>', unsafe_allow_html=True)
         counts.markdown(
             f'<div style="text-align:right">{_pill(f"Подходят: {suitable}", "bs-ok")} '
+            f'{_pill(f"Ждут проверки: {pending}", "bs-warn") + " " if pending else ""}'
             f'{_pill(f"Отклонены: {rejected}", "bs-muted")}</div>',
             unsafe_allow_html=True,
         )
@@ -302,11 +304,11 @@ def _results(listing: Listing, evaluated: List[Tuple[Subcategory, best_seller.Ve
             cols = st.columns(_COLS, vertical_alignment="center")
             ok = verdict.status == best_seller.SUITABLE
             if cols[0].checkbox(sub.name, value=ok and verdict.priority == best_seller.HIGH, disabled=not ok,
-                                key=f"bs_pick_{listing.asin}_{sub.node}", label_visibility="collapsed"):
+                                key=f"bs_pick_{key}_{sub.node}", label_visibility="collapsed"):
                 selected += ok
             cols[1].markdown(
                 f'<div class="bs-name">{escape(sub.name)}</div>'
-                f'<div class="bs-sub">{escape(sub.path)} · {escape(sub.node)}</div>',
+                f'<div class="bs-sub">{escape(" · ".join(x for x in (sub.path, sub.node) if x))}</div>',
                 unsafe_allow_html=True,
             )
             relevance = (_pill(best_seller.RELEVANCE_LABELS[sub.relevance], _RELEVANCE_CSS.get(sub.relevance, "bs-muted"))
@@ -338,7 +340,7 @@ def _legend() -> None:
     )
 
 
-def _render_single() -> None:
+def _render_demo_single() -> None:
     st.markdown('<p class="section-title">Поиск подкатегорий Best Seller</p>', unsafe_allow_html=True)
     st.markdown(
         '<p class="section-note">По ASIN находит подкатегории Amazon US, где листинг может получить плашку '
@@ -358,13 +360,129 @@ def _render_single() -> None:
         elif link.strip():
             st.warning(LINK_HINT)
     st.markdown(_listing_card(DEMO_LISTING), unsafe_allow_html=True)
-    _results(DEMO_LISTING, evaluate_demo(DEMO_LISTING, DEMO_SUBCATEGORIES))
+    _results(DEMO_LISTING.asin, evaluate_demo(DEMO_LISTING, DEMO_SUBCATEGORIES))
     _legend()
     _demo_note(
         "Пример из макета: данные листинга — из ответа Scrapingdog по B0GNBSDL65 и истории BSR за 30 дней, "
         "подкатегории и BSR лидеров — из SOP-AMZ-001. Критерии и приоритеты посчитаны правилами К1–К4. "
         "В рабочей версии значения будут актуальными. " + NOT_CONNECTED
     )
+
+
+SEARCH_MAX_CANDIDATES = 8
+SEARCH_TAKES = "Поиск идёт 1–5 минут: страница каждой подкатегории и её лидера запрашиваются у ScrapingDog."
+
+
+def _search_problem(connect) -> Optional[str]:
+    if connect is None:
+        return "База дашборда не подключена: поиск сохранять некуда."
+    try:
+        if not best_seller_store.search_tables_exist(connect):
+            return ("Таблиц поиска в базе ещё нет: примените best_seller_db/001_watchlist.sql и 002_search.sql. "
+                    "Пока ниже — пример из макета.")
+    except best_seller_store.BestSellerStoreError as exc:
+        return str(exc)
+    return None
+
+
+def _run_search(connect, market: str, asin: str, target: Optional[int], actor: str, token: str) -> None:
+    import best_seller_search as bss
+    import scraping  # тянет config и requests — только когда поиск реально запускается
+    import usage_log
+
+    fetch_page = lambda url: scraping.scrape_page(url, token=token)  # noqa: E731
+    result = bss.search(asin, market, cache=best_seller_store.DbNodeCache(connect), target_bsr=target,
+                        fetch_product=lambda a, d: bss.product_from_page(fetch_page(bss.product_url(market, a))),
+                        fetch_page=fetch_page, max_candidates=SEARCH_MAX_CANDIDATES)
+    best_seller_store.save_search(connect, result, actor_role=access.ROLE_EDITOR, actor=actor)
+    usage_log.record(connect, actor, "best_seller_search", result.requests, "запросов ScrapingDog")
+
+
+def _real_listing_card(found: dict) -> str:
+    own = sorted((x for x in found["own"] if x.get("rank")), key=lambda x: x["rank"])[:2]
+    when = found["finished_at"].strftime("%d.%m.%Y %H:%M") if found.get("finished_at") else "—"
+    tiles = [
+        ("Наш BSR сейчас", fmt_int(found["our_bsr"]), "главная категория"),
+        ("Целевой BSR", fmt_int(found["target_bsr"]), "с ним сравниваются лидеры (К1)"),
+        ("Ранг в своих подкатегориях", " · ".join(f"#{x['rank']}" for x in own) or "—",
+         " / ".join(x["name"] for x in own)),
+        ("Проверено", when, f"запросов ScrapingDog: {found['requests']} · {found['actor'] or '—'}"),
+    ]
+    tiles_html = "".join(
+        f'<div class="bs-tile"><div class="bs-tile-label">{escape(label)}</div>'
+        f'<div class="bs-tile-value">{escape(value)}</div><div class="bs-tile-detail">{escape(detail)}</div></div>'
+        for label, value, detail in tiles)
+    return ('<div class="bs-card"><div class="bs-eyebrow">Наш листинг</div>'
+            f'<div class="bs-title">{escape(found["title"] or found["asin"])}</div>'
+            f'<div class="bs-meta">{escape(found["asin"])} · {escape(found["market"])}</div>'
+            f'<div class="bs-tiles">{tiles_html}</div></div>')
+
+
+def _found_pairs(found: dict) -> List[Tuple[Subcategory, best_seller.Verdict]]:
+    target = found.get("target_bsr")
+    pairs = []
+    for row in found["results"]:
+        ratio = row["leader_bsr"] / target if row["leader_bsr"] and target else None
+        sub = Subcategory(row["name"] or row["node"], "", row["node"], row["leader_bsr"], relevance=row["relevance"])
+        pairs.append((sub, best_seller.Verdict(row["k1"], row["k2"], row["k3"], row["k4"], row["status"],
+                                               row["priority"], ratio, row["reason"])))
+    return pairs
+
+
+def _render_single(connect=None, actor: str = "", can_edit: bool = False, token: str = "") -> None:
+    problem = _search_problem(connect)
+    if problem:
+        st.info(problem)
+        _render_demo_single()
+        return
+    st.markdown('<p class="section-title">Поиск подкатегорий Best Seller</p>', unsafe_allow_html=True)
+    st.markdown('<p class="section-note">По ссылке на товар находит подкатегории, где листинг может получить плашку '
+                '#1 Best Seller при целевом BSR. Процесс описан в SOP-AMZ-001.</p>', unsafe_allow_html=True)
+    with st.container(border=True):
+        link_col, target_col, button_col = st.columns([3.2, 1.4, 1.6], vertical_alignment="bottom")
+        link = link_col.text_input("Ссылка на товар Amazon", key="bs_link", help=LINK_HINT,
+                                   placeholder="https://www.amazon.com/dp/B0H9LK9T39")
+        target = target_col.number_input("Целевой BSR", min_value=0, step=1000, value=0, key="bs_target",
+                                         help="С ним сравниваются лидеры подкатегорий (К1). 0 — текущий BSR товара.")
+        items, _, _ = parse_links(link)
+        why_not = ("Нужна ссылка на товар." if not items else
+                   "Нет токена ScrapingDog в секретах." if not token else
+                   "Запускать поиск может сотрудник с правом редактирования." if not can_edit else None)
+        if button_col.button("Найти подкатегории", key="bs_find", type="primary", width="stretch",
+                             disabled=why_not is not None):
+            with st.spinner(SEARCH_TAKES):
+                try:
+                    _run_search(connect, items[0].market, items[0].asin, int(target) or None, actor, token)
+                except (ValueError, best_seller_store.BestSellerStoreError, access.AccessDenied) as exc:
+                    st.error(str(exc))
+        if items:
+            st.caption(f"Распознано: ASIN {items[0].asin} · страна {items[0].market}")
+        elif link.strip():
+            st.warning(LINK_HINT)
+        if why_not and items:
+            st.caption(why_not)
+    if not items:
+        return
+    try:
+        found = best_seller_store.latest_search(connect, items[0].market, items[0].asin)
+    except best_seller_store.BestSellerStoreError as exc:
+        st.error(str(exc))
+        return
+    if found is None:
+        st.info("По этому товару поиска ещё не было — нажмите «Найти подкатегории». " + SEARCH_TAKES)
+        return
+    if found["status"] == "error":
+        st.error(f"Поиск не удался: {found['error'] or 'нет ответа ScrapingDog'}. Попробуйте ещё раз.")
+        return
+    st.markdown(_real_listing_card(found), unsafe_allow_html=True)
+    if found["status"] == "not_needed":
+        st.success("Товар уже в топ-3 своей подкатегории — новая подкатегория не нужна (шаг 2 SOP).")
+        return
+    if not found["results"]:
+        st.info("Подкатегорий для проверки не нашлось.")
+        return
+    _results(f"{found['market']}_{found['asin']}", _found_pairs(found))
+    _legend()
 
 
 def _batch_table(rows: Sequence[BatchRow]) -> str:
@@ -566,13 +684,14 @@ def _render_batch(connect=None, actor: str = "", can_edit: bool = False) -> None
                "условные. " + NOT_CONNECTED)
 
 
-def render(connect=None, actor: str = "", can_edit: bool = False) -> None:
+def render(connect=None, actor: str = "", can_edit: bool = False, token: str = "") -> None:
     """connect — подключение к базе дашборда (таблицы раздела — в схеме best_seller; None — нет базы);
     can_edit — может ли менять список."""
     st.markdown(_CSS, unsafe_allow_html=True)
-    st.info("Раздел в разработке: поиск ещё не подключён, ниже — пример из макета SOP-AMZ-001.")
+    st.info("Раздел в разработке: поиск по одному товару работает, поиск по списку и запись в таблицу гипотез — "
+            "следующими шагами.")
     mode = st.radio("Режим", MODES, horizontal=True, key="bs_mode", label_visibility="collapsed")
     if mode == MODES[0]:
-        _render_single()
+        _render_single(connect, actor, can_edit, token)
     else:
         _render_batch(connect, actor, can_edit)

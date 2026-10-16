@@ -8,6 +8,7 @@ best_seller.asin_changes в той же транзакции. Без Streamlit.
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Sequence, Tuple
 
@@ -125,3 +126,99 @@ def set_active(connect: Connect, keys: Sequence[Key], active: bool, *, actor_rol
     rows = _run(connect, _SET_ACTIVE_SQL,
                 ([m for m, _ in unique], [a for _, a in unique], active, active, actor, action), fetch=True)
     return len(rows)
+
+
+# --- поиск подкатегорий (best_seller_db/002_search.sql) ------------------------------------------------------
+
+def search_tables_exist(connect: Connect) -> bool:
+    return bool(_run(connect, "SELECT to_regclass('best_seller.searches') IS NOT NULL "
+                              "AND to_regclass('best_seller.node_cache') IS NOT NULL;", fetch=True)[0][0])
+
+
+class DbNodeCache:
+    """Кэш подкатегорий на неделю в best_seller.node_cache (тот же интерфейс, что best_seller_search.MemoryCache)."""
+
+    def __init__(self, connect: Connect) -> None:
+        self.connect = connect
+
+    def get(self, market: str, node: str):
+        import best_seller_search as bss
+
+        rows = _run(self.connect, "SELECT node, dept, name, leader_asin, leader_bsr, leader_badge, item_count, top, "
+                                  "linked, fetched_at FROM best_seller.node_cache WHERE marketplace = %s AND node = %s;",
+                    (market, node), fetch=True)
+        if not rows:
+            return None
+        node, dept, name, leader, bsr, badge, count, top, linked, fetched = rows[0]
+        return bss.NodeInfo(node=node, dept=dept, name=name, leader_asin=leader, leader_bsr=bsr, leader_badge=badge,
+                            item_count=count, top=list(top or []), fetched_at=fetched,
+                            linked=[bss.Subcategory(x["node"], x.get("dept", ""), x.get("name", ""))
+                                    for x in (linked or []) if isinstance(x, dict) and x.get("node")])
+
+    def put(self, market: str, info) -> None:
+        linked = [{"node": x.node, "dept": x.dept, "name": x.name} for x in info.linked]
+        _run(self.connect, """
+            INSERT INTO best_seller.node_cache AS c (marketplace, node, dept, name, leader_asin, leader_bsr,
+                                                    leader_badge, item_count, top, linked, fetched_at)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb, %s)
+            ON CONFLICT (marketplace, node) DO UPDATE SET dept = EXCLUDED.dept, name = EXCLUDED.name,
+                leader_asin = EXCLUDED.leader_asin, leader_bsr = EXCLUDED.leader_bsr,
+                leader_badge = EXCLUDED.leader_badge, item_count = EXCLUDED.item_count, top = EXCLUDED.top,
+                linked = EXCLUDED.linked, fetched_at = EXCLUDED.fetched_at;
+            """, (market, info.node, info.dept, info.name, info.leader_asin, info.leader_bsr, info.leader_badge,
+                  info.item_count, json.dumps(info.top, ensure_ascii=False), json.dumps(linked, ensure_ascii=False),
+                  info.fetched_at))
+
+
+_SAVE_SEARCH_SQL = """
+WITH s AS (
+    INSERT INTO best_seller.searches (marketplace, asin, actor, title, our_bsr, target_bsr, status, error, own,
+                                      requests, finished_at)
+    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, now())
+    RETURNING id
+), r AS (
+    INSERT INTO best_seller.search_results (search_id, node, name, leader_bsr, k1, k2, k3, k4, relevance, status,
+                                            priority, reason)
+    SELECT s.id, t.* FROM s, unnest(%s::text[], %s::text[], %s::int[], %s::bool[], %s::bool[], %s::bool[],
+                                    %s::bool[], %s::text[], %s::text[], %s::text[], %s::text[]) AS t
+)
+SELECT id FROM s;
+"""
+
+
+def save_search(connect: Connect, result, *, actor_role: Optional[str], actor: str) -> int:
+    """Поиск и решения по подкатегориям — одним запросом (одна транзакция). Возвращает id поиска."""
+    access.require_role(actor_role, access.ROLE_EDITOR)
+    own = [{"node": x.node, "name": x.name, "rank": x.rank} for x in result.own]
+    cs = result.candidates
+    columns = (
+        [c.sub.node for c in cs], [c.sub.name[:300] for c in cs], [c.info.leader_bsr if c.info else None for c in cs],
+        [c.verdict.k1 for c in cs], [c.verdict.k2 for c in cs], [c.verdict.k3 for c in cs], [c.verdict.k4 for c in cs],
+        [c.relevance for c in cs], [c.verdict.status for c in cs], [c.verdict.priority for c in cs],
+        [c.verdict.reason for c in cs],
+    )
+    rows = _run(connect, _SAVE_SEARCH_SQL,
+                (result.market, result.asin, actor, result.title[:500], result.our_bsr, result.target_bsr,
+                 result.status, result.error[:500], json.dumps(own, ensure_ascii=False), result.requests, *columns),
+                fetch=True)
+    return rows[0][0]
+
+
+def latest_search(connect: Connect, market: str, asin: str) -> Optional[dict]:
+    """Последний поиск по стране и ASIN с решениями по подкатегориям (подходящие сверху) или None."""
+    rows = _run(connect, """
+        SELECT id, title, our_bsr, target_bsr, status, error, own, requests, actor, finished_at
+        FROM best_seller.searches WHERE marketplace = %s AND asin = %s ORDER BY started_at DESC, id DESC LIMIT 1;
+        """, (market, asin), fetch=True)
+    if not rows:
+        return None
+    sid, title, our, target, status, error, own, requests, actor, finished = rows[0]
+    results = _run(connect, """
+        SELECT node, name, leader_bsr, k1, k2, k3, k4, relevance, status, priority, reason
+        FROM best_seller.search_results WHERE search_id = %s
+        ORDER BY CASE status WHEN 'suitable' THEN 0 WHEN 'pending' THEN 1 ELSE 2 END, leader_bsr DESC NULLS LAST;
+        """, (sid,), fetch=True)
+    keys = ("node", "name", "leader_bsr", "k1", "k2", "k3", "k4", "relevance", "status", "priority", "reason")
+    return {"id": sid, "market": market, "asin": asin, "title": title, "our_bsr": our, "target_bsr": target,
+            "status": status, "error": error, "own": list(own or []), "requests": requests, "actor": actor,
+            "finished_at": finished, "results": [dict(zip(keys, row)) for row in results]}

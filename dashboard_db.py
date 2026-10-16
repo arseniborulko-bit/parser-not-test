@@ -2141,7 +2141,8 @@ def main() -> None:
                        label_visibility="collapsed")
     if section == BEST_SELLER_SECTION:
         # Та же база, своя схема best_seller (таблицы мониторинга не трогаются).
-        best_seller_ui.render(_connect, actor, access.has_role(manage_role, access.ROLE_EDITOR))
+        best_seller_ui.render(_connect, actor, access.has_role(manage_role, access.ROLE_EDITOR),
+                              _secret("SCRAPINGDOG_TOKEN"))
         return
 
     if not _management_open() and manage_role is None:

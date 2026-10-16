@@ -898,6 +898,20 @@ Postgres (`pixeltable-pgserver` в отдельном venv, 16.10.2026, обеи
 возврат отключённого — enable; журнал add 2 / disable 1 / enable 1; неверный ASIN отклоняется CHECK.
 **На бою ещё не включено:** схему `best_seller_db/001_watchlist.sql` нужно применить к базе дашборда.
 
+**Поиск по одному товару в разделе (16.10.2026).** «Один ASIN»: ссылка (страна из домена) + «Целевой BSR»
+(0 — текущий) → «Найти подкатегории» запускает `best_seller_search.search` (до 8 подкатегорий, наш товар — со
+страницы, кэш подкатегорий — `best_seller_store.DbNodeCache` в `best_seller.node_cache`) → результат сохраняется
+одним запросом (`save_search`: строка в `searches` и решения в `search_results`) и показывается из базы
+(`latest_search`): карточка листинга (наш BSR, цель, места в своих подкатегориях, когда проверено и сколько
+запросов) и таблица К1–К4 со счётчиками «Подходят / Ждут проверки / Отклонены». Кнопка неактивна без ссылки,
+без токена ScrapingDog (`SCRAPINGDOG_TOKEN`) или без права редактирования; расход пишется в журнал
+использования (`best_seller_search`). Пока схемы 001/002 не применены, раздел показывает пример из макета.
+Схема 002 дополнена до применения: `node_cache.dept`, `node_cache.linked`, `searches.title`, `searches.own`,
+`searches.requests`. Проверено: тесты `tests/test_best_seller_ui_search.py`; запись/чтение и повторный поиск из
+кэша базы — на временном Postgres; живой поиск через экран на временной базе — B0H9LK9T39, цель 60 000: 18
+запросов, ~1,5 мин; Men's Novelty Sun Hats — К1 ✓ К2 ✓, ждёт К3 (как «высокий» в SOP), Women's Novelty Sun Hats —
+отклонена по К1 (как в SOP), ещё 6 соседних отклонены по К1.
+
 **Движок поиска — `best_seller_search.py`** (без Streamlit и базы; запросы и кэш подставляются, тесты
 `tests/test_best_seller_search.py` без сети). `search(asin, market, …)`: наш товар → его подкатегории с номерами узлов
 (Product API `best_sellers_rank` или страница товара `product_from_page` — она быстрее и надёжнее: Product API с
