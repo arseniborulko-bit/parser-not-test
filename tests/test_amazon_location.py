@@ -27,6 +27,7 @@ class Session:
 
     def get(self, url, params, timeout):
         self.calls.append((url, params))
+        self.timeout = timeout
         return Response()
 
 
@@ -39,3 +40,5 @@ def test_product_request_carries_the_postal_code(domain, country, postal):
     assert url == "https://api.scrapingdog.com/amazon/product"
     assert params == {"api_key": "T", "asin": "B07WVYMY7Y", "domain": domain, "country": country,
                       "postal_code": postal}
+    # С индексом ответ идёт до ~40 с: 15 с обрывали запрос (замер 16.10.2026).
+    assert session.timeout >= 45

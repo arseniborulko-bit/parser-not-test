@@ -7,7 +7,7 @@ from urllib3.util import Retry
 from requests.adapters import HTTPAdapter
 
 from amazon_location import location_params
-from config import DOMAIN, MAX_CONCURRENT_WORKERS, REQUEST_TIMEOUT, get_scrapingdog_token
+from config import DOMAIN, MAX_CONCURRENT_WORKERS, get_scrapingdog_token
 from utils import ProductData, clean_number, extract_bsr, extract_category, extract_price, logger
 
 
@@ -29,6 +29,12 @@ DOMAIN_TO_COUNTRY = {
     "co.jp": "jp",
     "com.au": "au",
 }
+
+
+# С индексом доставки (amazon_location) ответ ScrapingDog занимает 5–40 с (замер 16.10.2026, 7 стран); прежних 15 с
+# не хватало — запрос обрывался, и ASIN уходил в повтор или «@». Сам ScrapingDog сдаётся около 40 с (ответ 410,
+# кредит не списывается), поэтому 60 с с запасом.
+SCRAPINGDOG_TIMEOUT = 60
 
 
 def _get_http_session() -> requests.Session:
@@ -105,7 +111,7 @@ def fetch_product(asin: str, domain: str = DOMAIN, token: Optional[str] = None, 
         response = req_session.get(
             "https://api.scrapingdog.com/amazon/product",
             params=params,
-            timeout=REQUEST_TIMEOUT,
+            timeout=SCRAPINGDOG_TIMEOUT,
         )
     except requests.RequestException as e:
         safe_error = str(e).replace(token, "***") if token else str(e)
