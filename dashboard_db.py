@@ -63,6 +63,11 @@ def _connect():
     return psycopg2.connect(_database_url())
 
 
+def _best_seller_connect():
+    """Отдельная база раздела Best Seller (секрет BEST_SELLER_DATABASE_URL), не база мониторинга."""
+    return psycopg2.connect(_secret("BEST_SELLER_DATABASE_URL"))
+
+
 def _secret(name: str) -> str:
     value = os.environ.get(name)
     if value:
@@ -2140,7 +2145,8 @@ def main() -> None:
     section = st.radio("Раздел", [MONITORING_SECTION, BEST_SELLER_SECTION], horizontal=True, key=_SECTION_KEY,
                        label_visibility="collapsed")
     if section == BEST_SELLER_SECTION:
-        best_seller_ui.render()
+        best_seller_ui.render(_best_seller_connect if _secret("BEST_SELLER_DATABASE_URL") else None, actor,
+                              access.has_role(manage_role, access.ROLE_EDITOR))
         return
 
     if not _management_open() and manage_role is None:

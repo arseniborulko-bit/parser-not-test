@@ -112,7 +112,7 @@ def test_single_page_shows_the_country_from_the_link_and_warns_on_a_bare_asin():
 def test_list_page_counts_countries_and_lists_what_it_could_not_read():
     at = AppTest.from_string(SCRIPT).run(timeout=30)
     at.radio(key="bs_mode").set_value("Список ASIN").run(timeout=30)
-    assert "Распознано 3 ASIN: US 3" in page_text(at)
+    assert "Ссылок пока нет." in page_text(at)  # поле пустое: в общий список ничего не попадёт само
     at.text_area(key="bs_batch_input").set_value(
         "https://www.amazon.de/dp/B07WVYMY7Y\nB0GNBSDL65\nhttps://www.amazon.fr/dp/B082B5LKQQ").run(timeout=30)
     assert "Распознано 2 ASIN: DE 1 · FR 1" in page_text(at)

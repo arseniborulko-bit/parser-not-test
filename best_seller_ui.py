@@ -14,7 +14,10 @@ from typing import List, Optional, Sequence, Tuple
 
 import streamlit as st
 
+import access
+
 import best_seller
+import best_seller_store
 import pairs_store
 
 SHEET_NAME = "Получение bs за счет смены под категории"
@@ -386,29 +389,134 @@ def _batch_table(rows: Sequence[BatchRow]) -> str:
     return f'<table class="bs-table"><thead>{head}</thead><tbody>{"".join(body)}</tbody></table>'
 
 
-def _render_batch() -> None:
+WATCH_MODES = ("Добавить новые", "Управлять существующими")
+NO_DATABASE = ("База раздела Best Seller не подключена: нужен секрет BEST_SELLER_DATABASE_URL — отдельная база, "
+               "не база мониторинга. Схема: best_seller_db/001_watchlist.sql.")
+NO_TABLE = "В базе Best Seller ещё нет таблиц: примените best_seller_db/001_watchlist.sql."
+
+
+def _load_watchlist(connect) -> Tuple[List[dict], Optional[str]]:
+    """Строки списка и причина, по которой работать с ним нельзя (None — можно)."""
+    if connect is None:
+        return [], NO_DATABASE
+    try:
+        if not best_seller_store.table_exists(connect):
+            return [], NO_TABLE
+        return best_seller_store.list_asins(connect), None
+    except best_seller_store.BestSellerStoreError as exc:
+        return [], str(exc)
+
+
+def _watch_add(connect, rows: List[dict], problem: Optional[str], actor: str, can_edit: bool) -> None:
+    text = st.text_area("Ссылки на товары Amazon, по одной в строке", key="bs_batch_input", height=110, help=LINK_HINT,
+                        placeholder="https://www.amazon.de/dp/B07WVYMY7Y\nhttps://www.amazon.it/dp/B07WVYMY7Y")
+    items, invalid, repeats = parse_links(text)
+    st.caption(links_summary(items, repeats))
+    if invalid:
+        st.warning(f"Не распознано ({len(invalid)}): {', '.join(invalid[:5])}{' …' if len(invalid) > 5 else ''}. "
+                   + LINK_HINT)
+    if problem:
+        st.info(problem)
+        return
+    if not items:
+        return
+    plan = best_seller_store.plan_add(rows, [(item.market, item.asin) for item in items])
+    for error in plan.errors:
+        st.error(error)
+    st.caption(f"Будет добавлено {len(plan.to_add)} · вернётся из отключённых {len(plan.to_enable)} · "
+               f"уже в списке {len(plan.already)}")
+    if not can_edit:
+        st.caption("Менять список может сотрудник с правом редактирования.")
+    if st.button("Добавить в список", key="bs_watch_add", type="primary",
+                 disabled=not can_edit or bool(plan.errors) or not plan.changes):
+        try:
+            done = best_seller_store.add(connect, plan.to_add + plan.to_enable, actor_role=best_seller_role(can_edit),
+                                         actor=actor)
+        except (ValueError, best_seller_store.BestSellerStoreError) as exc:
+            st.error(str(exc))
+        else:
+            st.session_state["bs_watch_flash"] = f"Добавлено {done['add']}, возвращено {done['enable']}."
+            st.session_state.pop("bs_batch_input", None)
+            st.rerun()
+
+
+def _watch_manage(connect, rows: List[dict], problem: Optional[str], actor: str, can_edit: bool) -> None:
+    if problem:
+        st.info(problem)
+        return
+    if not rows:
+        st.info("Список пуст: добавьте ASIN во вкладке «Добавить новые».")
+        return
+    counts: dict = {}
+    for row in rows:
+        counts[row["marketplace"]] = counts.get(row["marketplace"], 0) + 1
+    market_col, off_col = st.columns([1.2, 2], vertical_alignment="bottom")
+    market = market_col.selectbox("Страна", sorted(counts), key="bs_watch_market",
+                                  format_func=lambda m: f"{m} · {counts[m]} ASIN")
+    show_off = off_col.checkbox("Показывать отключённые", key="bs_watch_show_off")
+    shown = [r for r in rows if r["marketplace"] == market and (r["active"] or show_off)]
+    if not shown:
+        st.info("В этой стране нет активных ASIN.")
+        return
+    table = [{"Выбрать": False, "ASIN": r["asin"], "Статус": "активен" if r["active"] else "отключён",
+              "Добавил": r["added_by"], "Ссылка": f"https://www.amazon.{pairs_store.DOMAIN_BY_MARKET.get(market, 'com')}"
+              f"/dp/{r['asin']}"} for r in shown]
+    edited = st.data_editor(table, key=f"bs_watch_grid_{market}_{show_off}", hide_index=True, width="stretch",
+                            disabled=["ASIN", "Статус", "Добавил", "Ссылка"],
+                            column_config={"Выбрать": st.column_config.CheckboxColumn(),
+                                           "Ссылка": st.column_config.LinkColumn(display_text="открыть")})
+    picked = [(market, row["ASIN"], row["Статус"]) for row in edited if row["Выбрать"]]
+    off_btn, on_btn, _ = st.columns([1, 1, 2])
+    to_off = [(m, a) for m, a, status in picked if status == "активен"]
+    to_on = [(m, a) for m, a, status in picked if status == "отключён"]
+    for column, label, keys, active in ((off_btn, f"Отключить выбранные ({len(to_off)})", to_off, False),
+                                        (on_btn, f"Вернуть выбранные ({len(to_on)})", to_on, True)):
+        if column.button(label, key=f"bs_watch_{'on' if active else 'off'}", width="stretch",
+                         disabled=not can_edit or not keys):
+            try:
+                changed = best_seller_store.set_active(connect, keys, active, actor_role=best_seller_role(can_edit),
+                                                       actor=actor)
+            except (ValueError, best_seller_store.BestSellerStoreError) as exc:
+                st.error(str(exc))
+            else:
+                st.session_state["bs_watch_flash"] = f"{'Возвращено' if active else 'Отключено'}: {changed}."
+                st.rerun()
+
+
+def best_seller_role(can_edit: bool) -> Optional[str]:
+    return access.ROLE_EDITOR if can_edit else None
+
+
+def _render_watchlist(connect, actor: str, can_edit: bool) -> None:
+    """Список ASIN раздела — в отдельной базе Best Seller, как пары в «Сборе и управлении»: добавить ссылками,
+    управлять по стране (отключить и вернуть)."""
+    rows, problem = _load_watchlist(connect)
+    active = sum(1 for r in rows if r["active"])
+    with st.container(border=True):
+        st.markdown('<div class="bs-title">Список ASIN для Best Seller</div>', unsafe_allow_html=True)
+        st.caption(f"Отдельная база раздела, с мониторингом BSR не связана. Активных ASIN: {active}.")
+        flash = st.session_state.pop("bs_watch_flash", None)
+        if flash:
+            st.success(flash)
+        mode = st.radio("Действие со списком", WATCH_MODES, horizontal=True, key="bs_watch_mode",
+                        label_visibility="collapsed")
+        if mode == WATCH_MODES[0]:
+            _watch_add(connect, rows, problem, actor, can_edit)
+        else:
+            _watch_manage(connect, rows, problem, actor, can_edit)
+
+
+def _render_batch(connect=None, actor: str = "", can_edit: bool = False) -> None:
     st.markdown('<p class="section-title">Поиск подкатегорий: список ASIN</p>', unsafe_allow_html=True)
     st.markdown(
         '<p class="section-note">Один поиск на много ASIN. Топ-100 каждой подкатегории берётся один раз и хранится '
         'неделю, поэтому длинный список не умножает запросы.</p>',
         unsafe_allow_html=True,
     )
-    with st.container(border=True):
-        left, right = st.columns([1.1, 1.4])
-        text = left.text_area("Ссылки на товары Amazon, по одной в строке",
-                              value="\n".join(f"https://www.amazon.{pairs_store.DOMAIN_BY_MARKET[r.market]}/dp/{r.asin}"
-                                              for r in DEMO_BATCH[:3]),
-                              height=110, key="bs_batch_input", help=LINK_HINT)
-        items, invalid, repeats = parse_links(text)
-        left.caption(links_summary(items, repeats))
-        if invalid:
-            left.warning(f"Не распознано ({len(invalid)}): {', '.join(invalid[:5])}{' …' if len(invalid) > 5 else ''}. "
-                         + LINK_HINT)
-        run_col, csv_col, monitor_col = right.columns([1, 1, 1.3])
-        _soon(run_col, "Запустить поиск", "bs_batch_run")
-        _soon(csv_col, "Загрузить CSV", "bs_batch_csv")
-        _soon(monitor_col, "Взять из мониторинга", "bs_batch_monitor")
-        right.caption("«Взять из мониторинга» подставляет наши ASIN, у которых нет плашки Best Seller.")
+    _render_watchlist(connect, actor, can_edit)
+    run_col, csv_col, _ = st.columns([1, 1, 2])
+    _soon(run_col, "Запустить поиск", "bs_batch_run")
+    _soon(csv_col, "Загрузить CSV", "bs_batch_csv")
 
     done = DEMO_BATCH_TOTAL - DEMO_BATCH_COUNTS[-1][1]
     with st.container(border=True):
@@ -458,11 +566,12 @@ def _render_batch() -> None:
                "условные. " + NOT_CONNECTED)
 
 
-def render() -> None:
+def render(connect=None, actor: str = "", can_edit: bool = False) -> None:
+    """connect — подключение к ОТДЕЛЬНОЙ базе Best Seller (None — не настроена); can_edit — может ли менять список."""
     st.markdown(_CSS, unsafe_allow_html=True)
     st.info("Раздел в разработке: поиск ещё не подключён, ниже — пример из макета SOP-AMZ-001.")
     mode = st.radio("Режим", MODES, horizontal=True, key="bs_mode", label_visibility="collapsed")
     if mode == MODES[0]:
         _render_single()
     else:
-        _render_batch()
+        _render_batch(connect, actor, can_edit)
